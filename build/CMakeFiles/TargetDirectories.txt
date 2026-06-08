@@ -1,3 +1,0 @@
-/mnt/games/xray_photon/build/CMakeFiles/xray_photon.dir
-/mnt/games/xray_photon/build/CMakeFiles/edit_cache.dir
-/mnt/games/xray_photon/build/CMakeFiles/rebuild_cache.dir

@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/xray_photon.dir/link.d CMakeFiles/xray_photon.dir/src/main.cpp.o -o xray_photon
