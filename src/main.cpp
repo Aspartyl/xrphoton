@@ -40,6 +40,85 @@ bool isValidationLayerAvailable(const char* requestedLayerName)
 
     return false;
 }
+
+bool isInstanceExtensionAvailable(const char* requestedExtensionName)
+{
+    uint32_t extensionCount = 0;
+    VkResult result = vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Failed to enumerate Vulkan instance extensions.\n";
+        return false;
+    }
+
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+    result = vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Failed to read Vulkan instance extension properties.\n";
+        return false;
+    }
+
+    for (const VkExtensionProperties& extension : availableExtensions) {
+        if (std::strcmp(extension.extensionName, requestedExtensionName) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debugMessengerCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
+    const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
+    void* userData)
+{
+    (void)messageSeverity;
+    (void)messageType;
+    (void)userData;
+
+    std::cerr << "Vulkan validation: " << callbackData->pMessage << '\n';
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerCreateInfoEXT makeDebugMessengerCreateInfo()
+{
+    VkDebugUtilsMessengerCreateInfoEXT createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+        | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    createInfo.pfnUserCallback = debugMessengerCallback;
+
+    return createInfo;
+}
+
+VkResult createDebugUtilsMessenger(
+    VkInstance instance,
+    const VkDebugUtilsMessengerCreateInfoEXT* createInfo,
+    VkDebugUtilsMessengerEXT* debugMessenger)
+{
+    const auto createFunction = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+
+    if (createFunction == nullptr) {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+
+    return createFunction(instance, createInfo, nullptr, debugMessenger);
+}
+
+void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger)
+{
+    const auto destroyFunction = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+
+    if (destroyFunction != nullptr) {
+        destroyFunction(instance, debugMessenger, nullptr);
+    }
+}
 }
 
 int main()
@@ -66,8 +145,19 @@ int main()
 
     std::cout << "Using Vulkan validation layer: " << ValidationLayerName << '\n';
 
+    if (!isInstanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+        std::cerr << "Required Vulkan instance extension is not available: "
+                  << VK_EXT_DEBUG_UTILS_EXTENSION_NAME << '\n';
+        return 1;
+    }
+
+    std::cout << "Using Vulkan instance extension: " << VK_EXT_DEBUG_UTILS_EXTENSION_NAME << '\n';
+
     const char* enabledLayers[] = {
         ValidationLayerName,
+    };
+    const char* enabledExtensions[] = {
+        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
     };
 
     VkApplicationInfo applicationInfo{};
@@ -78,11 +168,16 @@ int main()
     applicationInfo.engineVersion = VK_MAKE_VERSION(0, 1, 0);
     applicationInfo.apiVersion = instanceVersion;
 
+    VkDebugUtilsMessengerCreateInfoEXT debugMessengerCreateInfo = makeDebugMessengerCreateInfo();
+
     VkInstanceCreateInfo instanceCreateInfo{};
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instanceCreateInfo.pNext = &debugMessengerCreateInfo;
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
     instanceCreateInfo.enabledLayerCount = 1;
     instanceCreateInfo.ppEnabledLayerNames = enabledLayers;
+    instanceCreateInfo.enabledExtensionCount = 1;
+    instanceCreateInfo.ppEnabledExtensionNames = enabledExtensions;
 
     VkInstance instance = VK_NULL_HANDLE;
     const VkResult createResult = vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
@@ -93,6 +188,20 @@ int main()
     }
 
     std::cout << "Created Vulkan instance.\n";
+
+    VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
+    const VkResult debugMessengerResult = createDebugUtilsMessenger(instance, &debugMessengerCreateInfo, &debugMessenger);
+
+    if (debugMessengerResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan debug messenger.\n";
+        vkDestroyInstance(instance, nullptr);
+        return 1;
+    }
+
+    std::cout << "Created Vulkan debug messenger.\n";
+
+    destroyDebugUtilsMessenger(instance, debugMessenger);
+    std::cout << "Destroyed Vulkan debug messenger.\n";
 
     vkDestroyInstance(instance, nullptr);
     std::cout << "Destroyed Vulkan instance.\n";
