@@ -1,3 +1,2 @@
-# CMake build outputs
+# Build outputs
 build/
-build-*/
