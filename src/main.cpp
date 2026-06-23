@@ -6,6 +6,19 @@
 namespace
 {
 constexpr const char* ValidationLayerName = "VK_LAYER_KHRONOS_validation";
+constexpr const char* RequiredDeviceExtensions[] = {
+    VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+    VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+    VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+    VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+    VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+};
+
+uint32_t requiredDeviceExtensionCount()
+{
+    return static_cast<uint32_t>(
+        sizeof(RequiredDeviceExtensions) / sizeof(RequiredDeviceExtensions[0]));
+}
 
 void printVulkanVersion(uint32_t version)
 {
@@ -152,10 +165,74 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice)
     return indices;
 }
 
+bool areRequiredDeviceExtensionsAvailable(VkPhysicalDevice physicalDevice)
+{
+    uint32_t extensionCount = 0;
+    VkResult result = vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
+
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+    result = vkEnumerateDeviceExtensionProperties(
+        physicalDevice,
+        nullptr,
+        &extensionCount,
+        availableExtensions.data());
+
+    if (result != VK_SUCCESS) {
+        return false;
+    }
+
+    for (const char* requiredExtension : RequiredDeviceExtensions) {
+        bool found = false;
+
+        for (const VkExtensionProperties& availableExtension : availableExtensions) {
+            if (std::strcmp(availableExtension.extensionName, requiredExtension) == 0) {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool areRequiredRayTracingFeaturesAvailable(VkPhysicalDevice physicalDevice)
+{
+    VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
+    bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{};
+    rayTracingPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    rayTracingPipelineFeatures.pNext = &bufferDeviceAddressFeatures;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
+    accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
+
+    VkPhysicalDeviceFeatures2 physicalDeviceFeatures{};
+    physicalDeviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    physicalDeviceFeatures.pNext = &accelerationStructureFeatures;
+
+    vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalDeviceFeatures);
+
+    return bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE
+        && accelerationStructureFeatures.accelerationStructure == VK_TRUE
+        && rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
+}
+
 bool isPhysicalDeviceSuitable(VkPhysicalDevice physicalDevice)
 {
     const QueueFamilyIndices queueFamilies = findQueueFamilies(physicalDevice);
-    return queueFamilies.isComplete();
+    return queueFamilies.isComplete()
+        && areRequiredDeviceExtensionsAvailable(physicalDevice)
+        && areRequiredRayTracingFeaturesAvailable(physicalDevice);
 }
 
 VkPhysicalDevice pickPhysicalDevice(VkInstance instance)
@@ -189,6 +266,48 @@ VkPhysicalDevice pickPhysicalDevice(VkInstance instance)
 
     std::cerr << "No suitable Vulkan physical device was found.\n";
     return VK_NULL_HANDLE;
+}
+
+VkResult createLogicalDevice(
+    VkPhysicalDevice physicalDevice,
+    const QueueFamilyIndices& queueFamilies,
+    VkDevice* device)
+{
+    const float queuePriority = 1.0f;
+
+    VkDeviceQueueCreateInfo queueCreateInfo{};
+    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.queueFamilyIndex = queueFamilies.graphicsFamily;
+    queueCreateInfo.queueCount = 1;
+    queueCreateInfo.pQueuePriorities = &queuePriority;
+
+    VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
+    bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{};
+    rayTracingPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    rayTracingPipelineFeatures.pNext = &bufferDeviceAddressFeatures;
+    rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
+    accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    accelerationStructureFeatures.pNext = &rayTracingPipelineFeatures;
+    accelerationStructureFeatures.accelerationStructure = VK_TRUE;
+
+    VkPhysicalDeviceFeatures2 deviceFeatures{};
+    deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    deviceFeatures.pNext = &accelerationStructureFeatures;
+
+    VkDeviceCreateInfo deviceCreateInfo{};
+    deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    deviceCreateInfo.pNext = &deviceFeatures;
+    deviceCreateInfo.queueCreateInfoCount = 1;
+    deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
+    deviceCreateInfo.enabledExtensionCount = requiredDeviceExtensionCount();
+    deviceCreateInfo.ppEnabledExtensionNames = RequiredDeviceExtensions;
+
+    return vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, device);
 }
 }
 
@@ -287,6 +406,25 @@ int main()
               << physicalDeviceProperties.deviceName << '\n';
     std::cout << "Using graphics queue family: "
               << queueFamilies.graphicsFamily << '\n';
+
+    VkDevice device = VK_NULL_HANDLE;
+    const VkResult deviceResult = createLogicalDevice(physicalDevice, queueFamilies, &device);
+
+    if (deviceResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan logical device.\n";
+        destroyDebugUtilsMessenger(instance, debugMessenger);
+        vkDestroyInstance(instance, nullptr);
+        return 1;
+    }
+
+    std::cout << "Created Vulkan logical device with hardware ray tracing prerequisites.\n";
+
+    VkQueue graphicsQueue = VK_NULL_HANDLE;
+    vkGetDeviceQueue(device, queueFamilies.graphicsFamily, 0, &graphicsQueue);
+    std::cout << "Retrieved Vulkan graphics queue.\n";
+
+    vkDestroyDevice(device, nullptr);
+    std::cout << "Destroyed Vulkan logical device.\n";
 
     destroyDebugUtilsMessenger(instance, debugMessenger);
     std::cout << "Destroyed Vulkan debug messenger.\n";
