@@ -3,6 +3,9 @@
 #include <iostream>
 #include <iterator>
 #include <vector>
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 
 namespace
@@ -429,11 +432,25 @@ int main()
 {
     std::cout << "xrPhoton booting...\n";
 
+    if (glfwInit() != GLFW_TRUE) {
+        std::cerr << "Failed to initialize GLFW.\n";
+        return 1;
+    }
+
+    if (glfwVulkanSupported() != GLFW_TRUE) {
+        std::cerr << "GLFW reports Vulkan is not supported.\n";
+        glfwTerminate();
+        return 1;
+    }
+
+    std::cout << "Initialized GLFW with Vulkan support.\n";
+
     uint32_t instanceVersion = VK_API_VERSION_1_0;
     const VkResult result = vkEnumerateInstanceVersion(&instanceVersion);
 
     if (result != VK_SUCCESS) {
         std::cerr << "Failed to enumerate Vulkan instance version.\n";
+        glfwTerminate();
         return 1;
     }
 
@@ -443,6 +460,7 @@ int main()
 
     if (instanceVersion < RequiredApiVersion) {
         std::cerr << "xrPhoton requires Vulkan 1.3 or newer.\n";
+        glfwTerminate();
         return 1;
     }
 
@@ -453,6 +471,7 @@ int main()
     if (!isValidationLayerAvailable(ValidationLayerName)) {
         std::cerr << "Required Vulkan validation layer is not available: "
                   << ValidationLayerName << '\n';
+        glfwTerminate();
         return 1;
     }
 
@@ -461,6 +480,7 @@ int main()
     if (!isInstanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
         std::cerr << "Required Vulkan instance extension is not available: "
                   << VK_EXT_DEBUG_UTILS_EXTENSION_NAME << '\n';
+        glfwTerminate();
         return 1;
     }
 
@@ -497,6 +517,7 @@ int main()
 
     if (createResult != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan instance.\n";
+        glfwTerminate();
         return 1;
     }
 
@@ -508,6 +529,7 @@ int main()
     if (debugMessengerResult != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan debug messenger.\n";
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -518,6 +540,7 @@ int main()
     if (physicalDevice == VK_NULL_HANDLE) {
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -540,6 +563,7 @@ int main()
         std::cerr << "Failed to create Vulkan logical device.\n";
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -552,6 +576,7 @@ int main()
         vkDestroyDevice(device, nullptr);
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -569,6 +594,7 @@ int main()
         vkDestroyDevice(device, nullptr);
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -583,6 +609,7 @@ int main()
         vkDestroyDevice(device, nullptr);
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -597,6 +624,7 @@ int main()
         vkDestroyDevice(device, nullptr);
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -611,6 +639,7 @@ int main()
         vkDestroyDevice(device, nullptr);
         destroyDebugUtilsMessenger(instance, debugMessenger);
         vkDestroyInstance(instance, nullptr);
+        glfwTerminate();
         return 1;
     }
 
@@ -630,6 +659,9 @@ int main()
 
     vkDestroyInstance(instance, nullptr);
     std::cout << "Destroyed Vulkan instance.\n";
+
+    glfwTerminate();
+    std::cout << "Terminated GLFW.\n";
 
     return 0;
 }

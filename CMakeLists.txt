@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
+find_package(glfw3 REQUIRED)
 
 add_executable(xrPhoton
     src/main.cpp
@@ -15,4 +16,5 @@ add_executable(xrPhoton
 target_link_libraries(xrPhoton
     PRIVATE
         Vulkan::Vulkan
+        glfw
 )
