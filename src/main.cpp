@@ -502,21 +502,38 @@ int main()
 
     std::cout << "Using Vulkan validation layer: " << ValidationLayerName << '\n';
 
-    if (!isInstanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
-        std::cerr << "Required Vulkan instance extension is not available: "
-                  << VK_EXT_DEBUG_UTILS_EXTENSION_NAME << '\n';
+    uint32_t glfwExtensionCount = 0;
+    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+    if (glfwExtensions == nullptr || glfwExtensionCount == 0) {
+        std::cerr << "Failed to get GLFW required Vulkan instance extensions.\n";
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
 
-    std::cout << "Using Vulkan instance extension: " << VK_EXT_DEBUG_UTILS_EXTENSION_NAME << '\n';
+    std::vector<const char*> enabledExtensions(
+        glfwExtensions,
+        glfwExtensions + glfwExtensionCount);
+    enabledExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+    for (const char* enabledExtension : enabledExtensions) {
+        if (!isInstanceExtensionAvailable(enabledExtension)) {
+            std::cerr << "Required Vulkan instance extension is not available: "
+                      << enabledExtension << '\n';
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+    }
+
+    std::cout << "Using Vulkan instance extensions:\n";
+    for (const char* enabledExtension : enabledExtensions) {
+        std::cout << "  " << enabledExtension << '\n';
+    }
 
     const char* enabledLayers[] = {
         ValidationLayerName,
-    };
-    const char* enabledExtensions[] = {
-        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
     };
 
     VkApplicationInfo applicationInfo{};
@@ -535,8 +552,8 @@ int main()
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
     instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(std::size(enabledLayers));
     instanceCreateInfo.ppEnabledLayerNames = enabledLayers;
-    instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(std::size(enabledExtensions));
-    instanceCreateInfo.ppEnabledExtensionNames = enabledExtensions;
+    instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+    instanceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
     VkInstance instance = VK_NULL_HANDLE;
     const VkResult createResult = vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
