@@ -17,6 +17,9 @@ constexpr uint32_t RequiredApiVersion = VK_API_VERSION_1_3;
 constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
+constexpr VkImageUsageFlags RequiredSwapchainImageUsage =
+    VK_IMAGE_USAGE_TRANSFER_DST_BIT
+    | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 constexpr const char* RequiredDeviceExtensions[] = {
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
@@ -441,7 +444,8 @@ bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR s
     return support.valid
         && !support.formats.empty()
         && !support.presentModes.empty()
-        && (support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+        && (support.capabilities.supportedUsageFlags & RequiredSwapchainImageUsage)
+            == RequiredSwapchainImageUsage;
 }
 
 bool hasRequiredApiVersion(VkPhysicalDevice physicalDevice)
@@ -669,7 +673,8 @@ VkResult createSwapchain(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    if ((support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0) {
+    if ((support.capabilities.supportedUsageFlags & RequiredSwapchainImageUsage)
+        != RequiredSwapchainImageUsage) {
         return VK_ERROR_FEATURE_NOT_PRESENT;
     }
 
@@ -696,7 +701,7 @@ VkResult createSwapchain(
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    createInfo.imageUsage = RequiredSwapchainImageUsage;
 
     const uint32_t queueFamilyIndices[] = {
         queueFamilies.traceFamily,
