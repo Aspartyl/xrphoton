@@ -21,6 +21,7 @@ constexpr const char* RequiredDeviceExtensions[] = {
     VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
     VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
 void printVulkanVersion(uint32_t version)
@@ -210,6 +211,14 @@ struct QueueFamilyIndices
     }
 };
 
+struct SwapchainSupportDetails
+{
+    VkSurfaceCapabilitiesKHR capabilities{};
+    std::vector<VkSurfaceFormatKHR> formats;
+    std::vector<VkPresentModeKHR> presentModes;
+    bool valid = false;
+};
+
 struct RayTracingFunctions
 {
     PFN_vkGetBufferDeviceAddressKHR getBufferDeviceAddress = nullptr;
@@ -312,6 +321,83 @@ bool areRequiredDeviceExtensionsAvailable(VkPhysicalDevice physicalDevice)
     return true;
 }
 
+SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+{
+    SwapchainSupportDetails support{};
+
+    VkResult result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        physicalDevice,
+        surface,
+        &support.capabilities);
+
+    if (result != VK_SUCCESS) {
+        return support;
+    }
+
+    uint32_t formatCount = 0;
+    result = vkGetPhysicalDeviceSurfaceFormatsKHR(
+        physicalDevice,
+        surface,
+        &formatCount,
+        nullptr);
+
+    if (result != VK_SUCCESS) {
+        return support;
+    }
+
+    support.formats.resize(formatCount);
+
+    if (formatCount > 0) {
+        result = vkGetPhysicalDeviceSurfaceFormatsKHR(
+            physicalDevice,
+            surface,
+            &formatCount,
+            support.formats.data());
+
+        if (result != VK_SUCCESS) {
+            return support;
+        }
+    }
+
+    uint32_t presentModeCount = 0;
+    result = vkGetPhysicalDeviceSurfacePresentModesKHR(
+        physicalDevice,
+        surface,
+        &presentModeCount,
+        nullptr);
+
+    if (result != VK_SUCCESS) {
+        return support;
+    }
+
+    support.presentModes.resize(presentModeCount);
+
+    if (presentModeCount > 0) {
+        result = vkGetPhysicalDeviceSurfacePresentModesKHR(
+            physicalDevice,
+            surface,
+            &presentModeCount,
+            support.presentModes.data());
+
+        if (result != VK_SUCCESS) {
+            return support;
+        }
+    }
+
+    support.valid = true;
+    return support;
+}
+
+bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+{
+    const SwapchainSupportDetails support = querySwapchainSupport(physicalDevice, surface);
+
+    return support.valid
+        && !support.formats.empty()
+        && !support.presentModes.empty()
+        && (support.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+}
+
 bool hasRequiredApiVersion(VkPhysicalDevice physicalDevice)
 {
     VkPhysicalDeviceProperties properties{};
@@ -350,6 +436,7 @@ bool isPhysicalDeviceSuitable(VkPhysicalDevice physicalDevice, VkSurfaceKHR surf
     return queueFamilies.isComplete()
         && hasRequiredApiVersion(physicalDevice)
         && areRequiredDeviceExtensionsAvailable(physicalDevice)
+        && hasRequiredSwapchainSupport(physicalDevice, surface)
         && areRequiredRayTracingFeaturesAvailable(physicalDevice);
 }
 
