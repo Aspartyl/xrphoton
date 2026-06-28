@@ -11,6 +11,10 @@ namespace xrphoton
 {
 namespace
 {
+// Device extensions every selected GPU must support and that the logical device
+// enables. The first five form the hardware ray tracing stack (acceleration
+// structures, the RT pipeline, and their prerequisites: buffer device address,
+// deferred host operations, pipeline libraries); the last is presentation.
 constexpr const char* RequiredDeviceExtensions[] = {
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
@@ -20,6 +24,9 @@ constexpr const char* RequiredDeviceExtensions[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
+// Sink for validation-layer messages. Returning VK_FALSE tells Vulkan not to abort the
+// triggering call (the convention for non-fatal reporting). Severity/type are unused;
+// makeDebugMessengerCreateInfo already filters to warnings and errors.
 VKAPI_ATTR VkBool32 VKAPI_CALL debugMessengerCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -34,6 +41,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugMessengerCallback(
     return VK_FALSE;
 }
 
+// True only if every entry in RequiredDeviceExtensions is advertised by the device.
 bool areRequiredDeviceExtensionsAvailable(VkPhysicalDevice physicalDevice)
 {
     uint32_t extensionCount = 0;
@@ -80,6 +88,10 @@ bool hasRequiredApiVersion(VkPhysicalDevice physicalDevice)
     return properties.apiVersion >= RequiredApiVersion;
 }
 
+// Query the ray tracing feature chain and confirm the device actually enables the
+// three capabilities the renderer depends on. The structs are linked through pNext so a
+// single vkGetPhysicalDeviceFeatures2 call fills them all; createLogicalDevice later
+// re-uses the same chain shape to turn the features on.
 bool areRequiredRayTracingFeaturesAvailable(VkPhysicalDevice physicalDevice)
 {
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
@@ -104,6 +116,9 @@ bool areRequiredRayTracingFeaturesAvailable(VkPhysicalDevice physicalDevice)
         && rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
 }
 
+// Aggregate suitability test used by pickPhysicalDevice. Ordered cheapest-first so the
+// short-circuiting && skips the more expensive enumeration/feature queries once a device
+// has already failed an earlier check.
 bool isPhysicalDeviceSuitable(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
 {
     const QueueFamilyIndices queueFamilies = findQueueFamilies(physicalDevice, surface);
@@ -225,6 +240,8 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceK
 
     QueueFamilyIndices indices{};
 
+    // Take the first family satisfying each role; a single family may fill both. The
+    // loop stops as soon as both have been found, so later families are not inspected.
     for (uint32_t index = 0; index < queueFamilyCount; ++index) {
         if (!indices.hasTraceFamily && (queueFamilies[index].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
             indices.traceFamily = index;
@@ -293,6 +310,8 @@ VkResult createLogicalDevice(
 {
     const float queuePriority = 1.0f;
 
+    // Build one VkDeviceQueueCreateInfo per *distinct* family: requesting the same
+    // family twice is invalid, and trace/present often resolve to the same index.
     std::vector<uint32_t> uniqueQueueFamilies;
     const auto addUniqueQueueFamily = [&uniqueQueueFamilies](uint32_t queueFamily) {
         for (uint32_t existingQueueFamily : uniqueQueueFamilies) {
@@ -319,6 +338,9 @@ VkResult createLogicalDevice(
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
+    // Enable the same feature chain that areRequiredRayTracingFeaturesAvailable verified,
+    // this time with the flags set to VK_TRUE so the device exposes them. The chain is
+    // passed through VkPhysicalDeviceFeatures2 on the create info's pNext.
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
     bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
     bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
@@ -393,6 +415,8 @@ VkResult createFrameSyncObjects(
         return result;
     }
 
+    // Created already signaled so the very first drawFrame can wait on it without
+    // deadlocking (there is no prior submission to signal it).
     VkFenceCreateInfo fenceCreateInfo{};
     fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
@@ -400,6 +424,7 @@ VkResult createFrameSyncObjects(
     result = vkCreateFence(device, &fenceCreateInfo, nullptr, inFlightFence);
 
     if (result != VK_SUCCESS) {
+        // Roll back the semaphore so a failed call leaves no half-built sync state.
         vkDestroySemaphore(device, *imageAvailableSemaphore, nullptr);
         *imageAvailableSemaphore = VK_NULL_HANDLE;
         return result;
@@ -434,6 +459,9 @@ bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions)
 
 VulkanContext::~VulkanContext()
 {
+    // Tear down in reverse creation order. Each handle is null-guarded so this runs
+    // correctly no matter how far bring-up got before a failure path returned. Wait for
+    // the device to finish any in-flight work before destroying anything it owns.
     if (device != VK_NULL_HANDLE) {
         (void)vkDeviceWaitIdle(device);
     }

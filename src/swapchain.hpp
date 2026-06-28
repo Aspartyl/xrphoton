@@ -29,7 +29,15 @@ struct Swapchain
     ~Swapchain();
 };
 
+// Part of device suitability: true if the surface exposes at least one format and
+// present mode and supports the image usages the render path needs. Kept here (rather
+// than in vulkan_context) so physical-device selection and swapchain creation share
+// one definition of "adequate swapchain support".
 bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
+
+// Populate *swap with a fresh swapchain, its image views, and one render-finished
+// semaphore per image. On failure the partially built resources are owned by *swap and
+// torn down by ~Swapchain (or the next recreateSwapchain), so the caller need not unwind.
 VkResult createSwapchainResources(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,
@@ -37,6 +45,11 @@ VkResult createSwapchainResources(
     VkSurfaceKHR surface,
     GLFWwindow* window,
     const QueueFamilyIndices& queueFamilies);
+
+// Rebuild the swapchain after a resize / out-of-date surface: wait until the window has
+// a drawable (non-zero) framebuffer, idle the device, destroy the old resources, then
+// create new ones. Blocking on a minimized window is expected. Returns VK_SUCCESS
+// (leaving *swap empty) if the window is closing while waiting.
 VkResult recreateSwapchain(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,

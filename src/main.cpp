@@ -18,6 +18,11 @@ constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
 
+// Record the entire (placeholder) frame into a one-time-submit command buffer:
+//   1. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
+//   2. clear it to a solid dark red,
+//   3. barrier TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR for presentation.
+// This is the seed of the renderer; real ray tracing output will replace the clear.
 VkResult recordClearSwapchainImageCommandBuffer(
     VkCommandBuffer commandBuffer,
     VkImage swapchainImage)
@@ -39,6 +44,10 @@ VkResult recordClearSwapchainImageCommandBuffer(
     colorRange.baseArrayLayer = 0;
     colorRange.layerCount = 1;
 
+    // Transition into a layout the clear can write. oldLayout UNDEFINED discards the
+    // previous contents (we overwrite the whole image anyway). srcStageMask is TRANSFER
+    // to match the acquire semaphore's wait stage in drawFrame, so the transition cannot
+    // begin before the image has actually been acquired.
     VkImageMemoryBarrier transferBarrier{};
     transferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     transferBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -61,6 +70,7 @@ VkResult recordClearSwapchainImageCommandBuffer(
         1,
         &transferBarrier);
 
+    // The placeholder frame color (linear RGBA): a dark red.
     VkClearColorValue clearColor = {
         {
             0.24f,
@@ -78,6 +88,9 @@ VkResult recordClearSwapchainImageCommandBuffer(
         1,
         &colorRange);
 
+    // Transition into the layout the presentation engine requires. The dstStageMask is
+    // BOTTOM_OF_PIPE because no further GPU stage consumes the image; the render-finished
+    // semaphore signaled at submit is what the present actually waits on.
     VkImageMemoryBarrier presentBarrier{};
     presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     presentBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -103,12 +116,19 @@ VkResult recordClearSwapchainImageCommandBuffer(
     return vkEndCommandBuffer(commandBuffer);
 }
 
+// Render and present one frame (a single frame in flight). Steps: wait the in-flight
+// fence -> acquire an image -> record and submit the clear -> present. OUT_OF_DATE and
+// SUBOPTIMAL are returned (not treated as errors) so main() can trigger a swapchain
+// recreate; a successful frame returns the acquire result so a SUBOPTIMAL acquire still
+// propagates. Any other non-success VkResult is a hard error.
 VkResult drawFrame(
     VulkanContext& ctx,
     Swapchain& swap,
     VkQueue traceQueue,
     VkQueue presentQueue)
 {
+    // Block until the previous frame's submission has completed before reusing its
+    // command buffer and sync objects.
     VkResult result = vkWaitForFences(
         ctx.device,
         1,
@@ -137,13 +157,18 @@ VkResult drawFrame(
         return result;
     }
 
+    // Preserve the acquire result (may be SUBOPTIMAL) to return on the success path.
     const VkResult acquireResult = result;
 
+    // Defend against a driver returning an out-of-range index before indexing the
+    // per-image vectors.
     if (imageIndex >= swap.images.size()
         || imageIndex >= swap.renderFinishedSemaphores.size()) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
+    // Signal completion on the semaphore tied to this specific image (see
+    // createRenderFinishedSemaphores), which present then waits on.
     const VkSemaphore renderFinishedSemaphore = swap.renderFinishedSemaphores[imageIndex];
 
     result = vkResetCommandBuffer(ctx.commandBuffer, 0);
@@ -160,12 +185,17 @@ VkResult drawFrame(
         return result;
     }
 
+    // Reset the fence to unsignaled only now that recording succeeded and a submit is
+    // guaranteed to follow — otherwise the next frame's wait would block forever.
     result = vkResetFences(ctx.device, 1, &ctx.inFlightFence);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
+    // Submission waits on the image-available semaphore at the TRANSFER stage, matching
+    // the first barrier's srcStageMask, and signals the per-image render-finished
+    // semaphore. The fence is signaled when the whole submission completes.
     const VkSemaphore waitSemaphores[] = {
         ctx.imageAvailableSemaphore,
     };
@@ -214,15 +244,22 @@ VkResult drawFrame(
         return result;
     }
 
+    // Frame succeeded; surface a SUBOPTIMAL acquire (if any) so the caller can still
+    // decide to recreate the swapchain.
     return acquireResult;
 }
 
 } // namespace
 
+// Program entry point and orchestration: bring up GLFW and Vulkan in dependency order,
+// then run the render loop. Resources are owned by the RAII VulkanContext / Swapchain,
+// so every failure path is a bare `return 1;` and cleanup happens in their destructors.
 int main()
 {
     std::cout << "xrPhoton booting...\n";
 
+    // Declared first so it outlives (and is destroyed after) the Swapchain below; it
+    // collects handles as they are created and tears them down on any early return.
     VulkanContext ctx;
 
     if (glfwInit() != GLFW_TRUE) {
@@ -239,6 +276,9 @@ int main()
 
     std::cout << "Initialized GLFW with Vulkan support.\n";
 
+    // GLFW_NO_API: Vulkan manages the surface, not GLFW's GL context. Created hidden
+    // (GLFW_VISIBLE false) and shown only after the first frame presents, so the window
+    // never flashes blank during bring-up.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
@@ -295,6 +335,8 @@ int main()
         return 1;
     }
 
+    // The instance extension set is GLFW's required surface extensions plus debug-utils
+    // (for the validation messenger). Each is verified available before use.
     std::vector<const char*> enabledExtensions(
         glfwExtensions,
         glfwExtensions + glfwExtensionCount);
@@ -327,6 +369,8 @@ int main()
 
     VkDebugUtilsMessengerCreateInfoEXT debugMessengerCreateInfo = makeDebugMessengerCreateInfo();
 
+    // Chaining the debug-messenger info via pNext makes validation cover the instance's
+    // own creation and destruction, before/after the standalone messenger exists.
     VkInstanceCreateInfo instanceCreateInfo{};
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceCreateInfo.pNext = &debugMessengerCreateInfo;
@@ -416,7 +460,8 @@ int main()
     vkGetDeviceQueue(ctx.device, queueFamilies.presentFamily, 0, &presentQueue);
     std::cout << "Retrieved Vulkan present queue.\n";
 
-    // Declared after ctx so it destructs first — before ctx's device/surface.
+    // Declared after ctx so it destructs first — before ctx's device/surface, which it
+    // borrows but does not own.
     Swapchain swap;
     const VkResult swapchainResult = createSwapchainResources(
         &swap,
@@ -474,6 +519,7 @@ int main()
 
     std::cout << "Entering GLFW event loop.\n";
 
+    // Shown lazily after the first successful present (see GLFW_VISIBLE above).
     bool windowShown = false;
 
     while (!glfwWindowShouldClose(ctx.window)) {
@@ -485,6 +531,8 @@ int main()
             traceQueue,
             presentQueue);
 
+        // The surface no longer matches the swapchain (typically a resize): rebuild it
+        // and skip presenting this frame.
         if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
             || frameResult == VK_SUBOPTIMAL_KHR) {
             const VkResult recreateResult = recreateSwapchain(

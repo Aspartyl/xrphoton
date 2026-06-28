@@ -12,10 +12,15 @@ namespace xrphoton
 {
 namespace
 {
+// Image usages the swapchain images must support: TRANSFER_DST for the clear/blit that
+// produces each frame, and COLOR_ATTACHMENT to keep the door open for attachment-based
+// rendering later. A surface lacking either is rejected.
 constexpr VkImageUsageFlags RequiredSwapchainImageUsage =
     VK_IMAGE_USAGE_TRANSFER_DST_BIT
     | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
+// Everything queried about a surface in one shot. `valid` is false if any of the
+// underlying queries failed, so callers can treat a half-filled struct as "unsupported".
 struct SwapchainSupportDetails
 {
     VkSurfaceCapabilitiesKHR capabilities{};
@@ -24,6 +29,8 @@ struct SwapchainSupportDetails
     bool valid = false;
 };
 
+// Gather surface capabilities, formats, and present modes. Returns with valid == false
+// (the default) on the first failing query; valid is set only after all three succeed.
 SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
 {
     SwapchainSupportDetails support{};
@@ -91,6 +98,8 @@ SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice physicalDevice, V
     return support;
 }
 
+// Prefer 8-bit BGRA sRGB (the common, correctly gamma-managed choice); otherwise accept
+// whatever the surface lists first. Callers guarantee `formats` is non-empty.
 VkSurfaceFormatKHR chooseSwapchainSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
 {
     for (const VkSurfaceFormatKHR& format : formats) {
@@ -103,6 +112,8 @@ VkSurfaceFormatKHR chooseSwapchainSurfaceFormat(const std::vector<VkSurfaceForma
     return formats[0];
 }
 
+// Prefer mailbox (low-latency, no tearing) when available; fall back to FIFO, which the
+// spec guarantees is always supported.
 VkPresentModeKHR chooseSwapchainPresentMode(const std::vector<VkPresentModeKHR>& presentModes)
 {
     for (VkPresentModeKHR presentMode : presentModes) {
@@ -114,6 +125,10 @@ VkPresentModeKHR chooseSwapchainPresentMode(const std::vector<VkPresentModeKHR>&
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+// Resolve the swapchain extent. When the surface dictates a fixed size, currentExtent is
+// that size; the special value 0xFFFFFFFF means "pick your own", in which case we take
+// the window's framebuffer size clamped to the surface's min/max. Returns false if the
+// framebuffer has zero area (e.g. minimized), which the caller treats as "try later".
 bool chooseSwapchainExtent(
     const VkSurfaceCapabilitiesKHR& capabilities,
     GLFWwindow* window,
@@ -144,6 +159,8 @@ bool chooseSwapchainExtent(
     return true;
 }
 
+// Pick a composite-alpha mode the surface supports, preferring OPAQUE (the window is
+// not blended with whatever is behind it). The list is in priority order.
 VkCompositeAlphaFlagBitsKHR chooseSwapchainCompositeAlpha(VkCompositeAlphaFlagsKHR supportedCompositeAlpha)
 {
     constexpr VkCompositeAlphaFlagBitsKHR PreferredCompositeAlphaModes[] = {
@@ -162,6 +179,8 @@ VkCompositeAlphaFlagBitsKHR chooseSwapchainCompositeAlpha(VkCompositeAlphaFlagsK
     return VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 }
 
+// Create the VkSwapchainKHR itself and read back its images, recording the chosen
+// format and extent into *swap. Image views and semaphores are added by the caller.
 VkResult createSwapchain(
     VkPhysicalDevice physicalDevice,
     VkDevice device,
@@ -189,6 +208,8 @@ VkResult createSwapchain(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
+    // Request one more than the minimum so the app isn't forced to wait on the driver
+    // releasing an image. maxImageCount == 0 means "no upper bound"; otherwise clamp.
     uint32_t imageCount = support.capabilities.minImageCount + 1;
 
     if (support.capabilities.maxImageCount > 0
@@ -206,6 +227,9 @@ VkResult createSwapchain(
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = RequiredSwapchainImageUsage;
 
+    // If trace and present are different families, the images are written by one and
+    // presented by the other, so they must be shared CONCURRENT across both. When the
+    // families coincide, EXCLUSIVE is both valid and faster.
     const uint32_t queueFamilyIndices[] = {
         queueFamilies.traceFamily,
         queueFamilies.presentFamily,
@@ -251,6 +275,8 @@ VkResult createSwapchain(
     return VK_SUCCESS;
 }
 
+// Create one 2D color image view per swapchain image. On any failure every view created
+// so far is destroyed and the output cleared, so the caller never sees a partial set.
 VkResult createSwapchainImageViews(
     VkDevice device,
     const std::vector<VkImage>& swapchainImages,
@@ -297,6 +323,8 @@ VkResult createSwapchainImageViews(
     return VK_SUCCESS;
 }
 
+// Destroy every render-finished semaphore and empty the vector. Null-guarded so it is
+// safe to call on a partially constructed set during error cleanup.
 void destroyRenderFinishedSemaphores(VkDevice device, std::vector<VkSemaphore>* semaphores)
 {
     for (VkSemaphore semaphore : *semaphores) {
@@ -308,6 +336,9 @@ void destroyRenderFinishedSemaphores(VkDevice device, std::vector<VkSemaphore>* 
     semaphores->clear();
 }
 
+// Create one render-finished semaphore per swapchain image. These are per-image (not
+// per-frame-in-flight) because a present is signaled against the specific acquired
+// image. Rolls back all semaphores on failure.
 VkResult createRenderFinishedSemaphores(
     VkDevice device,
     size_t semaphoreCount,
@@ -335,6 +366,9 @@ VkResult createRenderFinishedSemaphores(
     return VK_SUCCESS;
 }
 
+// Single teardown path shared by recreateSwapchain and ~Swapchain: destroy children in
+// reverse creation order and reset *swap to its empty state. Does not touch the
+// borrowed (non-owning) device handle. Callers are responsible for device idle first.
 void destroySwapchainResources(Swapchain* swap)
 {
     VkDevice device = swap->device;
@@ -359,6 +393,9 @@ void destroySwapchainResources(Swapchain* swap)
     swap->extent = {};
 }
 
+// Block (pumping events) until the window has a non-zero framebuffer, e.g. while it is
+// minimized, since a zero-area swapchain cannot be created. Returns false if the window
+// is asked to close while waiting, so the caller can bail out of recreation.
 bool waitForDrawableFramebuffer(GLFWwindow* window)
 {
     int framebufferWidth = 0;
@@ -470,11 +507,17 @@ VkResult recreateSwapchain(
 
 Swapchain::~Swapchain()
 {
+    // A default-constructed / already-moved-from Swapchain never received a device and
+    // owns nothing, so there is nothing to wait on or destroy.
     if (device == VK_NULL_HANDLE) {
         return;
     }
 
+    // Ensure no in-flight frame still references these resources before destroying them.
     (void)vkDeviceWaitIdle(device);
+
+    // Capture what existed up front so the post-teardown log lines reflect the resources
+    // that were actually present (destroySwapchainResources clears the containers).
 
     const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
     const bool hadImageViews = !imageViews.empty();
