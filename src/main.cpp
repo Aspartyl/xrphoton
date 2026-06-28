@@ -142,10 +142,10 @@ void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT de
     }
 }
 
-struct VulkanContext;
+struct Swapchain;
 
 void destroyRenderFinishedSemaphores(VkDevice device, std::vector<VkSemaphore>* semaphores);
-void destroySwapchainResources(VkDevice device, VulkanContext* ctx);
+void destroySwapchainResources(Swapchain* swapchain);
 
 struct VulkanContext
 {
@@ -155,15 +155,9 @@ struct VulkanContext
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    std::vector<VkImage> swapchainImages;
-    std::vector<VkImageView> swapchainImageViews;
-    VkFormat swapchainImageFormat = VK_FORMAT_UNDEFINED;
-    VkExtent2D swapchainExtent{};
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
-    std::vector<VkSemaphore> renderFinishedSemaphores;
     VkFence inFlightFence = VK_NULL_HANDLE;
 
     VulkanContext() = default;
@@ -181,14 +175,6 @@ struct VulkanContext
             std::cout << "Destroyed Vulkan in-flight fence.\n";
         }
 
-        if (device != VK_NULL_HANDLE) {
-            const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
-            destroyRenderFinishedSemaphores(device, &renderFinishedSemaphores);
-            if (hadRenderFinishedSemaphores) {
-                std::cout << "Destroyed Vulkan render-finished semaphores.\n";
-            }
-        }
-
         if (imageAvailableSemaphore != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
             vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
             std::cout << "Destroyed Vulkan image-available semaphore.\n";
@@ -204,18 +190,6 @@ struct VulkanContext
         if (commandPool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device, commandPool, nullptr);
             std::cout << "Destroyed Vulkan command pool.\n";
-        }
-
-        if (device != VK_NULL_HANDLE) {
-            const bool hadSwapchainImageViews = !swapchainImageViews.empty();
-            const bool hadSwapchain = swapchain != VK_NULL_HANDLE;
-            destroySwapchainResources(device, this);
-            if (hadSwapchainImageViews) {
-                std::cout << "Destroyed Vulkan swapchain image views.\n";
-            }
-            if (hadSwapchain) {
-                std::cout << "Destroyed Vulkan swapchain.\n";
-            }
         }
 
         if (device != VK_NULL_HANDLE) {
@@ -246,6 +220,48 @@ struct VulkanContext
         if (glfwInitialized) {
             glfwTerminate();
             std::cout << "Terminated GLFW.\n";
+        }
+    }
+};
+
+// Swapchain owns the resources recreated on resize. Its VkDevice is non-owning
+// (borrowed from VulkanContext) and is used only to destroy the children below.
+struct Swapchain
+{
+    VkDevice device = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    std::vector<VkImage> images;
+    std::vector<VkImageView> imageViews;
+    VkFormat imageFormat = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent{};
+    std::vector<VkSemaphore> renderFinishedSemaphores;
+
+    Swapchain() = default;
+    Swapchain(const Swapchain&) = delete;
+    Swapchain& operator=(const Swapchain&) = delete;
+
+    ~Swapchain()
+    {
+        if (device == VK_NULL_HANDLE) {
+            return;
+        }
+
+        (void)vkDeviceWaitIdle(device);
+
+        const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
+        const bool hadImageViews = !imageViews.empty();
+        const bool hadSwapchain = swapchain != VK_NULL_HANDLE;
+
+        destroySwapchainResources(this);
+
+        if (hadRenderFinishedSemaphores) {
+            std::cout << "Destroyed Vulkan render-finished semaphores.\n";
+        }
+        if (hadImageViews) {
+            std::cout << "Destroyed Vulkan swapchain image views.\n";
+        }
+        if (hadSwapchain) {
+            std::cout << "Destroyed Vulkan swapchain.\n";
         }
     }
 };
@@ -665,10 +681,7 @@ VkResult createSwapchain(
     VkSurfaceKHR surface,
     GLFWwindow* window,
     const QueueFamilyIndices& queueFamilies,
-    VkSwapchainKHR* swapchain,
-    std::vector<VkImage>* swapchainImages,
-    VkFormat* swapchainImageFormat,
-    VkExtent2D* swapchainExtent)
+    Swapchain* swap)
 {
     const SwapchainSupportDetails support = querySwapchainSupport(physicalDevice, surface);
 
@@ -725,28 +738,28 @@ VkResult createSwapchain(
     createInfo.clipped = VK_TRUE;
     createInfo.oldSwapchain = VK_NULL_HANDLE;
 
-    VkResult result = vkCreateSwapchainKHR(device, &createInfo, nullptr, swapchain);
+    VkResult result = vkCreateSwapchainKHR(device, &createInfo, nullptr, &swap->swapchain);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
-    result = vkGetSwapchainImagesKHR(device, *swapchain, &imageCount, nullptr);
+    result = vkGetSwapchainImagesKHR(device, swap->swapchain, &imageCount, nullptr);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
-    swapchainImages->resize(imageCount);
+    swap->images.resize(imageCount);
 
-    result = vkGetSwapchainImagesKHR(device, *swapchain, &imageCount, swapchainImages->data());
+    result = vkGetSwapchainImagesKHR(device, swap->swapchain, &imageCount, swap->images.data());
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
-    *swapchainImageFormat = surfaceFormat.format;
-    *swapchainExtent = extent;
+    swap->imageFormat = surfaceFormat.format;
+    swap->extent = extent;
 
     return VK_SUCCESS;
 }
@@ -835,24 +848,28 @@ VkResult createRenderFinishedSemaphores(
     return VK_SUCCESS;
 }
 
-void destroySwapchainResources(VkDevice device, VulkanContext* ctx)
+void destroySwapchainResources(Swapchain* swap)
 {
-    for (VkImageView imageView : ctx->swapchainImageViews) {
+    VkDevice device = swap->device;
+
+    destroyRenderFinishedSemaphores(device, &swap->renderFinishedSemaphores);
+
+    for (VkImageView imageView : swap->imageViews) {
         if (imageView != VK_NULL_HANDLE) {
             vkDestroyImageView(device, imageView, nullptr);
         }
     }
 
-    ctx->swapchainImageViews.clear();
+    swap->imageViews.clear();
 
-    if (ctx->swapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(device, ctx->swapchain, nullptr);
-        ctx->swapchain = VK_NULL_HANDLE;
+    if (swap->swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device, swap->swapchain, nullptr);
+        swap->swapchain = VK_NULL_HANDLE;
     }
 
-    ctx->swapchainImages.clear();
-    ctx->swapchainImageFormat = VK_FORMAT_UNDEFINED;
-    ctx->swapchainExtent = {};
+    swap->images.clear();
+    swap->imageFormat = VK_FORMAT_UNDEFINED;
+    swap->extent = {};
 }
 
 bool waitForDrawableFramebuffer(GLFWwindow* window)
@@ -870,64 +887,83 @@ bool waitForDrawableFramebuffer(GLFWwindow* window)
     return !glfwWindowShouldClose(window);
 }
 
-VkResult recreateSwapchain(
+VkResult createSwapchainResources(
+    Swapchain* swap,
     VkPhysicalDevice physicalDevice,
-    const QueueFamilyIndices& queueFamilies,
-    VulkanContext* ctx)
+    VkDevice device,
+    VkSurfaceKHR surface,
+    GLFWwindow* window,
+    const QueueFamilyIndices& queueFamilies)
 {
-    if (!waitForDrawableFramebuffer(ctx->window)) {
-        return VK_SUCCESS;
-    }
+    // Set the (non-owning) device first, before any child object is created, so a
+    // partial failure below still cleans up via destroySwapchainResources / ~Swapchain.
+    swap->device = device;
 
-    VkResult result = vkDeviceWaitIdle(ctx->device);
-
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    destroyRenderFinishedSemaphores(ctx->device, &ctx->renderFinishedSemaphores);
-    destroySwapchainResources(ctx->device, ctx);
-
-    result = createSwapchain(
+    VkResult result = createSwapchain(
         physicalDevice,
-        ctx->device,
-        ctx->surface,
-        ctx->window,
+        device,
+        surface,
+        window,
         queueFamilies,
-        &ctx->swapchain,
-        &ctx->swapchainImages,
-        &ctx->swapchainImageFormat,
-        &ctx->swapchainExtent);
+        swap);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
     result = createSwapchainImageViews(
-        ctx->device,
-        ctx->swapchainImages,
-        ctx->swapchainImageFormat,
-        &ctx->swapchainImageViews);
+        device,
+        swap->images,
+        swap->imageFormat,
+        &swap->imageViews);
 
     if (result != VK_SUCCESS) {
-        destroySwapchainResources(ctx->device, ctx);
         return result;
     }
 
-    result = createRenderFinishedSemaphores(
-        ctx->device,
-        ctx->swapchainImages.size(),
-        &ctx->renderFinishedSemaphores);
+    return createRenderFinishedSemaphores(
+        device,
+        swap->images.size(),
+        &swap->renderFinishedSemaphores);
+}
+
+VkResult recreateSwapchain(
+    Swapchain* swap,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    VkSurfaceKHR surface,
+    GLFWwindow* window,
+    const QueueFamilyIndices& queueFamilies)
+{
+    if (!waitForDrawableFramebuffer(window)) {
+        return VK_SUCCESS;
+    }
+
+    VkResult result = vkDeviceWaitIdle(device);
 
     if (result != VK_SUCCESS) {
-        destroySwapchainResources(ctx->device, ctx);
+        return result;
+    }
+
+    destroySwapchainResources(swap);
+
+    result = createSwapchainResources(
+        swap,
+        physicalDevice,
+        device,
+        surface,
+        window,
+        queueFamilies);
+
+    if (result != VK_SUCCESS) {
+        destroySwapchainResources(swap);
         return result;
     }
 
     std::cout << "Recreated Vulkan swapchain with "
-              << ctx->swapchainImages.size() << " images ("
-              << ctx->swapchainExtent.width << 'x'
-              << ctx->swapchainExtent.height << ").\n";
+              << swap->images.size() << " images ("
+              << swap->extent.width << 'x'
+              << swap->extent.height << ").\n";
 
     return VK_SUCCESS;
 }
@@ -959,11 +995,12 @@ VkResult allocateCommandBuffer(
     return vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffer);
 }
 
+// Per-frame sync owned by VulkanContext: the image-available semaphore and the
+// in-flight fence. The per-image render-finished semaphores live with the Swapchain
+// (created in createSwapchainResources) since their count tracks the swapchain.
 VkResult createFrameSyncObjects(
     VkDevice device,
-    size_t swapchainImageCount,
     VkSemaphore* imageAvailableSemaphore,
-    std::vector<VkSemaphore>* renderFinishedSemaphores,
     VkFence* inFlightFence)
 {
     VkSemaphoreCreateInfo semaphoreCreateInfo{};
@@ -979,17 +1016,6 @@ VkResult createFrameSyncObjects(
         return result;
     }
 
-    result = createRenderFinishedSemaphores(
-        device,
-        swapchainImageCount,
-        renderFinishedSemaphores);
-
-    if (result != VK_SUCCESS) {
-        vkDestroySemaphore(device, *imageAvailableSemaphore, nullptr);
-        *imageAvailableSemaphore = VK_NULL_HANDLE;
-        return result;
-    }
-
     VkFenceCreateInfo fenceCreateInfo{};
     fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
@@ -997,7 +1023,6 @@ VkResult createFrameSyncObjects(
     result = vkCreateFence(device, &fenceCreateInfo, nullptr, inFlightFence);
 
     if (result != VK_SUCCESS) {
-        destroyRenderFinishedSemaphores(device, renderFinishedSemaphores);
         vkDestroySemaphore(device, *imageAvailableSemaphore, nullptr);
         *imageAvailableSemaphore = VK_NULL_HANDLE;
         return result;
@@ -1091,12 +1116,16 @@ VkResult recordClearSwapchainImageCommandBuffer(
     return vkEndCommandBuffer(commandBuffer);
 }
 
-VkResult drawFrame(VulkanContext* ctx, VkQueue traceQueue, VkQueue presentQueue)
+VkResult drawFrame(
+    VulkanContext& ctx,
+    Swapchain& swap,
+    VkQueue traceQueue,
+    VkQueue presentQueue)
 {
     VkResult result = vkWaitForFences(
-        ctx->device,
+        ctx.device,
         1,
-        &ctx->inFlightFence,
+        &ctx.inFlightFence,
         VK_TRUE,
         std::numeric_limits<uint64_t>::max());
 
@@ -1106,10 +1135,10 @@ VkResult drawFrame(VulkanContext* ctx, VkQueue traceQueue, VkQueue presentQueue)
 
     uint32_t imageIndex = 0;
     result = vkAcquireNextImageKHR(
-        ctx->device,
-        ctx->swapchain,
+        ctx.device,
+        swap.swapchain,
         std::numeric_limits<uint64_t>::max(),
-        ctx->imageAvailableSemaphore,
+        ctx.imageAvailableSemaphore,
         VK_NULL_HANDLE,
         &imageIndex);
 
@@ -1123,35 +1152,35 @@ VkResult drawFrame(VulkanContext* ctx, VkQueue traceQueue, VkQueue presentQueue)
 
     const VkResult acquireResult = result;
 
-    if (imageIndex >= ctx->swapchainImages.size()
-        || imageIndex >= ctx->renderFinishedSemaphores.size()) {
+    if (imageIndex >= swap.images.size()
+        || imageIndex >= swap.renderFinishedSemaphores.size()) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    const VkSemaphore renderFinishedSemaphore = ctx->renderFinishedSemaphores[imageIndex];
+    const VkSemaphore renderFinishedSemaphore = swap.renderFinishedSemaphores[imageIndex];
 
-    result = vkResetCommandBuffer(ctx->commandBuffer, 0);
+    result = vkResetCommandBuffer(ctx.commandBuffer, 0);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
     result = recordClearSwapchainImageCommandBuffer(
-        ctx->commandBuffer,
-        ctx->swapchainImages[imageIndex]);
+        ctx.commandBuffer,
+        swap.images[imageIndex]);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
-    result = vkResetFences(ctx->device, 1, &ctx->inFlightFence);
+    result = vkResetFences(ctx.device, 1, &ctx.inFlightFence);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
     const VkSemaphore waitSemaphores[] = {
-        ctx->imageAvailableSemaphore,
+        ctx.imageAvailableSemaphore,
     };
     const VkPipelineStageFlags waitStages[] = {
         VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1166,18 +1195,18 @@ VkResult drawFrame(VulkanContext* ctx, VkQueue traceQueue, VkQueue presentQueue)
     submitInfo.pWaitSemaphores = waitSemaphores;
     submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &ctx->commandBuffer;
+    submitInfo.pCommandBuffers = &ctx.commandBuffer;
     submitInfo.signalSemaphoreCount = static_cast<uint32_t>(std::size(signalSemaphores));
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    result = vkQueueSubmit(traceQueue, 1, &submitInfo, ctx->inFlightFence);
+    result = vkQueueSubmit(traceQueue, 1, &submitInfo, ctx.inFlightFence);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
     const VkSwapchainKHR swapchains[] = {
-        ctx->swapchain,
+        swap.swapchain,
     };
 
     VkPresentInfoKHR presentInfo{};
@@ -1423,16 +1452,15 @@ int main()
     vkGetDeviceQueue(ctx.device, queueFamilies.presentFamily, 0, &presentQueue);
     std::cout << "Retrieved Vulkan present queue.\n";
 
-    const VkResult swapchainResult = createSwapchain(
+    // Declared after ctx so it destructs first — before ctx's device/surface.
+    Swapchain swap;
+    const VkResult swapchainResult = createSwapchainResources(
+        &swap,
         physicalDevice,
         ctx.device,
         ctx.surface,
         ctx.window,
-        queueFamilies,
-        &ctx.swapchain,
-        &ctx.swapchainImages,
-        &ctx.swapchainImageFormat,
-        &ctx.swapchainExtent);
+        queueFamilies);
 
     if (swapchainResult != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan swapchain.\n";
@@ -1440,22 +1468,9 @@ int main()
     }
 
     std::cout << "Created Vulkan swapchain with "
-              << ctx.swapchainImages.size() << " images ("
-              << ctx.swapchainExtent.width << 'x'
-              << ctx.swapchainExtent.height << ").\n";
-
-    const VkResult swapchainImageViewsResult = createSwapchainImageViews(
-        ctx.device,
-        ctx.swapchainImages,
-        ctx.swapchainImageFormat,
-        &ctx.swapchainImageViews);
-
-    if (swapchainImageViewsResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan swapchain image views.\n";
-        return 1;
-    }
-
-    std::cout << "Created Vulkan swapchain image views.\n";
+              << swap.images.size() << " images ("
+              << swap.extent.width << 'x'
+              << swap.extent.height << ").\n";
 
     const VkResult commandPoolResult = createCommandPool(
         ctx.device,
@@ -1483,9 +1498,7 @@ int main()
 
     const VkResult syncObjectsResult = createFrameSyncObjects(
         ctx.device,
-        ctx.swapchainImages.size(),
         &ctx.imageAvailableSemaphore,
-        &ctx.renderFinishedSemaphores,
         &ctx.inFlightFence);
 
     if (syncObjectsResult != VK_SUCCESS) {
@@ -1503,16 +1516,20 @@ int main()
         glfwPollEvents();
 
         const VkResult frameResult = drawFrame(
-            &ctx,
+            ctx,
+            swap,
             traceQueue,
             presentQueue);
 
         if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
             || frameResult == VK_SUBOPTIMAL_KHR) {
             const VkResult recreateResult = recreateSwapchain(
+                &swap,
                 physicalDevice,
-                queueFamilies,
-                &ctx);
+                ctx.device,
+                ctx.surface,
+                ctx.window,
+                queueFamilies);
 
             if (recreateResult != VK_SUCCESS) {
                 std::cerr << "Failed to recreate Vulkan swapchain.\n";
