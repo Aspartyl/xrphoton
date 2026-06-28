@@ -789,6 +789,92 @@ VkResult createSwapchainImageViews(
     return VK_SUCCESS;
 }
 
+void destroySwapchainResources(VkDevice device, VulkanContext* ctx)
+{
+    for (VkImageView imageView : ctx->swapchainImageViews) {
+        if (imageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, imageView, nullptr);
+        }
+    }
+
+    ctx->swapchainImageViews.clear();
+
+    if (ctx->swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device, ctx->swapchain, nullptr);
+        ctx->swapchain = VK_NULL_HANDLE;
+    }
+
+    ctx->swapchainImages.clear();
+    ctx->swapchainImageFormat = VK_FORMAT_UNDEFINED;
+    ctx->swapchainExtent = {};
+}
+
+bool waitForDrawableFramebuffer(GLFWwindow* window)
+{
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+
+    while (!glfwWindowShouldClose(window)
+        && (framebufferWidth <= 0 || framebufferHeight <= 0)) {
+        glfwWaitEvents();
+        glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+    }
+
+    return !glfwWindowShouldClose(window);
+}
+
+VkResult recreateSwapchain(
+    VkPhysicalDevice physicalDevice,
+    const QueueFamilyIndices& queueFamilies,
+    VulkanContext* ctx)
+{
+    if (!waitForDrawableFramebuffer(ctx->window)) {
+        return VK_SUCCESS;
+    }
+
+    VkResult result = vkDeviceWaitIdle(ctx->device);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    destroySwapchainResources(ctx->device, ctx);
+
+    result = createSwapchain(
+        physicalDevice,
+        ctx->device,
+        ctx->surface,
+        ctx->window,
+        queueFamilies,
+        &ctx->swapchain,
+        &ctx->swapchainImages,
+        &ctx->swapchainImageFormat,
+        &ctx->swapchainExtent);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = createSwapchainImageViews(
+        ctx->device,
+        ctx->swapchainImages,
+        ctx->swapchainImageFormat,
+        &ctx->swapchainImageViews);
+
+    if (result != VK_SUCCESS) {
+        destroySwapchainResources(ctx->device, ctx);
+        return result;
+    }
+
+    std::cout << "Recreated Vulkan swapchain with "
+              << ctx->swapchainImages.size() << " images ("
+              << ctx->swapchainExtent.width << 'x'
+              << ctx->swapchainExtent.height << ").\n";
+
+    return VK_SUCCESS;
+}
+
 VkResult createCommandPool(
     VkDevice device,
     const QueueFamilyIndices& queueFamilies,
@@ -1354,7 +1440,6 @@ int main()
     std::cout << "Created Vulkan frame sync objects.\n";
 
     std::cout << "Entering GLFW event loop.\n";
-    bool loggedSuboptimalSwapchain = false;
 
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
@@ -1370,15 +1455,16 @@ int main()
             ctx.renderFinishedSemaphore,
             ctx.inFlightFence);
 
-        if (frameResult == VK_ERROR_OUT_OF_DATE_KHR) {
-            std::cout << "Swapchain is out of date; exiting until recreation is implemented.\n";
-            break;
-        }
+        if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
+            || frameResult == VK_SUBOPTIMAL_KHR) {
+            const VkResult recreateResult = recreateSwapchain(
+                physicalDevice,
+                queueFamilies,
+                &ctx);
 
-        if (frameResult == VK_SUBOPTIMAL_KHR) {
-            if (!loggedSuboptimalSwapchain) {
-                std::cout << "Swapchain is suboptimal; continuing until recreation is implemented.\n";
-                loggedSuboptimalSwapchain = true;
+            if (recreateResult != VK_SUCCESS) {
+                std::cerr << "Failed to recreate Vulkan swapchain.\n";
+                return 1;
             }
 
             continue;
