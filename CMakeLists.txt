@@ -11,6 +11,8 @@ find_package(glfw3 REQUIRED)
 
 add_executable(xrPhoton
     src/main.cpp
+    src/vulkan_context.cpp
+    src/swapchain.cpp
 )
 
 target_link_libraries(xrPhoton
