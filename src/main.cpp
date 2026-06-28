@@ -142,6 +142,11 @@ void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT de
     }
 }
 
+struct VulkanContext;
+
+void destroyRenderFinishedSemaphores(VkDevice device, std::vector<VkSemaphore>* semaphores);
+void destroySwapchainResources(VkDevice device, VulkanContext* ctx);
+
 struct VulkanContext
 {
     bool glfwInitialized = false;
@@ -177,13 +182,9 @@ struct VulkanContext
         }
 
         if (device != VK_NULL_HANDLE) {
-            for (VkSemaphore semaphore : renderFinishedSemaphores) {
-                if (semaphore != VK_NULL_HANDLE) {
-                    vkDestroySemaphore(device, semaphore, nullptr);
-                }
-            }
-
-            if (!renderFinishedSemaphores.empty()) {
+            const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
+            destroyRenderFinishedSemaphores(device, &renderFinishedSemaphores);
+            if (hadRenderFinishedSemaphores) {
                 std::cout << "Destroyed Vulkan render-finished semaphores.\n";
             }
         }
@@ -206,20 +207,15 @@ struct VulkanContext
         }
 
         if (device != VK_NULL_HANDLE) {
-            for (VkImageView imageView : swapchainImageViews) {
-                if (imageView != VK_NULL_HANDLE) {
-                    vkDestroyImageView(device, imageView, nullptr);
-                }
-            }
-
-            if (!swapchainImageViews.empty()) {
+            const bool hadSwapchainImageViews = !swapchainImageViews.empty();
+            const bool hadSwapchain = swapchain != VK_NULL_HANDLE;
+            destroySwapchainResources(device, this);
+            if (hadSwapchainImageViews) {
                 std::cout << "Destroyed Vulkan swapchain image views.\n";
             }
-        }
-
-        if (swapchain != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(device, swapchain, nullptr);
-            std::cout << "Destroyed Vulkan swapchain.\n";
+            if (hadSwapchain) {
+                std::cout << "Destroyed Vulkan swapchain.\n";
+            }
         }
 
         if (device != VK_NULL_HANDLE) {
