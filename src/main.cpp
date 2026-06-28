@@ -154,6 +154,9 @@ struct VulkanContext
     VkExtent2D swapchainExtent{};
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
+    VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
+    VkFence inFlightFence = VK_NULL_HANDLE;
 
     VulkanContext() = default;
     VulkanContext(const VulkanContext&) = delete;
@@ -161,6 +164,25 @@ struct VulkanContext
 
     ~VulkanContext()
     {
+        if (device != VK_NULL_HANDLE) {
+            (void)vkDeviceWaitIdle(device);
+        }
+
+        if (inFlightFence != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+            vkDestroyFence(device, inFlightFence, nullptr);
+            std::cout << "Destroyed Vulkan in-flight fence.\n";
+        }
+
+        if (renderFinishedSemaphore != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+            std::cout << "Destroyed Vulkan render-finished semaphore.\n";
+        }
+
+        if (imageAvailableSemaphore != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+            std::cout << "Destroyed Vulkan image-available semaphore.\n";
+        }
+
         if (commandBuffer != VK_NULL_HANDLE
             && device != VK_NULL_HANDLE
             && commandPool != VK_NULL_HANDLE) {
@@ -794,7 +816,57 @@ VkResult allocateCommandBuffer(
     return vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffer);
 }
 
-VkResult recordEmptyCommandBuffer(VkCommandBuffer commandBuffer)
+VkResult createFrameSyncObjects(
+    VkDevice device,
+    VkSemaphore* imageAvailableSemaphore,
+    VkSemaphore* renderFinishedSemaphore,
+    VkFence* inFlightFence)
+{
+    VkSemaphoreCreateInfo semaphoreCreateInfo{};
+    semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkResult result = vkCreateSemaphore(
+        device,
+        &semaphoreCreateInfo,
+        nullptr,
+        imageAvailableSemaphore);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = vkCreateSemaphore(
+        device,
+        &semaphoreCreateInfo,
+        nullptr,
+        renderFinishedSemaphore);
+
+    if (result != VK_SUCCESS) {
+        vkDestroySemaphore(device, *imageAvailableSemaphore, nullptr);
+        *imageAvailableSemaphore = VK_NULL_HANDLE;
+        return result;
+    }
+
+    VkFenceCreateInfo fenceCreateInfo{};
+    fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    result = vkCreateFence(device, &fenceCreateInfo, nullptr, inFlightFence);
+
+    if (result != VK_SUCCESS) {
+        vkDestroySemaphore(device, *renderFinishedSemaphore, nullptr);
+        vkDestroySemaphore(device, *imageAvailableSemaphore, nullptr);
+        *renderFinishedSemaphore = VK_NULL_HANDLE;
+        *imageAvailableSemaphore = VK_NULL_HANDLE;
+        return result;
+    }
+
+    return VK_SUCCESS;
+}
+
+VkResult recordPresentableSwapchainImageCommandBuffer(
+    VkCommandBuffer commandBuffer,
+    VkImage swapchainImage)
 {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -806,23 +878,144 @@ VkResult recordEmptyCommandBuffer(VkCommandBuffer commandBuffer)
         return result;
     }
 
+    VkImageMemoryBarrier presentBarrier{};
+    presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    presentBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    presentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    presentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    presentBarrier.image = swapchainImage;
+    presentBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    presentBarrier.subresourceRange.baseMipLevel = 0;
+    presentBarrier.subresourceRange.levelCount = 1;
+    presentBarrier.subresourceRange.baseArrayLayer = 0;
+    presentBarrier.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &presentBarrier);
+
     return vkEndCommandBuffer(commandBuffer);
 }
 
-VkResult submitCommandBufferAndWait(VkQueue queue, VkCommandBuffer commandBuffer)
+VkResult drawFrame(
+    VkDevice device,
+    VkSwapchainKHR swapchain,
+    const std::vector<VkImage>& swapchainImages,
+    VkCommandBuffer commandBuffer,
+    VkQueue traceQueue,
+    VkQueue presentQueue,
+    VkSemaphore imageAvailableSemaphore,
+    VkSemaphore renderFinishedSemaphore,
+    VkFence inFlightFence)
 {
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    VkResult result = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+    VkResult result = vkWaitForFences(
+        device,
+        1,
+        &inFlightFence,
+        VK_TRUE,
+        std::numeric_limits<uint64_t>::max());
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
-    return vkQueueWaitIdle(queue);
+    uint32_t imageIndex = 0;
+    result = vkAcquireNextImageKHR(
+        device,
+        swapchain,
+        std::numeric_limits<uint64_t>::max(),
+        imageAvailableSemaphore,
+        VK_NULL_HANDLE,
+        &imageIndex);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        return result;
+    }
+
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        return result;
+    }
+
+    const VkResult acquireResult = result;
+
+    result = vkResetCommandBuffer(commandBuffer, 0);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = recordPresentableSwapchainImageCommandBuffer(
+        commandBuffer,
+        swapchainImages[imageIndex]);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = vkResetFences(device, 1, &inFlightFence);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    const VkSemaphore waitSemaphores[] = {
+        imageAvailableSemaphore,
+    };
+    const VkPipelineStageFlags waitStages[] = {
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    };
+    const VkSemaphore signalSemaphores[] = {
+        renderFinishedSemaphore,
+    };
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = static_cast<uint32_t>(std::size(waitSemaphores));
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = static_cast<uint32_t>(std::size(signalSemaphores));
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    result = vkQueueSubmit(traceQueue, 1, &submitInfo, inFlightFence);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    const VkSwapchainKHR swapchains[] = {
+        swapchain,
+    };
+
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = static_cast<uint32_t>(std::size(signalSemaphores));
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    presentInfo.swapchainCount = static_cast<uint32_t>(std::size(swapchains));
+    presentInfo.pSwapchains = swapchains;
+    presentInfo.pImageIndices = &imageIndex;
+
+    result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        return result;
+    }
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    return acquireResult;
 }
 
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions)
@@ -1045,7 +1238,6 @@ int main()
     VkQueue presentQueue = VK_NULL_HANDLE;
     vkGetDeviceQueue(ctx.device, queueFamilies.presentFamily, 0, &presentQueue);
     std::cout << "Retrieved Vulkan present queue.\n";
-    (void)presentQueue;
 
     const VkResult swapchainResult = createSwapchain(
         physicalDevice,
@@ -1105,28 +1297,56 @@ int main()
 
     std::cout << "Allocated Vulkan command buffer.\n";
 
-    const VkResult recordCommandBufferResult = recordEmptyCommandBuffer(ctx.commandBuffer);
+    const VkResult syncObjectsResult = createFrameSyncObjects(
+        ctx.device,
+        &ctx.imageAvailableSemaphore,
+        &ctx.renderFinishedSemaphore,
+        &ctx.inFlightFence);
 
-    if (recordCommandBufferResult != VK_SUCCESS) {
-        std::cerr << "Failed to record Vulkan command buffer.\n";
+    if (syncObjectsResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan frame sync objects.\n";
         return 1;
     }
 
-    std::cout << "Recorded empty Vulkan command buffer.\n";
-
-    const VkResult submitCommandBufferResult = submitCommandBufferAndWait(traceQueue, ctx.commandBuffer);
-
-    if (submitCommandBufferResult != VK_SUCCESS) {
-        std::cerr << "Failed to submit Vulkan command buffer.\n";
-        return 1;
-    }
-
-    std::cout << "Submitted Vulkan command buffer and waited for completion.\n";
+    std::cout << "Created Vulkan frame sync objects.\n";
 
     std::cout << "Entering GLFW event loop.\n";
+    bool loggedSuboptimalSwapchain = false;
+
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
+
+        const VkResult frameResult = drawFrame(
+            ctx.device,
+            ctx.swapchain,
+            ctx.swapchainImages,
+            ctx.commandBuffer,
+            traceQueue,
+            presentQueue,
+            ctx.imageAvailableSemaphore,
+            ctx.renderFinishedSemaphore,
+            ctx.inFlightFence);
+
+        if (frameResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            std::cout << "Swapchain is out of date; exiting until recreation is implemented.\n";
+            break;
+        }
+
+        if (frameResult == VK_SUBOPTIMAL_KHR) {
+            if (!loggedSuboptimalSwapchain) {
+                std::cout << "Swapchain is suboptimal; continuing until recreation is implemented.\n";
+                loggedSuboptimalSwapchain = true;
+            }
+
+            continue;
+        }
+
+        if (frameResult != VK_SUCCESS) {
+            std::cerr << "Failed to draw Vulkan frame.\n";
+            return 1;
+        }
     }
+
     std::cout << "Exited GLFW event loop.\n";
 
     return 0;
