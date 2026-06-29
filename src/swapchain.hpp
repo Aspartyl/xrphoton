@@ -22,6 +22,11 @@ struct Swapchain
     VkFormat imageFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     std::vector<VkSemaphore> renderFinishedSemaphores;
+    // Resize-bound trace output target. Placeholder frames clear this image, then
+    // blit it into the acquired swapchain image; ray tracing will write it later.
+    VkImage storageImage = VK_NULL_HANDLE;
+    VkDeviceMemory storageImageMemory = VK_NULL_HANDLE;
+    VkImageView storageImageView = VK_NULL_HANDLE;
 
     Swapchain() = default;
     Swapchain(const Swapchain&) = delete;
@@ -29,8 +34,9 @@ struct Swapchain
     ~Swapchain();
 };
 
-// Part of device suitability: true if the surface exposes at least one format and
-// present mode and supports the image usages the render path needs. Kept here (rather
+// Part of device suitability: true if the surface exposes at least one compatible
+// format and present mode, supports the image usages the render path needs, and can
+// blit from the storage output format into the swapchain format. Kept here (rather
 // than in vulkan_context) so physical-device selection and swapchain creation share
 // one definition of "adequate swapchain support".
 bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);

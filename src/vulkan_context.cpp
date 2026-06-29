@@ -241,9 +241,17 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceK
     QueueFamilyIndices indices{};
 
     // Take the first family satisfying each role; a single family may fill both. The
-    // loop stops as soon as both have been found, so later families are not inspected.
+    // renderer records tracing and the present blit into one command buffer, so the
+    // trace family must support both compute and graphics. The loop stops as soon as
+    // both roles have been found, so later families are not inspected.
+    constexpr VkQueueFlags RequiredTraceQueueFlags =
+        VK_QUEUE_COMPUTE_BIT
+        | VK_QUEUE_GRAPHICS_BIT;
+
     for (uint32_t index = 0; index < queueFamilyCount; ++index) {
-        if (!indices.hasTraceFamily && (queueFamilies[index].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0) {
+        if (!indices.hasTraceFamily
+            && (queueFamilies[index].queueFlags & RequiredTraceQueueFlags)
+                == RequiredTraceQueueFlags) {
             indices.traceFamily = index;
             indices.hasTraceFamily = true;
         }

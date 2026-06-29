@@ -18,14 +18,55 @@ constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
 
+void recordImageBarrier(
+    VkCommandBuffer commandBuffer,
+    VkImage image,
+    VkImageLayout oldLayout,
+    VkImageLayout newLayout,
+    VkAccessFlags srcAccessMask,
+    VkAccessFlags dstAccessMask,
+    VkPipelineStageFlags srcStageMask,
+    VkPipelineStageFlags dstStageMask,
+    const VkImageSubresourceRange& subresourceRange)
+{
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = subresourceRange;
+    barrier.srcAccessMask = srcAccessMask;
+    barrier.dstAccessMask = dstAccessMask;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        srcStageMask,
+        dstStageMask,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &barrier);
+}
+
 // Record the entire (placeholder) frame into a one-time-submit command buffer:
-//   1. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
-//   2. clear it to a solid dark red,
-//   3. barrier TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR for presentation.
-// This is the seed of the renderer; real ray tracing output will replace the clear.
+//   1. barrier the storage image UNDEFINED -> TRANSFER_DST_OPTIMAL,
+//   2. clear storage to a solid dark red,
+//   3. barrier storage TRANSFER_DST_OPTIMAL -> TRANSFER_SRC_OPTIMAL,
+//   4. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
+//   5. blit storage into the acquired image,
+//   6. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
+// This is the seed of the renderer; real ray tracing output will replace the storage
+// clear while the storage->swapchain presentation path remains.
 VkResult recordClearSwapchainImageCommandBuffer(
     VkCommandBuffer commandBuffer,
-    VkImage swapchainImage)
+    VkImage storageImage,
+    VkImage swapchainImage,
+    VkExtent2D extent)
 {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -44,31 +85,18 @@ VkResult recordClearSwapchainImageCommandBuffer(
     colorRange.baseArrayLayer = 0;
     colorRange.layerCount = 1;
 
-    // Transition into a layout the clear can write. oldLayout UNDEFINED discards the
-    // previous contents (we overwrite the whole image anyway). srcStageMask is TRANSFER
-    // to match the acquire semaphore's wait stage in drawFrame, so the transition cannot
-    // begin before the image has actually been acquired.
-    VkImageMemoryBarrier transferBarrier{};
-    transferBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    transferBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    transferBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    transferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    transferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    transferBarrier.image = swapchainImage;
-    transferBarrier.subresourceRange = colorRange;
-    transferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-    vkCmdPipelineBarrier(
+    // Discard the previous storage contents and make the whole image writable by the
+    // placeholder transfer clear. Future traceRays work replaces this clear.
+    recordImageBarrier(
         commandBuffer,
+        storageImage,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        0,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0,
-        nullptr,
-        0,
-        nullptr,
-        1,
-        &transferBarrier);
+        colorRange);
 
     // The placeholder frame color (linear RGBA): a dark red.
     VkClearColorValue clearColor = {
@@ -82,36 +110,81 @@ VkResult recordClearSwapchainImageCommandBuffer(
 
     vkCmdClearColorImage(
         commandBuffer,
-        swapchainImage,
+        storageImage,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         &clearColor,
         1,
         &colorRange);
 
+    recordImageBarrier(
+        commandBuffer,
+        storageImage,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_TRANSFER_READ_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        colorRange);
+
+    // The acquired image is first touched at TRANSFER. The submit waits on acquire at
+    // TRANSFER, so both this swapchain transition and this step's storage clear/blit are
+    // serialized behind acquire; true pre-acquire overlap begins once traceRays writes
+    // storage at RAY_TRACING_SHADER instead of using a transfer clear.
+    recordImageBarrier(
+        commandBuffer,
+        swapchainImage,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        0,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        colorRange);
+
+    VkImageBlit blitRegion{};
+    blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blitRegion.srcSubresource.baseArrayLayer = 0;
+    blitRegion.srcSubresource.layerCount = 1;
+    blitRegion.srcOffsets[1] = {
+        static_cast<int32_t>(extent.width),
+        static_cast<int32_t>(extent.height),
+        1,
+    };
+    blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blitRegion.dstSubresource.baseArrayLayer = 0;
+    blitRegion.dstSubresource.layerCount = 1;
+    blitRegion.dstOffsets[1] = {
+        static_cast<int32_t>(extent.width),
+        static_cast<int32_t>(extent.height),
+        1,
+    };
+
+    // Keep this as a blit, not a copy: blit performs format conversion. If the selected
+    // swapchain format is sRGB, the storage UNORM value is encoded for presentation here.
+    vkCmdBlitImage(
+        commandBuffer,
+        storageImage,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        swapchainImage,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1,
+        &blitRegion,
+        VK_FILTER_NEAREST);
+
     // Transition into the layout the presentation engine requires. The dstStageMask is
     // BOTTOM_OF_PIPE because no further GPU stage consumes the image; the render-finished
     // semaphore signaled at submit is what the present actually waits on.
-    VkImageMemoryBarrier presentBarrier{};
-    presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    presentBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    presentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    presentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    presentBarrier.image = swapchainImage;
-    presentBarrier.subresourceRange = colorRange;
-    presentBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-    vkCmdPipelineBarrier(
+    recordImageBarrier(
         commandBuffer,
+        swapchainImage,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_ACCESS_TRANSFER_WRITE_BIT,
+        0,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0,
-        0,
-        nullptr,
-        0,
-        nullptr,
-        1,
-        &presentBarrier);
+        colorRange);
 
     return vkEndCommandBuffer(commandBuffer);
 }
@@ -179,7 +252,9 @@ VkResult drawFrame(
 
     result = recordClearSwapchainImageCommandBuffer(
         ctx.commandBuffer,
-        swap.images[imageIndex]);
+        swap.storageImage,
+        swap.images[imageIndex],
+        swap.extent);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -194,8 +269,9 @@ VkResult drawFrame(
     }
 
     // Submission waits on the image-available semaphore at the TRANSFER stage, matching
-    // the first barrier's srcStageMask, and signals the per-image render-finished
-    // semaphore. The fence is signaled when the whole submission completes.
+    // the first swapchain touch: the blit destination transition. In this placeholder,
+    // the storage clear is also transfer work, so it waits too; future trace shader work
+    // can run before acquire because it is outside this TRANSFER wait stage.
     const VkSemaphore waitSemaphores[] = {
         ctx.imageAvailableSemaphore,
     };

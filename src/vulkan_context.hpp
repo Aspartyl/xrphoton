@@ -35,9 +35,9 @@ struct VulkanContext
     ~VulkanContext();
 };
 
-// Indices of the queue families the program needs: one compute-capable family to
-// record/trace work ("trace") and one capable of presenting to the surface. The two
-// may resolve to the same family. The booleans distinguish "found family 0" from
+// Indices of the queue families the program needs: one compute+graphics-capable family
+// to record trace/blit work ("trace") and one capable of presenting to the surface. The
+// two may resolve to the same family. The booleans distinguish "found family 0" from
 // "no family found", since 0 is a valid index.
 struct QueueFamilyIndices
 {
@@ -107,9 +107,9 @@ VkResult createDebugUtilsMessenger(
     VkDebugUtilsMessengerEXT* debugMessenger);
 void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger);
 
-// Scan the device's queue families for a compute-capable (trace) family and a
-// present-capable family, taking the first match of each. Call isComplete() on the
-// result to check both were found.
+// Scan the device's queue families for a compute+graphics-capable (trace/blit) family
+// and a present-capable family, taking the first match of each. Call isComplete() on
+// the result to check both were found.
 QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
 
 // Pick the first physical device meeting every requirement (queue families, API
