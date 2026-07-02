@@ -519,7 +519,11 @@ int main()
 
     std::cout << "Created Vulkan surface.\n";
 
-    VkPhysicalDevice physicalDevice = pickPhysicalDevice(ctx.instance, ctx.surface);
+    QueueFamilyIndices queueFamilies{};
+    VkPhysicalDevice physicalDevice = pickPhysicalDevice(
+        ctx.instance,
+        ctx.surface,
+        &queueFamilies);
 
     if (physicalDevice == VK_NULL_HANDLE) {
         return 1;
@@ -528,7 +532,6 @@ int main()
     VkPhysicalDeviceProperties physicalDeviceProperties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
 
-    const QueueFamilyIndices queueFamilies = findQueueFamilies(physicalDevice, ctx.surface);
     std::cout << "Selected Vulkan physical device: "
               << physicalDeviceProperties.deviceName << '\n';
     std::cout << "Physical device Vulkan API version: ";

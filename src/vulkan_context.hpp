@@ -107,15 +107,16 @@ VkResult createDebugUtilsMessenger(
     VkDebugUtilsMessengerEXT* debugMessenger);
 void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger);
 
-// Scan the device's queue families for a compute+graphics-capable (trace/blit) family
-// and a present-capable family, taking the first match of each. Call isComplete() on
-// the result to check both were found.
-QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
-
 // Pick the first physical device meeting every requirement (queue families, API
-// version, device extensions, swapchain support, ray tracing features). Returns
-// VK_NULL_HANDLE and logs to std::cerr if none qualifies.
-VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface);
+// version, device extensions, swapchain support, ray tracing features), writing the
+// chosen device's queue family indices to *queueFamilies — preferring a single family
+// for both trace and present so the swapchain can use EXCLUSIVE sharing. Returns
+// VK_NULL_HANDLE and logs to std::cerr if none qualifies; *queueFamilies then holds
+// the last rejected device's scan and must not be used.
+VkPhysicalDevice pickPhysicalDevice(
+    VkInstance instance,
+    VkSurfaceKHR surface,
+    QueueFamilyIndices* queueFamilies);
 
 // Create the logical device with one queue per unique {trace, present} family and the
 // ray tracing feature chain enabled.

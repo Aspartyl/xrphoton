@@ -182,19 +182,23 @@ device creation.
 
 `QueueFamilyIndices` tracks two roles:
 
-- **`traceFamily`** — the first family supporting **both compute and graphics**. Named
+- **`traceFamily`** — a family supporting **both compute and graphics**. Named
   "trace" because it is where ray tracing work will be recorded; today it records the
   clear and the blit. The single-command-buffer renderer needs one family for both
   `vkCmdTraceRaysKHR` (compute) and `vkCmdBlitImage` (graphics-only), so a device that
   exposes graphics and compute *only* on disjoint families is deliberately rejected
   (a split graphics/blit queue — with its ownership transfers and extra semaphores —
   is an async-compute optimization with no current payoff).
-- **`presentFamily`** — the first family that can present to the surface.
+- **`presentFamily`** — a family that can present to the surface.
 
-The two may resolve to the same family. The `has*` booleans distinguish "found family
-index 0" from "no family found", since 0 is a valid index. When the families differ,
-the swapchain images are created `VK_SHARING_MODE_CONCURRENT` across both; when they
-coincide, `VK_SHARING_MODE_EXCLUSIVE` (valid and faster).
+The scan prefers a **single family covering both roles**, so trace and present coincide
+whenever the hardware allows it; only if no combined family exists does it fall back to
+the first match for each role independently. The `has*` booleans distinguish "found
+family index 0" from "no family found", since 0 is a valid index. When the families
+differ, the swapchain images are created `VK_SHARING_MODE_CONCURRENT` across both; when
+they coincide, `VK_SHARING_MODE_EXCLUSIVE` (valid and faster). The scan lives with the
+other suitability checks (file-private in `vulkan_context.cpp`); callers receive the
+indices from `pickPhysicalDevice`.
 
 ## The frame
 

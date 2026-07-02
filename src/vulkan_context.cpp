@@ -116,13 +116,81 @@ bool areRequiredRayTracingFeaturesAvailable(VkPhysicalDevice physicalDevice)
         && rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
 }
 
-// Aggregate suitability test used by pickPhysicalDevice. Ordered cheapest-first so the
-// short-circuiting && skips the more expensive enumeration/feature queries once a device
-// has already failed an earlier check.
-bool isPhysicalDeviceSuitable(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+// Locate the queue families the renderer needs. The trace family must support both
+// compute and graphics because tracing and the present blit are recorded into one
+// command buffer. A family that can also present is preferred: when trace and present
+// coincide, the swapchain uses EXCLUSIVE sharing (see createSwapchain), so the combined
+// family should be the outcome by construction, not by luck of enumeration order. Only
+// when no family covers both roles does the scan fall back to independent first
+// matches. Call isComplete() on the result to check both roles were found.
+QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
 {
-    const QueueFamilyIndices queueFamilies = findQueueFamilies(physicalDevice, surface);
-    return queueFamilies.isComplete()
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+
+    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
+
+    constexpr VkQueueFlags RequiredTraceQueueFlags =
+        VK_QUEUE_COMPUTE_BIT
+        | VK_QUEUE_GRAPHICS_BIT;
+
+    const auto isTraceCapable = [&queueFamilies](uint32_t index) {
+        return (queueFamilies[index].queueFlags & RequiredTraceQueueFlags)
+            == RequiredTraceQueueFlags;
+    };
+
+    const auto canPresent = [physicalDevice, surface](uint32_t index) {
+        VkBool32 presentSupported = VK_FALSE;
+        const VkResult result = vkGetPhysicalDeviceSurfaceSupportKHR(
+            physicalDevice,
+            index,
+            surface,
+            &presentSupported);
+
+        return result == VK_SUCCESS && presentSupported == VK_TRUE;
+    };
+
+    QueueFamilyIndices indices{};
+
+    for (uint32_t index = 0; index < queueFamilyCount; ++index) {
+        if (isTraceCapable(index) && canPresent(index)) {
+            indices.traceFamily = index;
+            indices.hasTraceFamily = true;
+            indices.presentFamily = index;
+            indices.hasPresentFamily = true;
+            return indices;
+        }
+    }
+
+    // No combined family exists: take the first match for each role independently. The
+    // split forces CONCURRENT sharing on the swapchain images.
+    for (uint32_t index = 0; index < queueFamilyCount && !indices.isComplete(); ++index) {
+        if (!indices.hasTraceFamily && isTraceCapable(index)) {
+            indices.traceFamily = index;
+            indices.hasTraceFamily = true;
+        }
+
+        if (!indices.hasPresentFamily && canPresent(index)) {
+            indices.presentFamily = index;
+            indices.hasPresentFamily = true;
+        }
+    }
+
+    return indices;
+}
+
+// Aggregate suitability test used by pickPhysicalDevice. *queueFamilies always receives
+// the scan result, so the caller of a suitable device gets its indices without
+// re-querying. Ordered cheapest-first so the short-circuiting && skips the more
+// expensive enumeration/feature queries once a device has already failed an earlier check.
+bool isPhysicalDeviceSuitable(
+    VkPhysicalDevice physicalDevice,
+    VkSurfaceKHR surface,
+    QueueFamilyIndices* queueFamilies)
+{
+    *queueFamilies = findQueueFamilies(physicalDevice, surface);
+    return queueFamilies->isComplete()
         && hasRequiredApiVersion(physicalDevice)
         && areRequiredDeviceExtensionsAvailable(physicalDevice)
         && hasRequiredSwapchainSupport(physicalDevice, surface)
@@ -230,55 +298,10 @@ void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT de
     }
 }
 
-QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
-{
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
-
-    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
-
-    QueueFamilyIndices indices{};
-
-    // Take the first family satisfying each role; a single family may fill both. The
-    // renderer records tracing and the present blit into one command buffer, so the
-    // trace family must support both compute and graphics. The loop stops as soon as
-    // both roles have been found, so later families are not inspected.
-    constexpr VkQueueFlags RequiredTraceQueueFlags =
-        VK_QUEUE_COMPUTE_BIT
-        | VK_QUEUE_GRAPHICS_BIT;
-
-    for (uint32_t index = 0; index < queueFamilyCount; ++index) {
-        if (!indices.hasTraceFamily
-            && (queueFamilies[index].queueFlags & RequiredTraceQueueFlags)
-                == RequiredTraceQueueFlags) {
-            indices.traceFamily = index;
-            indices.hasTraceFamily = true;
-        }
-
-        VkBool32 presentSupported = VK_FALSE;
-        const VkResult presentSupportResult = vkGetPhysicalDeviceSurfaceSupportKHR(
-            physicalDevice,
-            index,
-            surface,
-            &presentSupported);
-
-        if (!indices.hasPresentFamily
-            && presentSupportResult == VK_SUCCESS
-            && presentSupported == VK_TRUE) {
-            indices.presentFamily = index;
-            indices.hasPresentFamily = true;
-        }
-
-        if (indices.isComplete()) {
-            break;
-        }
-    }
-
-    return indices;
-}
-
-VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface)
+VkPhysicalDevice pickPhysicalDevice(
+    VkInstance instance,
+    VkSurfaceKHR surface,
+    QueueFamilyIndices* queueFamilies)
 {
     uint32_t physicalDeviceCount = 0;
     VkResult result = vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
@@ -302,7 +325,7 @@ VkPhysicalDevice pickPhysicalDevice(VkInstance instance, VkSurfaceKHR surface)
     }
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
-        if (isPhysicalDeviceSuitable(physicalDevice, surface)) {
+        if (isPhysicalDeviceSuitable(physicalDevice, surface, queueFamilies)) {
             return physicalDevice;
         }
     }
