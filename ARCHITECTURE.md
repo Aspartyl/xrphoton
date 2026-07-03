@@ -121,8 +121,8 @@ device to destroy through.
 returns `1` on failure (RAII handles the unwind):
 
 1. **GLFW + Vulkan gate.** `glfwInit`, then `glfwVulkanSupported`. Create a
-   `GLFW_NO_API`, initially **hidden** window (`GLFW_VISIBLE` false); it is shown only
-   after the first frame presents, so it never flashes blank during bring-up.
+   visible `GLFW_NO_API` window up front, so Wayland compositors can configure the
+   drawable surface before swapchain setup and first presentation.
 2. **Instance.** Validation is requested at build time (the
    `XRPHOTON_ENABLE_VALIDATION` CMake option, default ON) but is best-effort at
    runtime: if the Khronos layer or `VK_EXT_debug_utils` is missing (machines without

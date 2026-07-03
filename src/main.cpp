@@ -362,11 +362,10 @@ int main()
 
     std::cout << "Initialized GLFW with Vulkan support.\n";
 
-    // GLFW_NO_API: Vulkan manages the surface, not GLFW's GL context. Created hidden
-    // (GLFW_VISIBLE false) and shown only after the first frame presents, so the window
-    // never flashes blank during bring-up.
+    // GLFW_NO_API: Vulkan manages the surface, not GLFW's GL context. Keep the window
+    // visible from creation so Wayland compositors can configure the drawable surface
+    // before swapchain setup and first presentation.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
     ctx.window = glfwCreateWindow(
         WindowWidth,
@@ -627,9 +626,6 @@ int main()
 
     std::cout << "Entering GLFW event loop.\n";
 
-    // Shown lazily after the first successful present (see GLFW_VISIBLE above).
-    bool windowShown = false;
-
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
 
@@ -664,10 +660,6 @@ int main()
             return 1;
         }
 
-        if (!windowShown) {
-            glfwShowWindow(ctx.window);
-            windowShown = true;
-        }
     }
 
     std::cout << "Exited GLFW event loop.\n";
