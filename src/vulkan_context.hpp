@@ -144,6 +144,28 @@ VkResult createFrameSyncObjects(
     VkSemaphore* imageAvailableSemaphore,
     VkFence* inFlightFence);
 
+// Find a memory type allowed by a resource's type bits and satisfying all requested
+// properties.
+bool findMemoryType(
+    VkPhysicalDevice physicalDevice,
+    uint32_t typeBits,
+    VkMemoryPropertyFlags properties,
+    uint32_t* memoryTypeIndex);
+
+// Create a buffer, allocate memory for it, and bind the two. When the usage includes
+// SHADER_DEVICE_ADDRESS, the allocation gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+// which vkGetBufferDeviceAddress requires of the backing memory. On failure the handles
+// created so far are left in *buffer / *memory for the caller's owner to destroy, so no
+// unwinding is needed at the call site.
+VkResult createBuffer(
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    VkDeviceSize size,
+    VkBufferUsageFlags usage,
+    VkMemoryPropertyFlags memoryProperties,
+    VkBuffer* buffer,
+    VkDeviceMemory* memory);
+
 // Resolve every ray tracing entry point into *functions. Returns false (leaving any
 // partially resolved pointers in place) if any one of them is unavailable.
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions);

@@ -34,31 +34,6 @@ struct SwapchainSupportDetails
     bool valid = false;
 };
 
-// Find a memory type allowed by a resource's type bits and satisfying all requested
-// properties. The storage output is device-local because it is only used by the GPU.
-bool findMemoryType(
-    VkPhysicalDevice physicalDevice,
-    uint32_t typeBits,
-    VkMemoryPropertyFlags properties,
-    uint32_t* memoryTypeIndex)
-{
-    VkPhysicalDeviceMemoryProperties memoryProperties{};
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
-
-    for (uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
-        const bool typeAllowed = (typeBits & (1u << index)) != 0;
-        const bool propertiesMatch =
-            (memoryProperties.memoryTypes[index].propertyFlags & properties) == properties;
-
-        if (typeAllowed && propertiesMatch) {
-            *memoryTypeIndex = index;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 // The storage image must be usable as the eventual shader output, as the source of the
 // present blit, and as the destination of this step's placeholder clear.
 bool storageImageFormatFeaturesSupported(VkPhysicalDevice physicalDevice, VkFormat storageFormat)

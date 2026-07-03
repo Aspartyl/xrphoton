@@ -464,6 +464,88 @@ VkResult createFrameSyncObjects(
     return VK_SUCCESS;
 }
 
+bool findMemoryType(
+    VkPhysicalDevice physicalDevice,
+    uint32_t typeBits,
+    VkMemoryPropertyFlags properties,
+    uint32_t* memoryTypeIndex)
+{
+    VkPhysicalDeviceMemoryProperties memoryProperties{};
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
+
+    for (uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
+        const bool typeAllowed = (typeBits & (1u << index)) != 0;
+        const bool propertiesMatch =
+            (memoryProperties.memoryTypes[index].propertyFlags & properties) == properties;
+
+        if (typeAllowed && propertiesMatch) {
+            *memoryTypeIndex = index;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+VkResult createBuffer(
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    VkDeviceSize size,
+    VkBufferUsageFlags usage,
+    VkMemoryPropertyFlags memoryProperties,
+    VkBuffer* buffer,
+    VkDeviceMemory* memory)
+{
+    VkBufferCreateInfo bufferCreateInfo{};
+    bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferCreateInfo.size = size;
+    bufferCreateInfo.usage = usage;
+    bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkResult result = vkCreateBuffer(device, &bufferCreateInfo, nullptr, buffer);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkMemoryRequirements memoryRequirements{};
+    vkGetBufferMemoryRequirements(device, *buffer, &memoryRequirements);
+
+    uint32_t memoryTypeIndex = 0;
+    if (!findMemoryType(
+            physicalDevice,
+            memoryRequirements.memoryTypeBits,
+            memoryProperties,
+            &memoryTypeIndex)) {
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+
+    // Taking a buffer's device address requires the DEVICE_ADDRESS flag on the backing
+    // allocation, not just the SHADER_DEVICE_ADDRESS usage on the buffer — deriving it
+    // from the usage keeps the two in lockstep so callers cannot request one without
+    // the other.
+    VkMemoryAllocateFlagsInfo allocateFlagsInfo{};
+    allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+    const bool needsDeviceAddress =
+        (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
+
+    VkMemoryAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocateInfo.pNext = needsDeviceAddress ? &allocateFlagsInfo : nullptr;
+    allocateInfo.allocationSize = memoryRequirements.size;
+    allocateInfo.memoryTypeIndex = memoryTypeIndex;
+
+    result = vkAllocateMemory(device, &allocateInfo, nullptr, memory);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    return vkBindBufferMemory(device, *buffer, *memory, 0);
+}
+
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions)
 {
     functions->getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddressKHR>(
