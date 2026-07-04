@@ -56,13 +56,13 @@ pattern:
   invariant documented so `~Swapchain`'s idle wait runs first. Prefer the self-contained
   destructor unless the extra idle wait becomes measurable.
 
-## Step 3 — Geometry upload
+## Step 3 — Geometry upload ✅ landed
 
 Hardcoded triangle: three `float3` vertices, three `uint32_t` indices, written
 directly into mapped host-visible buffers with usage
 `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | SHADER_DEVICE_ADDRESS`.
 
-## Step 4 — BLAS build setup
+## Step 4 — BLAS build setup ✅ landed
 
 - Fill `VkAccelerationStructureGeometryKHR` (triangles, `VK_FORMAT_R32G32B32_SFLOAT`,
   `VK_INDEX_TYPE_UINT32`, buffer device addresses from `getBufferDeviceAddress`).
@@ -80,7 +80,7 @@ directly into mapped host-visible buffers with usage
   `buildScratchSize + alignment - 1`, round the base device address up, and keep the
   original buffer/memory handles for cleanup.
 
-## Step 5 — TLAS build setup
+## Step 5 — TLAS build setup ✅ landed
 
 - Get the BLAS device address via `getAccelerationStructureDeviceAddress`.
 - One `VkAccelerationStructureInstanceKHR` with identity transform, mask `0xFF`,
@@ -90,7 +90,7 @@ directly into mapped host-visible buffers with usage
   `INSTANCES`, again with `pMaxPrimitiveCounts = {1}` and a matching build range whose
   `primitiveCount = 1`.
 
-## Step 6 — Record and submit the build
+## Step 6 — Record and submit the build ✅ landed
 
 A `buildAccelerationStructures(...)` entry point called from `main` after
 `allocateCommandBuffer`, after `createFrameSyncObjects`, and before the render loop:

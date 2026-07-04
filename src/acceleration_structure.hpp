@@ -4,6 +4,8 @@
 
 namespace xrphoton
 {
+struct RayTracingFunctions;
+
 // Owns the ray tracing scene: the triangle geometry buffers, the BLAS built over them,
 // and the TLAS whose single instance references that BLAS. Built once at startup and
 // swapchain-independent, so resize/recreate never touches it. Its VkDevice is non-owning
@@ -52,4 +54,22 @@ struct AccelerationStructure
     AccelerationStructure& operator=(const AccelerationStructure&) = delete;
     ~AccelerationStructure();
 };
+
+// Populate *as: upload the triangle geometry, build the BLAS over it and the TLAS over
+// its single instance (recorded back-to-back into commandBuffer with a build-to-build
+// barrier), submit on traceQueue, and block until the GPU finishes. The scratch buffers
+// are released before returning, so on success *as holds only program-lifetime
+// resources. The fence is reset, used for the submit, and waited on — on success it is
+// left signaled, so passing the pre-loop in-flight fence preserves the signaled state
+// the first drawFrame depends on. On failure the fence may be left unsignaled and *as
+// holds whatever was created so far; ~AccelerationStructure cleans it up, so the caller
+// can bare-return.
+VkResult buildAccelerationStructures(
+    AccelerationStructure* as,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    const RayTracingFunctions& functions,
+    VkCommandBuffer commandBuffer,
+    VkQueue traceQueue,
+    VkFence fence);
 }
