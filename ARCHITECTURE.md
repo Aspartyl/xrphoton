@@ -386,12 +386,17 @@ Decisions and contracts worth preserving:
   `minAccelerationStructureScratchOffsetAlignment`, and a buffer's base address
   carries no such guarantee. So the scratch is allocated with `alignment − 1` bytes
   of slack and the address is rounded up; the unaligned handles are kept for cleanup.
-- **One submission, one barrier.** Both builds are recorded back-to-back into the
+- **One submission, two barriers.** Both builds are recorded back-to-back into the
   frame command buffer (one-time-submit): BLAS build → `VkMemoryBarrier`
-  (`ACCELERATION_STRUCTURE_BUILD` stage, AS-write → AS-read) → TLAS build. The TLAS
-  can be *recorded* against the BLAS before anything executes because an
-  acceleration structure's device address is fixed at creation; the barrier orders
-  the *contents*.
+  (`ACCELERATION_STRUCTURE_BUILD` stage, AS-write → AS-read) → TLAS build → a final
+  `VkMemoryBarrier` (AS-build write → `RAY_TRACING_SHADER` AS-read). The TLAS can be
+  *recorded* against the BLAS before anything executes because an acceleration
+  structure's device address is fixed at creation; the first barrier orders the
+  *contents*. The trailing barrier exists because the fence only gives the **host**
+  visibility of the build and submission order carries no memory dependency; a
+  pipeline barrier's second scope covers all later commands in submission order on
+  the queue, so it makes the TLAS visible to every future `vkCmdTraceRaysKHR`
+  without the frame path needing its own barrier.
 - **Borrowed sync.** The submit reuses `ctx.inFlightFence`: reset → submit → wait
   leaves the fence signaled, exactly the state the first `drawFrame`'s wait depends
   on, without introducing a temporary fence that could leak on a failure path.

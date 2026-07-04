@@ -455,6 +455,28 @@ VkResult buildAccelerationStructures(
     const VkAccelerationStructureBuildRangeInfoKHR* tlasRangePtr = &tlasRange;
     functions.cmdBuildAccelerationStructures(commandBuffer, 1, &tlasBuildInfo, &tlasRangePtr);
 
+    // Make the TLAS contents visible to future traversal. The fence below only gives
+    // the *host* visibility of the build, and submission order alone carries no memory
+    // dependency — but a pipeline barrier's second scope covers all commands later in
+    // submission order on this queue, so this one barrier covers every subsequent
+    // vkCmdTraceRaysKHR without the frame path needing its own.
+    VkMemoryBarrier traversalBarrier{};
+    traversalBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    traversalBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    traversalBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        0,
+        1,
+        &traversalBarrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+
     result = vkEndCommandBuffer(commandBuffer);
 
     if (result != VK_SUCCESS) {
