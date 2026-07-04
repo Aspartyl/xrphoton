@@ -34,7 +34,7 @@ device address for the TLAS instance. The TLAS backing buffer does not need it f
 future descriptor path, because `VkWriteDescriptorSetAccelerationStructureKHR` binds the
 TLAS handle rather than a TLAS device address.
 
-## Step 2 — New translation unit: `acceleration_structure.{hpp,cpp}`
+## Step 2 — New translation unit: `acceleration_structure.{hpp,cpp}` ✅ landed
 
 Add both files to [CMakeLists.txt](CMakeLists.txt). Follows the existing RAII-owner
 pattern:
