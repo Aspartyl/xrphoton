@@ -61,7 +61,7 @@ points are loaded in `RayTracingFunctions`.
   the generated header is self-contained (IDE-parseable standalone, no include-order
   obligation on consumers).
 
-## Step 2 — New translation unit: `rt_pipeline.{hpp,cpp}`
+## Step 2 — New translation unit: `rt_pipeline.{hpp,cpp}` ✅ (landed)
 
 The usual RAII-owner pattern, program-lifetime, borrows `VkDevice`:
 

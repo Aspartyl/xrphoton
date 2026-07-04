@@ -54,6 +54,7 @@ add_executable(xrPhoton
     src/vulkan_context.cpp
     src/swapchain.cpp
     src/acceleration_structure.cpp
+    src/rt_pipeline.cpp
 )
 
 if(XRPHOTON_ENABLE_VALIDATION)
