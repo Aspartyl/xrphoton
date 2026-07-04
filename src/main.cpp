@@ -1,3 +1,4 @@
+#include "acceleration_structure.hpp"
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
 
@@ -623,6 +624,28 @@ int main()
     }
 
     std::cout << "Created Vulkan frame sync objects.\n";
+
+    // Declared after ctx so it destructs before the device it borrows; its destructor
+    // waits for device idle itself, so ordering relative to swap is immaterial. The
+    // build borrows the frame command buffer and in-flight fence before the render loop
+    // starts, and returns them in the state the first drawFrame expects (fence
+    // signaled, command buffer resettable).
+    AccelerationStructure accelerationStructure;
+    const VkResult accelerationStructureResult = buildAccelerationStructures(
+        &accelerationStructure,
+        physicalDevice,
+        ctx.device,
+        rayTracingFunctions,
+        ctx.commandBuffer,
+        traceQueue,
+        ctx.inFlightFence);
+
+    if (accelerationStructureResult != VK_SUCCESS) {
+        std::cerr << "Failed to build Vulkan acceleration structures.\n";
+        return 1;
+    }
+
+    std::cout << "Built Vulkan acceleration structures (triangle BLAS, single-instance TLAS).\n";
 
     std::cout << "Entering GLFW event loop.\n";
 
