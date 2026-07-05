@@ -106,7 +106,7 @@ The usual RAII-owner pattern, program-lifetime, borrows `VkDevice`:
 - `vkCreateRayTracingPipelinesKHR` (no deferred operation, no pipeline cache),
   `maxPipelineRayRecursionDepth = 1`, layout = the pipeline layout from step 3.
 
-## Step 5 — Shader binding table
+## Step 5 — Shader binding table ✅ (landed)
 
 - Query `VkPhysicalDeviceRayTracingPipelinePropertiesKHR` (chained through
   `vkGetPhysicalDeviceProperties2`) for `shaderGroupHandleSize`,

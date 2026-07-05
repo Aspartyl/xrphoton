@@ -82,4 +82,19 @@ VkResult createRtPipeline(
     RtPipeline* rt,
     VkDevice device,
     const RayTracingFunctions& functions);
+
+// Build the shader binding table: fetch the three group handles from the pipeline,
+// lay them out one record per region (raygen, miss, hit — each region starting
+// baseAlignment-aligned from the table's aligned base), and store the four
+// VkStridedDeviceAddressRegionKHRs the trace consumes. The buffer is host-visible +
+// coherent and written once here (see the plan's scope decisions: no staging). The
+// callable region is empty but points at the table base — the VUIDs require a valid
+// SBT-buffer address even for a zero region under a strict reading. Requires
+// createRtPipeline to have succeeded; on failure *rt holds whatever was created and
+// the caller can bare-return.
+VkResult buildShaderBindingTable(
+    RtPipeline* rt,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    const RayTracingFunctions& functions);
 }

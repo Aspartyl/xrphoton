@@ -2,7 +2,10 @@
 
 #include "vulkan_context.hpp"
 
+#include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <vector>
 
 #include <vulkan/vulkan.h>
 
@@ -12,6 +15,24 @@
 
 namespace xrphoton
 {
+namespace
+{
+// One shader group per pipeline stage, in the group order createRtPipeline fixed:
+// raygen, miss, hit.
+constexpr uint32_t GroupCount = 3;
+
+// Round a value up to the next multiple of alignment, valid for any alignment. The
+// AS build's bit-mask alignUp is only correct for powers of two — spec-guaranteed for
+// shaderGroupHandleAlignment but *not* for shaderGroupBaseAlignment, whose
+// description says only "required alignment", so the SBT math uses this form
+// throughout.
+VkDeviceSize roundUpToMultiple(VkDeviceSize value, VkDeviceSize alignment)
+{
+    return (value + alignment - 1) / alignment * alignment;
+}
+
+} // namespace
+
 RtPipeline::~RtPipeline()
 {
     // A default-constructed owner never received a device and owns nothing.
@@ -263,6 +284,114 @@ VkResult createRtPipeline(
     // weight, so release it now rather than at teardown.
     vkDestroyShaderModule(device, rt->shaderModule, nullptr);
     rt->shaderModule = VK_NULL_HANDLE;
+
+    return VK_SUCCESS;
+}
+
+VkResult buildShaderBindingTable(
+    RtPipeline* rt,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    const RayTracingFunctions& functions)
+{
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProperties{};
+    rtProperties.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &rtProperties;
+
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+
+    // One record per region, so the record stride doubles as each region's size.
+    // Every region's device address must additionally be baseAlignment-aligned, hence
+    // the rounded region offsets.
+    const VkDeviceSize handleSize = rtProperties.shaderGroupHandleSize;
+    const VkDeviceSize recordStride =
+        roundUpToMultiple(handleSize, rtProperties.shaderGroupHandleAlignment);
+    const VkDeviceSize baseAlignment = rtProperties.shaderGroupBaseAlignment;
+
+    const VkDeviceSize raygenOffset = 0;
+    const VkDeviceSize missOffset = roundUpToMultiple(recordStride, baseAlignment);
+    const VkDeviceSize hitOffset = missOffset + roundUpToMultiple(recordStride, baseAlignment);
+    const VkDeviceSize tableSize = hitOffset + recordStride;
+
+    std::vector<uint8_t> handles(GroupCount * handleSize);
+
+    VkResult result = functions.getRayTracingShaderGroupHandles(
+        device,
+        rt->pipeline,
+        0,
+        GroupCount,
+        handles.size(),
+        handles.data());
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    // baseAlignment - 1 bytes of slack so the table can start at an aligned device
+    // address inside the buffer — the VUIDs constrain the regions' device addresses,
+    // not their buffer offsets (the same trick as the AS build scratch).
+    result = createBuffer(
+        physicalDevice,
+        device,
+        tableSize + baseAlignment - 1,
+        VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR
+            | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &rt->sbtBuffer,
+        &rt->sbtBufferMemory);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkBufferDeviceAddressInfo addressInfo{};
+    addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    addressInfo.buffer = rt->sbtBuffer;
+
+    const VkDeviceAddress bufferAddress = functions.getBufferDeviceAddress(device, &addressInfo);
+    const VkDeviceAddress tableAddress = roundUpToMultiple(bufferAddress, baseAlignment);
+    // The CPU writes below must shift by the same delta the device address was rounded
+    // by — otherwise the handles land at unaligned offsets while the regions point at
+    // the aligned ones, and the GPU reads garbage records with no validation error.
+    const VkDeviceSize alignmentDelta = tableAddress - bufferAddress;
+
+    void* mapped = nullptr;
+    result = vkMapMemory(device, rt->sbtBufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    uint8_t* table = static_cast<uint8_t*>(mapped) + alignmentDelta;
+    std::memcpy(table + raygenOffset, handles.data(), handleSize);
+    std::memcpy(table + missOffset, handles.data() + handleSize, handleSize);
+    std::memcpy(table + hitOffset, handles.data() + 2 * handleSize, handleSize);
+
+    // Coherent memory: no flush needed before the unmap.
+    vkUnmapMemory(device, rt->sbtBufferMemory);
+
+    // The raygen region's size must equal its stride (spec requirement); miss and hit
+    // hold one record each, so size = stride falls out naturally for them too.
+    rt->raygenRegion.deviceAddress = tableAddress + raygenOffset;
+    rt->raygenRegion.stride = recordStride;
+    rt->raygenRegion.size = recordStride;
+    rt->missRegion.deviceAddress = tableAddress + missOffset;
+    rt->missRegion.stride = recordStride;
+    rt->missRegion.size = recordStride;
+    rt->hitRegion.deviceAddress = tableAddress + hitOffset;
+    rt->hitRegion.stride = recordStride;
+    rt->hitRegion.size = recordStride;
+    // Empty, but pointing at the table base: the current VUID (03692) unconditionally
+    // requires a valid SBT-buffer address with no zero-region exception, and reusing
+    // the existing buffer satisfies the strict reading for free (the common {0,0,0}
+    // idiom relies on validation-layer leniency).
+    rt->callableRegion.deviceAddress = tableAddress;
+    rt->callableRegion.stride = 0;
+    rt->callableRegion.size = 0;
 
     return VK_SUCCESS;
 }
