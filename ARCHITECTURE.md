@@ -15,11 +15,11 @@ pipeline and shader binding table** (see
 `vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS, writing a device-local
 **storage image** — the triangle in barycentric colors over a dark red miss
 background — which is then blitted to the acquired swapchain image and presented.
-The present path is fully wired (swapchain creation, per-frame synchronization,
-resize handling including the descriptor rewrite the resize obligates), and every
-piece of the RT stack is now exercised each frame. The frame path lives in its own
-`renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only. The next structural
-move is frames in flight.
+The present path is fully wired (swapchain creation, two-frame-in-flight
+synchronization, resize handling including the descriptor rewrite the resize
+obligates), and every piece of the RT stack is now exercised each frame. The frame
+path lives in its own `renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only.
+The tracked bring-up roadmap is complete.
 
 ## Goals and constraints
 
@@ -69,11 +69,11 @@ shows the frame-path layering.)
 
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
-| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, command pool/buffer, frame sync), `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including the shared `findMemoryType` / `createBuffer`) | Program lifetime — created once |
+| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including the shared `findMemoryType` / `createBuffer`) | Program lifetime — created once |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the storage output image + its memory and view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
-| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` | Owns nothing — a parameter bundle over borrowed handles |
+| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
 
 ### Header dependency rule
@@ -83,9 +83,10 @@ Includes are kept acyclic by a deliberate rule:
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
   `RayTracingFunctions`.
-- `renderer.hpp` only **forward-declares** `RayTracingFunctions`, `RtPipeline`, and
-  `Swapchain`; it never mentions `VulkanContext` — the renderer borrows specific
-  handles, not the context, so the unit is decoupled from bring-up entirely.
+- `renderer.hpp` only **forward-declares** `FrameResources`,
+  `RayTracingFunctions`, `RtPipeline`, and `Swapchain`; it never mentions
+  `VulkanContext` — the renderer borrows specific handles, not the context, so the
+  unit is decoupled from bring-up entirely.
 - `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`,
   `RtPipeline`, or `Renderer`.
 
@@ -105,7 +106,7 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    build-generated `triangle_spv.h` (the embedded shader module — see
    [Ray tracing pipeline](#ray-tracing-pipeline)).
 5. `renderer.cpp` includes `rt_pipeline.hpp`, `swapchain.hpp`, and
-   `vulkan_context.hpp` to resolve the three structs its header only
+   `vulkan_context.hpp` to resolve the borrowed structs its header only
    forward-declares.
 
 File-local helpers live in an anonymous namespace inside each `.cpp`; only the
@@ -117,7 +118,8 @@ Four RAII owners — split by resource lifetime:
 
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
   window, the instance, the debug messenger, the surface, the device, the command
-  pool, the command buffer, the image-available semaphore, and the in-flight fence.
+  pool, and the `frames` array. Each `FrameResources` slot owns one command buffer,
+  one image-available semaphore, and one in-flight fence.
 - **`Swapchain`** (recreated on resize) owns: the swapchain, its images, its image
   views, the format/extent, the **per-image** render-finished semaphores, and the
   **storage image** (the trace output target — its `VkImage`, backing
@@ -146,12 +148,12 @@ Things that are neither created nor destroyed by the program (`physicalDevice`, 
 `Renderer` is deliberately **not** a fifth owner: it is a parameter bundle over
 borrowed handles (in the spirit of `QueueFamilyIndices`), with no destructor and no
 idle wait. Its handle members are copies of program-lifetime objects; `Swapchain` is
-held by pointer because its members are replaced on every recreate. `main()` creates
-it after everything it points at, so it cannot outlive what it borrows. Whether the
-per-frame objects (command buffer, image-available semaphore, in-flight fence) should
-*move* into renderer ownership is a question deferred to frames in flight — today the
-AS build borrows them before the RT pipeline exists, which would force two-phase
-renderer initialization.
+held by pointer because its members are replaced on every recreate, and the
+`FrameResources` array is borrowed by pointer because `VulkanContext` owns it for the
+program lifetime. Keeping the frame slots in `VulkanContext` lets the acceleration
+structure build borrow `frames[0]` before the RT pipeline and `Renderer` exist,
+without forcing two-phase renderer initialization. `main()` creates the renderer
+view after everything it points at, so it cannot outlive what it borrows.
 
 ### Destruction order
 
@@ -206,20 +208,20 @@ returns `1` on failure (RAII handles the unwind):
 8. **Swapchain.** `createSwapchainResources` — swapchain, image views, per-image
    render-finished semaphores, and the storage output image (created last, so it is
    torn down first).
-9. **Command pool + buffer** (trace family) and **frame sync objects**
-   (image-available semaphore + in-flight fence).
+9. **Command pool + frame resources** (trace family): one primary command buffer,
+   image-available semaphore, and in-flight fence per frame slot.
 10. **Acceleration structures.** `buildAccelerationStructures` — see
-    [Acceleration structures](#acceleration-structures). Borrows the frame command
-    buffer and in-flight fence from step 9 and returns them in the state the first
-    `drawFrame` expects.
+    [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
+    command buffer and in-flight fence from step 9 and returns them in the state the
+    first `drawFrame` expects; the other frame slots remain signaled and untouched.
 11. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
     `buildShaderBindingTable` — see [Ray tracing pipeline](#ray-tracing-pipeline).
 12. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
-    it borrows exists — then the initial `prepareRtForSwapchain` (descriptor write +
-    dispatch-limit gate) runs against it.
-13. **Render loop.** `drawFrame(renderer)` per iteration; recreate on
-    out-of-date/suboptimal, followed by `prepareRtForSwapchain` against the fresh
-    storage image.
+    it borrows exists, including `ctx.frames.data()` — then the initial
+    `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
+13. **Render loop.** `drawFrame(renderer, currentFrame)` per iteration, rotating
+    `currentFrame` modulo `MaxFramesInFlight`; recreate on out-of-date/suboptimal,
+    followed by `prepareRtForSwapchain` against the fresh storage image.
 
 ### Device selection
 
@@ -289,31 +291,41 @@ indices from `pickPhysicalDevice`.
 
 ## The frame
 
-A single frame is in flight at a time. `drawFrame` in
-[src/renderer.cpp](src/renderer.cpp), reaching everything it needs through the
-`Renderer` view:
+Up to `MaxFramesInFlight` frames can be queued. `main()` owns a `currentFrame` cursor
+and rotates it after every `drawFrame(renderer, currentFrame)` call; each slot has its
+own command buffer, image-available semaphore, and in-flight fence. `drawFrame` in
+[src/renderer.cpp](src/renderer.cpp) reaches everything through the `Renderer` view:
 
 ```
-vkWaitForFences(inFlightFence)         // block until the previous frame completed
-vkAcquireNextImageKHR                  // -> imageIndex, signals imageAvailableSemaphore
+frame = frames[frameIndex]
+vkWaitForFences(frame.inFlightFence)   // block until this slot's prior submit retired
+vkAcquireNextImageKHR                  // -> imageIndex, signals frame.imageAvailableSemaphore
   ├─ OUT_OF_DATE        -> return (caller recreates the swapchain)
   └─ bounds-check imageIndex against the per-image vectors
 vkResetCommandBuffer
 recordTraceCommandBuffer               // see below
-vkResetFences(inFlightFence)           // only now that a submit is guaranteed to follow
-vkQueueSubmit(traceQueue)              // waits imageAvailable@TRANSFER, signals renderFinished[i], fence
+vkResetFences(frame.inFlightFence)     // only now that a submit is guaranteed to follow
+vkQueueSubmit(traceQueue)              // waits frame.imageAvailable@TRANSFER,
+                                      // signals renderFinished[i] + frame.inFlightFence
 vkQueuePresentKHR(presentQueue)        // waits renderFinished[i]
   └─ OUT_OF_DATE / SUBOPTIMAL -> return (caller recreates)
 return acquireResult                   // surfaces a SUBOPTIMAL acquire to the caller
 ```
 
-`recordTraceCommandBuffer` records a one-time-submit buffer with six steps — trace
+Advancing the cursor even after an acquire returns out-of-date is safe: that frame
+slot did not submit work, so its fence remains signaled and its image-available
+semaphore was not consumed by a queue submission.
+
+`recordTraceCommandBuffer` records a one-time-submit buffer with seven steps — trace
 into the storage image, then blit it into the acquired swapchain image:
 
-1. Barrier the storage image `UNDEFINED → GENERAL` (`srcStageMask` `TOP_OF_PIPE`,
-   destination `RAY_TRACING_SHADER`/`SHADER_WRITE`; `oldLayout` `UNDEFINED` discards
-   prior contents — the whole image is overwritten). `GENERAL` is the layout
-   storage-image writes require and must match what the descriptor set declared.
+1. Barrier the storage image `UNDEFINED → GENERAL` (`srcStageMask`
+   `RAY_TRACING_SHADER`, destination `RAY_TRACING_SHADER`/`SHADER_WRITE`;
+   `oldLayout` `UNDEFINED` discards prior contents — the whole image is
+   overwritten). `GENERAL` is the layout storage-image writes require and must match
+   what the descriptor set declared. The source stage chains from the previous
+   frame's trailing storage-image barrier without involving the acquire wait's
+   `TRANSFER` stage.
 2. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
    then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
    extent — one ray per pixel. **No acceleration-structure barrier here**: the AS
@@ -326,22 +338,27 @@ into the storage image, then blit it into the acquired swapchain image:
 5. `vkCmdBlitImage` storage → swapchain (matching extents, `VK_FILTER_NEAREST`). A
    **blit**, not a copy, on purpose: blit does format conversion, so if the swapchain
    format is sRGB the storage `UNORM` value is gamma-encoded for presentation here.
-6. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
+6. Execution-only barrier `TRANSFER → RAY_TRACING_SHADER`, so a later frame cannot
+   overwrite the shared storage image until this frame's blit has finished reading
+   it. No memory dependency is needed for this write-after-read hazard; only ordering
+   matters.
+7. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
 
-`recordTraceCommandBuffer` (and its `recordImageBarrier` helper) are file-private in
+`recordTraceCommandBuffer` (and its `recordImageBarrier` / `recordExecutionBarrier`
+helpers) are file-private in
 `renderer.cpp`; the unit's exported surface is `drawFrame` and
 `prepareRtForSwapchain`, each taking only the `Renderer` view.
 
 ## Synchronization model
 
-The current model is intentionally minimal — one frame in flight — with three sync
-primitives:
+The frame model has two rotating frame slots:
 
 | Primitive | Count | Owner | Role |
 |-----------|-------|-------|------|
-| `imageAvailableSemaphore` | 1 | `VulkanContext` | Signaled by acquire; the submit waits on it at the `TRANSFER` stage. |
+| `frames[i].imageAvailableSemaphore` | one **per frame in flight** | `VulkanContext` | Signaled by acquire; that frame slot's submit waits on it at the `TRANSFER` stage. |
 | `renderFinishedSemaphores[i]` | one **per swapchain image** | `Swapchain` | Signaled by the submit; the present waits on it. |
-| `inFlightFence` | 1 | `VulkanContext` | Signaled when the submit completes; the next frame waits on it. Created **already signaled** so the first frame's wait does not deadlock. |
+| `frames[i].inFlightFence` | one **per frame in flight** | `VulkanContext` | Signaled when that slot's submit completes; the next reuse of the slot waits on it. Created **already signaled** so the first wait for each slot does not deadlock. |
+| `frames[i].commandBuffer` | one **per frame in flight** | `VulkanContext` | Reset and rerecorded only after the matching in-flight fence proves the slot's previous submission has retired. |
 
 Two subtleties worth preserving:
 
@@ -357,15 +374,21 @@ Two subtleties worth preserving:
   start. The present barrier's `dstStageMask` is `BOTTOM_OF_PIPE` because no later
   GPU stage consumes the image — the render-finished semaphore is what the present
   actually waits on.
+- **Shared storage image reuse.** The storage image is still one image shared by all
+  frame slots. To keep frame N+1 from discarding it while frame N's blit is still
+  reading it, the frame records a trailing execution-only barrier after the blit:
+  `TRANSFER → RAY_TRACING_SHADER`. The next frame's leading `UNDEFINED → GENERAL`
+  transition uses `srcStageMask = RAY_TRACING_SHADER`, chaining onto that trailing
+  barrier. This orders "old blit read" before "new trace write" without making ray
+  tracing wait on the acquire semaphore's `TRANSFER` stage. `oldLayout = UNDEFINED`
+  still discards prior contents, so `srcAccessMask` stays zero.
 - **Per-image, not per-frame, render-finished semaphores.** A present is signaled
   against the specific acquired image, so these are sized to the image count and
-  indexed by `imageIndex`. The image-available semaphore and the fence are single
-  because only one frame is in flight.
-
-> **When this grows:** moving to N frames in flight means per-frame-in-flight
-> image-available semaphores, command buffers, and fences (and the bookkeeping to
-> rotate them). The render-finished semaphores stay per-image. This is the most likely
-> first change to this section.
+  indexed by `imageIndex`, even though command buffers, image-available semaphores,
+  and fences rotate by frame slot.
+- **Fence before semaphore reuse.** `drawFrame` waits the frame slot's fence before
+  acquiring with that slot's image-available semaphore again, proving any prior
+  submission that consumed the semaphore has retired before the semaphore is reused.
 
 ## Swapchain and resize handling
 
@@ -405,7 +428,10 @@ image. It is owned by `Swapchain` because it tracks the swapchain extent and
 must be rebuilt on resize, so it rides the existing
 `createSwapchainResources` / `destroySwapchainResources` / `recreateSwapchain`
 machinery rather than introducing a new lifetime path. A **single** image suffices
-because only one frame is in flight.
+for now even with two frames in flight: the frame path adds explicit barriers so a
+later frame cannot overwrite it until the previous frame's blit has finished reading
+from it. Per-frame storage images remain a possible future simplification if the app
+needs deeper overlap.
 
 - **Format:** `R8G8B8A8_UNORM` — a member of Vulkan's guaranteed storage-image set,
   defined once as `StorageImageFormat` in `swapchain.cpp` so the suitability gate and
@@ -469,9 +495,11 @@ Decisions and contracts worth preserving:
   pipeline barrier's second scope covers all later commands in submission order on
   the queue, so it makes the TLAS visible to every future `vkCmdTraceRaysKHR`
   without the frame path needing its own barrier.
-- **Borrowed sync.** The submit reuses `ctx.inFlightFence`: reset → submit → wait
-  leaves the fence signaled, exactly the state the first `drawFrame`'s wait depends
-  on, without introducing a temporary fence that could leak on a failure path.
+- **Borrowed sync.** The submit reuses `frames[0]`'s in-flight fence: reset →
+  submit → wait leaves the fence signaled, exactly the state the first `drawFrame`'s
+  wait depends on, without introducing a temporary fence that could leak on a
+  failure path. The other frame slots are untouched (their fences are created
+  signaled).
 - **Scratch release.** The scratch buffers live in the owner (not as locals) so a
   failed build bare-returns and the destructor cleans up; on success they are
   destroyed immediately after the fence wait rather than held for the program's
@@ -584,8 +612,16 @@ gain as it lands:
    `renderer.{hpp,cpp}`; `main.cpp` is orchestration only and the plumbing
    parameters collapsed into the non-owning `Renderer` view (see
    [Module map](#module-map) and [Ownership model](#ownership-model)).
-5. **Frames in flight.** Likely a parallel change — see the note in
-   [Synchronization model](#synchronization-model).
+5. ~~**Frames in flight.**~~ ✅ **Landed** — see
+   [Synchronization model](#synchronization-model). Per-frame `FrameResources`
+   slots (command buffer, image-available semaphore, in-flight fence) rotated by
+   `main()`'s cursor, with the shared storage image protected across frames by the
+   trailing/leading barrier chain. Render-finished semaphores stayed per-image, as
+   the old note here predicted.
+
+With step 5 the tracked roadmap is complete. Further items (a camera and uniform
+data, more geometry, accumulation, denoising, …) should be added here as they are
+chosen, following the same landed/pending format.
 
 As each item is built, update the [Status](#status) section, add a subsystem section,
 and revise the ownership/synchronization sections if the new code changes those

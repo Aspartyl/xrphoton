@@ -301,11 +301,11 @@ int main()
         &ctx.frames);
 
     if (commandBufferResult != VK_SUCCESS) {
-        std::cerr << "Failed to allocate Vulkan command buffer.\n";
+        std::cerr << "Failed to allocate Vulkan per-frame command buffers.\n";
         return 1;
     }
 
-    std::cout << "Allocated Vulkan command buffer.\n";
+    std::cout << "Allocated Vulkan per-frame command buffers.\n";
 
     const VkResult syncObjectsResult = createFrameSyncObjects(
         ctx.device,

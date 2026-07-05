@@ -201,7 +201,9 @@ VkResult recordTraceCommandBuffer(
     // retires. Chain that next trace behind this blit's storage-image read without
     // creating a memory dependency; a write-after-read hazard only needs execution
     // ordering, and using RAY_TRACING_SHADER as the destination avoids the acquire wait's
-    // TRANSFER stage.
+    // TRANSFER stage. This barrier must stay after the frame's LAST storage-image read:
+    // a read recorded below it would sit outside the dependency and silently reopen the
+    // cross-frame hazard.
     recordExecutionBarrier(
         commandBuffer,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -260,15 +262,12 @@ bool prepareRtForSwapchain(const Renderer& renderer)
 VkResult drawFrame(const Renderer& renderer, uint32_t frameIndex)
 {
     const Swapchain& swap = *renderer.swap;
-
-    if (renderer.frames == nullptr || frameIndex >= MaxFramesInFlight) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
-
     const FrameResources& frame = renderer.frames[frameIndex];
 
-    // Block until the previous frame's submission has completed before reusing its
-    // command buffer and sync objects.
+    // Block until this slot's previous submission (MaxFramesInFlight frames ago) has
+    // completed before reusing its command buffer and sync objects. The other slots'
+    // frames deliberately stay in flight — cross-frame ordering on the shared storage
+    // image is the barrier chain's job, not this wait's.
     VkResult result = vkWaitForFences(
         renderer.device,
         1,

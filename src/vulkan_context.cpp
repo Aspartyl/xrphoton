@@ -424,25 +424,25 @@ VkResult allocateCommandBuffers(
     VkCommandPool commandPool,
     std::array<FrameResources, MaxFramesInFlight>* frames)
 {
-    std::array<VkCommandBuffer, MaxFramesInFlight> commandBuffers{};
-
     VkCommandBufferAllocateInfo commandBufferAllocateInfo{};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     commandBufferAllocateInfo.commandPool = commandPool;
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandBufferAllocateInfo.commandBufferCount = MaxFramesInFlight;
+    commandBufferAllocateInfo.commandBufferCount = 1;
 
-    const VkResult result = vkAllocateCommandBuffers(
-        device,
-        &commandBufferAllocateInfo,
-        commandBuffers.data());
+    // One allocation call per slot rather than one batched call: the batched form
+    // writes a contiguous VkCommandBuffer array, which the commandBuffer members of an
+    // array of FrameResources are not. On mid-loop failure the buffers allocated so
+    // far stay in *frames for the VulkanContext destructor.
+    for (FrameResources& frame : *frames) {
+        const VkResult result = vkAllocateCommandBuffers(
+            device,
+            &commandBufferAllocateInfo,
+            &frame.commandBuffer);
 
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex) {
-        (*frames)[frameIndex].commandBuffer = commandBuffers[frameIndex];
+        if (result != VK_SUCCESS) {
+            return result;
+        }
     }
 
     return VK_SUCCESS;
@@ -600,15 +600,15 @@ VulkanContext::~VulkanContext()
         (void)vkDeviceWaitIdle(device);
     }
 
+    // Each slot's sync objects go together (fence, then semaphore — reverse of their
+    // per-slot creation order); there is no cross-slot ordering requirement.
     if (device != VK_NULL_HANDLE) {
         for (const FrameResources& frame : frames) {
             if (frame.inFlightFence != VK_NULL_HANDLE) {
                 vkDestroyFence(device, frame.inFlightFence, nullptr);
                 std::cout << "Destroyed Vulkan in-flight fence.\n";
             }
-        }
 
-        for (const FrameResources& frame : frames) {
             if (frame.imageAvailableSemaphore != VK_NULL_HANDLE) {
                 vkDestroySemaphore(device, frame.imageAvailableSemaphore, nullptr);
                 std::cout << "Destroyed Vulkan image-available semaphore.\n";
