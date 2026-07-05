@@ -619,9 +619,57 @@ gain as it lands:
    trailing/leading barrier chain. Render-finished semaphores stayed per-image, as
    the old note here predicted.
 
-With step 5 the tracked roadmap is complete. Further items (a camera and uniform
-data, more geometry, accumulation, denoising, …) should be added here as they are
-chosen, following the same landed/pending format.
+Steps 6–10 below are pending, in priority order. They are shaped by the project's
+long-term target: xrPhoton (X-Ray Photon Engine) is a modern-C++/Vulkan rebuild of
+the X-Ray engine with a **path-tracing-only** rendering pipeline, and a standalone
+STALKER-like game will eventually be built on it. That target sets the bar the
+descriptions below reference — outdoor levels heavy with alpha-tested foliage,
+skinned characters, many small lights, dynamic time-of-day — and is why the later
+steps are phrased for real-time temporal techniques rather than offline-style
+progressive rendering.
+
+6. **Camera + push constants.** Pending — replace the raygen shader's hardcoded
+   orthographic setup with a perspective camera (origin + ray basis, or inverse
+   view/projection matrices) delivered via push constants, plus a GLFW fly camera
+   so the engine is interactive from the first possible moment. Fixes the latent
+   aspect-ratio distortion on resize (the current NDC-square mapping stretches).
+   Push constants over per-frame uniform buffers deliberately: the payload fits
+   the spec-guaranteed 128-byte range, the data is recorded into the command
+   buffer so frames in flight cannot race on it, and no descriptor layout change
+   is needed. Per-`FrameResources`-slot uniform buffers are the designated
+   promotion path when a payload outgrows the push range — expected at scene
+   time, not camera time.
+7. **Geometry + scene representation.** Pending — real meshes replacing the
+   hardcoded triangle: indexed vertex data with per-vertex attributes (normals,
+   UVs) fetched in the closest-hit shader via buffer device addresses, multiple
+   BLASes with instance transforms, and material data in storage buffers indexed
+   per instance/geometry. Designed from the start around the split between opaque
+   and alpha-tested geometry classes (separate hit groups and SBT entries):
+   foliage-heavy STALKER scenes make any-hit alpha testing the engine's single
+   biggest traversal cost lever, and the current `FORCE_OPAQUE` trace flag is
+   temporary. Implies the first asset-loading path (a simple interchange format
+   first; the X-Ray-content conversion pipeline is a separate later concern).
+8. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
+   rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
+   buffers, one per `FrameResources` slot (the first genuinely per-frame-written
+   GPU buffer — slot rotation is what prevents overwriting instance data a frame
+   in flight still reads). Then deformables: compute-pass skinning into per-slot
+   vertex buffers followed by per-character BLAS refits, for NPCs and mutants.
+   Also the natural point for a real loop with delta-time (fixed-timestep
+   simulation can wait for game systems).
+9. **Lighting + path tracing.** Pending — the renderer becomes an actual path
+   tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
+   pipeline recursion depth at 1), next-event estimation with shadow rays,
+   emissive geometry, and a sun/sky model for time-of-day. Many-light sampling
+   is a first-class requirement, not a stress case — a campsite ringed by
+   anomalies at night is the ordinary frame — so NEE lands with light-selection
+   sampling from the start and a ReSTIR-class upgrade as the tracked follow-up.
+10. **Temporal accumulation + denoising.** Pending — one coupled system, and the
+    critical path for a playable image: at real-time budgets every visible pixel
+    is denoiser output over ~1 sample per pixel. Motion vectors, temporal
+    reprojection with disocclusion rejection, and an SVGF-class spatiotemporal
+    filter — not offline-style progressive accumulation, which a moving camera
+    and living scene rule out.
 
 As each item is built, update the [Status](#status) section, add a subsystem section,
 and revise the ownership/synchronization sections if the new code changes those
