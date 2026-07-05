@@ -582,6 +582,13 @@ Decisions and contracts worth preserving:
 
 ## Conventions
 
+- **One focus, clear vision.** This is a one-man project, and what makes that
+  workable is a single deliberate answer to each design question — not parallel
+  systems maintained side by side. Leanness is the side effect, not the goal.
+  The path-tracing-only rendering pipeline is the flagship example (no raster
+  path, no lightmaps, no renderer variants); the same principle applies to every
+  subsystem — when a design fork offers a general mechanism next to a single
+  sufficient path, take the single path.
 - Everything in `namespace xrphoton`; `main.cpp` pulls it in with `using namespace`.
 - Free functions, `camelCase` names; `PascalCase` for constants and types.
 - Cross-file functions are declared in the headers; file-private helpers live in an
