@@ -601,41 +601,7 @@ Decisions and contracts worth preserving:
 
 ## Roadmap
 
-The intended trajectory, in rough order. Each item is a section this document should
-gain as it lands:
-
-1. ~~**Storage image.**~~ ✅ **Landed** — see [Storage image](#storage-image). A
-   device-local image the ray tracer writes, blitted to the swapchain image (replacing
-   the direct clear), sized to the swapchain extent and recreated on resize.
-2. ~~**Acceleration structures.**~~ ✅ **Landed** — see
-   [Acceleration structures](#acceleration-structures). BLAS/TLAS build — geometry
-   upload, build sizes, scratch buffers, and the device-address plumbing the RT
-   pipeline needs.
-3. ~~**Ray tracing pipeline + shader binding table.**~~ ✅ **Landed** — see
-   [Ray tracing pipeline](#ray-tracing-pipeline). Ray generation / miss / hit
-   shaders, the pipeline, and the SBT layout `vkCmdTraceRaysKHR` indexes into.
-4. ~~**Renderer extraction.**~~ ✅ **Landed** — `drawFrame`,
-   `recordTraceCommandBuffer`, and `prepareRtForSwapchain` live in
-   `renderer.{hpp,cpp}`; `main.cpp` is orchestration only and the plumbing
-   parameters collapsed into the non-owning `Renderer` view (see
-   [Module map](#module-map) and [Ownership model](#ownership-model)).
-5. ~~**Frames in flight.**~~ ✅ **Landed** — see
-   [Synchronization model](#synchronization-model). Per-frame `FrameResources`
-   slots (command buffer, image-available semaphore, in-flight fence) rotated by
-   `main()`'s cursor, with the shared storage image protected across frames by the
-   trailing/leading barrier chain. Render-finished semaphores stayed per-image, as
-   the old note here predicted.
-
-Steps 6–10 below are pending, in priority order. They are shaped by the project's
-long-term target: xrPhoton (X-Ray Photon Engine) is a modern-C++/Vulkan rebuild of
-the X-Ray engine with a **path-tracing-only** rendering pipeline, and a standalone
-STALKER-like game will eventually be built on it. That target sets the bar the
-descriptions below reference — outdoor levels heavy with alpha-tested foliage,
-skinned characters, many small lights, dynamic time-of-day — and is why the later
-steps are phrased for real-time temporal techniques rather than offline-style
-progressive rendering.
-
-6. **Camera + push constants.** Pending — replace the raygen shader's hardcoded
+1. **Camera + push constants.** Pending — replace the raygen shader's hardcoded
    orthographic setup with a perspective camera (origin + ray basis, or inverse
    view/projection matrices) delivered via push constants, plus a GLFW fly camera
    so the engine is interactive from the first possible moment. Fixes the latent
@@ -646,7 +612,7 @@ progressive rendering.
    is needed. Per-`FrameResources`-slot uniform buffers are the designated
    promotion path when a payload outgrows the push range — expected at scene
    time, not camera time.
-7. **Geometry + scene representation.** Pending — real meshes replacing the
+2. **Geometry + scene representation.** Pending — real meshes replacing the
    hardcoded triangle: indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple
    BLASes with instance transforms, and material data in storage buffers indexed
@@ -656,7 +622,7 @@ progressive rendering.
    biggest traversal cost lever, and the current `FORCE_OPAQUE` trace flag is
    temporary. Implies the first asset-loading path (a simple interchange format
    first; the X-Ray-content conversion pipeline is a separate later concern).
-8. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
+3. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
    rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
    buffers, one per `FrameResources` slot (the first genuinely per-frame-written
    GPU buffer — slot rotation is what prevents overwriting instance data a frame
@@ -664,19 +630,19 @@ progressive rendering.
    vertex buffers followed by per-character BLAS refits, for NPCs and mutants.
    Also the natural point for a real loop with delta-time (fixed-timestep
    simulation can wait for game systems).
-9. **Lighting + path tracing.** Pending — the renderer becomes an actual path
+4. **Lighting + path tracing.** Pending — the renderer becomes an actual path
    tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
    pipeline recursion depth at 1), next-event estimation with shadow rays,
    emissive geometry, and a sun/sky model for time-of-day. Many-light sampling
    is a first-class requirement, not a stress case — a campsite ringed by
    anomalies at night is the ordinary frame — so NEE lands with light-selection
    sampling from the start and a ReSTIR-class upgrade as the tracked follow-up.
-10. **Temporal accumulation + denoising.** Pending — one coupled system, and the
-    critical path for a playable image: at real-time budgets every visible pixel
-    is denoiser output over ~1 sample per pixel. Motion vectors, temporal
-    reprojection with disocclusion rejection, and an SVGF-class spatiotemporal
-    filter — not offline-style progressive accumulation, which a moving camera
-    and living scene rule out.
+5. **Temporal accumulation + denoising.** Pending — one coupled system, and the
+   critical path for a playable image: at real-time budgets every visible pixel
+   is denoiser output over ~1 sample per pixel. Motion vectors, temporal
+   reprojection with disocclusion rejection, and an SVGF-class spatiotemporal
+   filter — not offline-style progressive accumulation, which a moving camera
+   and living scene rule out.
 
 As each item is built, update the [Status](#status) section, add a subsystem section,
 and revise the ownership/synchronization sections if the new code changes those
