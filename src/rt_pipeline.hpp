@@ -50,4 +50,21 @@ struct RtPipeline
     RtPipeline& operator=(const RtPipeline&) = delete;
     ~RtPipeline();
 };
+
+// Create the descriptor set layout (binding 0 the TLAS, binding 1 the storage image,
+// both raygen-only), a pool sized for exactly the one set, and allocate that set.
+// Adopts device into *rt first, so on failure *rt holds whatever was created so far
+// and ~RtPipeline cleans it up; the caller can bare-return.
+VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device);
+
+// Point the set's bindings at the TLAS (binding 0) and the storage image view in
+// GENERAL layout (binding 1). Called once at startup and again after every successful
+// swapchain recreate: the storage image view is recreated with the swapchain, and
+// recreateSwapchain's device-idle guarantees the set is not referenced by pending
+// work, which vkUpdateDescriptorSets requires.
+void writeRtDescriptorSet(
+    VkDevice device,
+    VkDescriptorSet descriptorSet,
+    VkAccelerationStructureKHR tlas,
+    VkImageView storageImageView);
 }

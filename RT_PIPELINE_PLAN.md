@@ -78,7 +78,7 @@ The usual RAII-owner pattern, program-lifetime, borrows `VkDevice`:
   `rt_pipeline.cpp` includes `vulkan_context.hpp` for the full definition plus
   `createBuffer`.
 
-## Step 3 — Descriptor set layout, pool, set
+## Step 3 — Descriptor set layout, pool, set ✅ (landed)
 
 - Layout: binding 0 `ACCELERATION_STRUCTURE_KHR` (raygen stage), binding 1
   `STORAGE_IMAGE` (raygen stage).
