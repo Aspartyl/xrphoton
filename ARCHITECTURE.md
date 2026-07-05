@@ -5,19 +5,20 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 ## Status
 
-xrPhoton brings up a Vulkan instance and device configured for hardware ray
-tracing, creates a swapchain, builds the ray tracing **acceleration structures** (a
-BLAS over a hardcoded triangle and a single-instance TLAS — see
-[Acceleration structures](#acceleration-structures)), and runs a render loop that
-clears a device-local **storage image** to a solid color, blits it to the acquired
-swapchain image, and presents it. The present path is fully wired — swapchain
-creation, per-frame synchronization, and resize handling all work — and the
-storage→blit output path is in place. There is **no tracing yet**: the acceleration
-structures are built but nothing traverses them, the ray tracing *pipeline* entry
-points are loaded but unused, and the storage image is produced by a
-`vkCmdClearColorImage` rather than by tracing rays. The storage-clear-blit-present
-path is deliberately the seed of the eventual renderer: `vkCmdTraceRaysKHR` will
-replace the clear while the storage→swapchain presentation path stays.
+xrPhoton renders its first ray traced pixels. It brings up a Vulkan instance and
+device configured for hardware ray tracing, creates a swapchain, builds the ray
+tracing **acceleration structures** (a BLAS over a hardcoded triangle and a
+single-instance TLAS — see
+[Acceleration structures](#acceleration-structures)), creates the **ray tracing
+pipeline and shader binding table** (see
+[Ray tracing pipeline](#ray-tracing-pipeline)), and runs a render loop in which
+`vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS, writing a device-local
+**storage image** — the triangle in barycentric colors over a dark red miss
+background — which is then blitted to the acquired swapchain image and presented.
+The present path is fully wired (swapchain creation, per-frame synchronization,
+resize handling including the descriptor rewrite the resize obligates), and every
+piece of the RT stack is now exercised each frame. The next structural move is
+extracting `drawFrame` and the record function into a `renderer.{hpp,cpp}` unit.
 
 ## Goals and constraints
 
@@ -37,24 +38,24 @@ replace the clear while the storage→swapchain presentation path stays.
 
 ## Module map
 
-The code is four translation units, all in `namespace xrphoton`. The split is along
+The code is five translation units, all in `namespace xrphoton`. The split is along
 **resource lifetime** (program-lifetime vs. recreated-on-resize) and **orchestration
 vs. mechanism**.
 
 ```
-            ┌────────────────────────────────────────────────────────┐
-            │ main.cpp                                               │
-            │   orchestration + the render loop                      │
-            │   drawFrame / recordClearSwapchainImageCommand         │
-            └──────┬────────────────────┬───────────────────┬────────┘
-                   │ uses               │ uses              │ uses
-    ┌──────────────▼───────┐ ┌──────────▼─────────┐ ┌───────▼─────────────────┐
-    │ vulkan_context.{hpp, │ │ swapchain.{hpp,cpp}│ │ acceleration_structure. │
-    │ cpp}                 │ │   Swapchain owner  │ │ {hpp,cpp}               │
-    │   VulkanContext owner│ │   create/recreate/ │ │   AccelerationStructure │
-    │   instance, device,  │ │   support query    │ │   owner; the BLAS/TLAS  │
-    │   queues, RT fns     │ │                    │ │   startup build         │
-    └──────────────────────┘ └────────────────────┘ └─────────────────────────┘
+        ┌───────────────────────────────────────────────────────────────────┐
+        │ main.cpp                                                          │
+        │   orchestration + the render loop                                 │
+        │   drawFrame / recordTraceCommandBuffer / prepareRtForSwapchain    │
+        └──────┬──────────────┬──────────────────┬──────────────────┬───────┘
+               │ uses         │ uses             │ uses             │ uses
+┌──────────────▼───────┐ ┌────▼───────────────┐ ┌▼────────────────┐ ┌▼──────────────┐
+│ vulkan_context.{hpp, │ │ swapchain.{hpp,cpp}│ │ acceleration_   │ │ rt_pipeline.  │
+│ cpp}                 │ │   Swapchain owner  │ │ structure.      │ │ {hpp,cpp}     │
+│   VulkanContext owner│ │   create/recreate/ │ │ {hpp,cpp}       │ │   RtPipeline  │
+│   instance, device,  │ │   support query    │ │   BLAS/TLAS     │ │   owner; SBT; │
+│   queues, RT fns     │ │                    │ │   startup build │ │   descriptors │
+└──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
 
 | Unit | Owns / provides | Lifetime |
@@ -62,15 +63,18 @@ vs. mechanism**.
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, command pool/buffer, frame sync), `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including the shared `findMemoryType` / `createBuffer`) | Program lifetime — created once |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the storage output image + its memory and view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
-| [src/main.cpp](src/main.cpp) | `main()` orchestration, `drawFrame`, `recordClearSwapchainImageCommandBuffer` | Program lifetime |
+| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
+| [src/main.cpp](src/main.cpp) | `main()` orchestration, `drawFrame`, `recordTraceCommandBuffer`, `prepareRtForSwapchain` | Program lifetime |
 
 ### Header dependency rule
 
 Includes are kept acyclic by a deliberate rule:
 
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
-- `acceleration_structure.hpp` only **forward-declares** `RayTracingFunctions`.
-- `vulkan_context.hpp` never mentions `Swapchain` or `AccelerationStructure`.
+- `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
+  `RayTracingFunctions`.
+- `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`, or
+  `RtPipeline`.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -81,13 +85,17 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
 3. `buildAccelerationStructures` needs the full `RayTracingFunctions` plus the shared
    `createBuffer` / `findMemoryType` helpers, which it gets by including
    `vulkan_context.hpp` in `acceleration_structure.cpp`.
+4. `rt_pipeline.cpp` likewise includes `vulkan_context.hpp` for the full
+   `RayTracingFunctions` and `createBuffer`; it additionally includes the
+   build-generated `triangle_spv.h` (the embedded shader module — see
+   [Ray tracing pipeline](#ray-tracing-pipeline)).
 
 File-local helpers live in an anonymous namespace inside each `.cpp`; only the
 cross-file surface is declared in the headers.
 
 ## Ownership model
 
-Three RAII owners — one per resource lifetime:
+Four RAII owners — split by resource lifetime:
 
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
   window, the instance, the debug messenger, the surface, the device, the command
@@ -105,6 +113,14 @@ Three RAII owners — one per resource lifetime:
   `vkDestroyAccelerationStructureKHR` pointer (a runtime-resolved extension entry
   point) so its destructor can tear down the two `VkAccelerationStructureKHR` handles
   without caller involvement.
+- **`RtPipeline`** (program lifetime, created once at startup) owns: the descriptor
+  set layout, the pipeline layout, the descriptor pool and the one descriptor set
+  allocated from it (freed implicitly with the pool, but held as a member — both the
+  render path and the rewrite-on-recreate path need the handle), the ray tracing
+  pipeline, the SBT buffer + memory, the four `VkStridedDeviceAddressRegionKHR`s the
+  trace consumes, and — transiently, during creation only — the shader module. Like
+  the others it borrows its `VkDevice`. Its destructor needs no extension entry
+  points (`vkDestroyPipeline` etc. are core), unlike `AccelerationStructure`.
 
 Things that are neither created nor destroyed by the program (`physicalDevice`, the
 `VkQueue` handles, the resolved `RayTracingFunctions`) stay as plain `main()` locals.
@@ -115,9 +131,9 @@ In `main()` the `VulkanContext` is declared **first**, so every other owner dest
 before the device and surface it borrows from. This is the single most important
 ordering invariant in the program, and it is what lets every failure path in `main()`
 be a bare `return 1;` with no manual cleanup. Beyond "after `ctx`", the borrowing
-owners (`Swapchain`, `AccelerationStructure`) need no ordering *relative to each
-other*: each waits for device idle in its own destructor rather than relying on a
-sibling having done so.
+owners (`Swapchain`, `AccelerationStructure`, `RtPipeline`) need no ordering
+*relative to each other*: each waits for device idle in its own destructor rather
+than relying on a sibling having done so.
 
 Each destructor:
 
@@ -157,8 +173,8 @@ returns `1` on failure (RAII handles the unwind):
 6. **Logical device.** One queue per unique {trace, present} family, with the ray
    tracing feature chain enabled.
 7. **Ray tracing functions.** `loadRayTracingFunctions` resolves the RT entry points
-   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 10;
-   the pipeline/trace entry points are loaded but not yet used.
+   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 10,
+   the pipeline subset by step 11, and `vkCmdTraceRaysKHR` by every frame.
 8. **Swapchain.** `createSwapchainResources` — swapchain, image views, per-image
    render-finished semaphores, and the storage output image (created last, so it is
    torn down first).
@@ -168,7 +184,11 @@ returns `1` on failure (RAII handles the unwind):
     [Acceleration structures](#acceleration-structures). Borrows the frame command
     buffer and in-flight fence from step 9 and returns them in the state the first
     `drawFrame` expects.
-11. **Render loop.** `drawFrame` per iteration; recreate on out-of-date/suboptimal.
+11. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
+    `buildShaderBindingTable`, then the initial `prepareRtForSwapchain` (descriptor
+    write + dispatch-limit gate) — see [Ray tracing pipeline](#ray-tracing-pipeline).
+12. **Render loop.** `drawFrame` per iteration; recreate on out-of-date/suboptimal,
+    followed by `prepareRtForSwapchain` against the fresh storage image.
 
 ### Device selection
 
@@ -233,7 +253,7 @@ vkAcquireNextImageKHR                  // -> imageIndex, signals imageAvailableS
   ├─ OUT_OF_DATE        -> return (caller recreates the swapchain)
   └─ bounds-check imageIndex against the per-image vectors
 vkResetCommandBuffer
-recordClearSwapchainImageCommandBuffer // see below
+recordTraceCommandBuffer               // see below
 vkResetFences(inFlightFence)           // only now that a submit is guaranteed to follow
 vkQueueSubmit(traceQueue)              // waits imageAvailable@TRANSFER, signals renderFinished[i], fence
 vkQueuePresentKHR(presentQueue)        // waits renderFinished[i]
@@ -241,27 +261,31 @@ vkQueuePresentKHR(presentQueue)        // waits renderFinished[i]
 return acquireResult                   // surfaces a SUBOPTIMAL acquire to the caller
 ```
 
-`recordClearSwapchainImageCommandBuffer` records a one-time-submit buffer with six
-steps — clear the storage image, then blit it into the acquired swapchain image:
+`recordTraceCommandBuffer` records a one-time-submit buffer with six steps — trace
+into the storage image, then blit it into the acquired swapchain image:
 
-1. Barrier the storage image `UNDEFINED → TRANSFER_DST_OPTIMAL` (`srcStageMask`
-   `TOP_OF_PIPE`; `oldLayout` `UNDEFINED` discards prior contents — the whole image is
-   overwritten).
-2. `vkCmdClearColorImage` the storage image to a dark red. *(`vkCmdTraceRaysKHR`
-   replaces steps 1–2 when ray tracing lands.)*
-3. Barrier the storage image `TRANSFER_DST_OPTIMAL → TRANSFER_SRC_OPTIMAL` (write →
-   read), to be the blit source.
+1. Barrier the storage image `UNDEFINED → GENERAL` (`srcStageMask` `TOP_OF_PIPE`,
+   destination `RAY_TRACING_SHADER`/`SHADER_WRITE`; `oldLayout` `UNDEFINED` discards
+   prior contents — the whole image is overwritten). `GENERAL` is the layout
+   storage-image writes require and must match what the descriptor set declared.
+2. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
+   then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
+   extent — one ray per pixel. **No acceleration-structure barrier here**: the AS
+   build's trailing barrier already made the TLAS visible to every future
+   `RAY_TRACING_SHADER` read (see
+   [Acceleration structures](#acceleration-structures)).
+3. Barrier the storage image `GENERAL → TRANSFER_SRC_OPTIMAL` (shader-write →
+   transfer-read), to be the blit source.
 4. Barrier the acquired image `UNDEFINED → TRANSFER_DST_OPTIMAL`, the blit destination.
 5. `vkCmdBlitImage` storage → swapchain (matching extents, `VK_FILTER_NEAREST`). A
    **blit**, not a copy, on purpose: blit does format conversion, so if the swapchain
    format is sRGB the storage `UNORM` value is gamma-encoded for presentation here.
 6. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
 
-This function is the embryonic renderer. When ray tracing lands, the storage clear
-(steps 1–2) is replaced by a `vkCmdTraceRaysKHR` into the storage image while the
-storage→swapchain blit stays, and the natural move is to extract `drawFrame` +
-`recordClear...` into a `renderer.{hpp,cpp}` unit, leaving `main.cpp` as
-orchestration only.
+This function is still the embryonic renderer: the next roadmap item extracts
+`drawFrame` + `recordTraceCommandBuffer` into a `renderer.{hpp,cpp}` unit, leaving
+`main.cpp` as orchestration only, and deletes the pipeline/descriptor plumbing
+parameters `drawFrame` grew in the meantime.
 
 ## Synchronization model
 
@@ -276,17 +300,18 @@ primitives:
 
 Two subtleties worth preserving:
 
-- **Stage matching.** The acquire semaphore waits at `TRANSFER`, matching the first
-  thing the submit does to the *swapchain* image: the blit-destination transition
-  (step 4) and the blit itself (step 5), both `TRANSFER` work. So the swapchain
-  transition cannot begin before the image is acquired. The storage clear (steps 1–2)
-  is *also* `TRANSFER` work and therefore also waits on acquire even though it does not
-  touch the swapchain image — so in this placeholder there is **no** pre-acquire
-  overlap. That overlap only appears once the storage write becomes `vkCmdTraceRaysKHR`
-  at the `RAY_TRACING_SHADER` stage (outside the `TRANSFER` wait), while the swapchain
-  image stays first-touched at the blit. The present barrier's `dstStageMask` is
-  `BOTTOM_OF_PIPE` because no later GPU stage consumes the image — the render-finished
-  semaphore is what the present actually waits on.
+- **Stage matching and pre-acquire overlap.** The acquire semaphore waits at
+  `TRANSFER`, matching the first thing the submit does to the *swapchain* image: the
+  blit-destination transition (step 4) and the blit itself (step 5), both `TRANSFER`
+  work. So the swapchain transition cannot begin before the image is acquired. The
+  trace (steps 1–2) runs at `RAY_TRACING_SHADER`, **outside** that wait stage, so the
+  GPU is free to trace before — or overlapping — the acquire; only the blit onto the
+  swapchain image is serialized behind it. This is the pre-acquire overlap this
+  section predicted while the storage write was still a transfer clear; it is now
+  real, with no submit-side change — the wait stage was chosen for this from the
+  start. The present barrier's `dstStageMask` is `BOTTOM_OF_PIPE` because no later
+  GPU stage consumes the image — the render-finished semaphore is what the present
+  actually waits on.
 - **Per-image, not per-frame, render-finished semaphores.** A present is signaled
   against the specific acquired image, so these are sized to the image count and
   indexed by `imageIndex`. The image-available semaphore and the fence are single
@@ -329,9 +354,9 @@ Selection policy inside `createSwapchain`:
 
 ## Storage image
 
-The **storage image** is the trace output target: a device-local image the renderer
-writes (today a clear, eventually `vkCmdTraceRaysKHR`) and then blits to the acquired
-swapchain image. It is owned by `Swapchain` because it tracks the swapchain extent and
+The **storage image** is the trace output target: a device-local image
+`vkCmdTraceRaysKHR` writes and the frame then blits to the acquired swapchain
+image. It is owned by `Swapchain` because it tracks the swapchain extent and
 must be rebuilt on resize, so it rides the existing
 `createSwapchainResources` / `destroySwapchainResources` / `recreateSwapchain`
 machinery rather than introducing a new lifetime path. A **single** image suffices
@@ -340,18 +365,20 @@ because only one frame is in flight.
 - **Format:** `R8G8B8A8_UNORM` — a member of Vulkan's guaranteed storage-image set,
   defined once as `StorageImageFormat` in `swapchain.cpp` so the suitability gate and
   the allocation use the exact same value.
-- **Usage:** `STORAGE` (for the eventual traceRays write) `| TRANSFER_SRC` (blit
-  source) `| TRANSFER_DST` (the placeholder clear). `TILING_OPTIMAL`, 1 mip / 1 layer,
-  `EXCLUSIVE` sharing — unlike the swapchain images, it is only ever touched on the
-  trace queue, so it needs no cross-family sharing.
+- **Usage:** `STORAGE` (the traceRays write) `| TRANSFER_SRC` (blit source)
+  `| TRANSFER_DST` (kept from the bring-up clear era; harmless and cheap).
+  `TILING_OPTIMAL`, 1 mip / 1 layer, `EXCLUSIVE` sharing — unlike the swapchain
+  images, it is only ever touched on the trace queue, so it needs no cross-family
+  sharing.
 - **Memory:** `findMemoryType` picks the first type matching the image's type bits and
   `DEVICE_LOCAL` (GPU-only); creation fails if none.
 - **Capability gating:** see [Device selection](#device-selection). Selection
   guarantees a supported device; `createStorageImage` keeps a cheap backstop that
   re-asserts the format helpers and fails `VK_ERROR_FEATURE_NOT_PRESENT` on a logic
   error rather than a supported device.
-- **Image view:** created now (color, 1/1) though the placeholder blit does not use it,
-  so the future RT descriptor set has it ready and create/destroy stay symmetric.
+- **Image view:** what the RT descriptor set binds (storage image, binding 1). Because
+  the view is recreated with the swapchain, every recreate obligates a descriptor
+  rewrite — see [Ray tracing pipeline](#ray-tracing-pipeline).
 - **Lifetime:** created **last** in `createSwapchainResources` (after the
   render-finished semaphores, when `swap->extent` is populated) and destroyed **first**
   in `destroySwapchainResources` (reverse creation order). Teardown is null-guarded, so
@@ -408,6 +435,78 @@ Decisions and contracts worth preserving:
   BLAS handles first (they are *placed on* their backing buffers), then the buffers
   and memory, all null-guarded.
 
+## Ray tracing pipeline
+
+The machinery that turns the TLAS into pixels: three shaders, the pipeline over
+them, the shader binding table `vkCmdTraceRaysKHR` indexes into, and the descriptor
+set binding the TLAS and the storage image. Owned by `RtPipeline`
+([src/rt_pipeline.hpp](src/rt_pipeline.hpp)), created once at startup in three
+steps (`createRtDescriptorSet` → `createRtPipeline` → `buildShaderBindingTable`),
+program-lifetime except for one resize obligation described below.
+
+Decisions and contracts worth preserving:
+
+- **Shaders are Slang, embedded at build time.** All three stages live in one
+  [shaders/triangle.slang](shaders/triangle.slang) module: `rayGenMain` (hardcoded
+  orthographic camera — per-pixel NDC origin behind the triangle plane, direction
+  +Z — storage-image write at binding 1, `[format("rgba8")]` because the device's
+  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (the dark red
+  the bring-up clear used), `closestHitMain` (barycentric-derived color, proving
+  attribute interpolation and not just a hit). CMake compiles it with `slangc
+  -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
+  self-contained C header (`triangle_spv.h`, includes prepended by the build) that
+  `rt_pipeline.cpp` `#include`s — no runtime file paths, keeping the
+  single-executable ethos. slangc is located via `find_program` (it is not a
+  FindVulkan component).
+- **One module, three stages.** Slang compiles every `[shader(...)]` entry point
+  into a single SPIR-V module, so the pipeline creates one `VkShaderModule` and
+  selects stages by `pName`. The module is parked in the owner during creation (the
+  scratch-buffer pattern: a failure bare-returns and the destructor cleans up) and
+  destroyed as soon as the pipeline exists.
+- **Groups in SBT order.** Group 0 `GENERAL` (raygen), 1 `GENERAL` (miss), 2
+  `TRIANGLES_HIT_GROUP` (closest hit only — the geometry is OPAQUE, so no any-hit;
+  triangle intersection is fixed-function). Unused shader indices are set to
+  `VK_SHADER_UNUSED_KHR` *explicitly* — zero-init would leave 0, a valid stage
+  index, producing a silently wrong pipeline rather than a validation error.
+  `maxPipelineRayRecursionDepth = 1` (primary rays only; 1 is the spec-guaranteed
+  minimum, so no limit query).
+- **SBT layout.** One host-visible + coherent buffer
+  (`SHADER_BINDING_TABLE | SHADER_DEVICE_ADDRESS`), written once at startup — same
+  no-staging rationale as the geometry buffers. Record stride =
+  `shaderGroupHandleSize` rounded to `shaderGroupHandleAlignment`; each region
+  starts at a `shaderGroupBaseAlignment` multiple from the table base. The
+  alignment math uses a **general** round-up-to-multiple (not the AS build's
+  bit-mask `alignUp`): the spec guarantees power-of-two for the handle alignment
+  but describes `shaderGroupBaseAlignment` only as "required alignment". The buffer
+  carries `baseAlignment − 1` bytes of slack, the base *device address* is rounded
+  up (the VUIDs constrain region device addresses, not buffer offsets), and the CPU
+  write pointer is shifted by the **same** delta — otherwise handles land at
+  unaligned offsets while the regions point at aligned ones and the GPU reads
+  garbage with no validation error. The raygen region's `size` equals its `stride`
+  (spec requirement). The callable region is empty (`size = stride = 0`) but its
+  `deviceAddress` points at the table base: the current VUID (03692)
+  unconditionally requires a valid SBT-buffer address, and reusing the existing
+  buffer satisfies the strict reading for free (the common `{0,0,0}` idiom relies
+  on validation-layer leniency).
+- **Descriptor set: binding 0 TLAS, binding 1 storage image, both raygen-only**
+  (miss/closest-hit touch only the ray payload). The pool holds exactly the one
+  set, without `FREE_DESCRIPTOR_SET_BIT` (the set is only released with the pool).
+  The TLAS write chains `VkWriteDescriptorSetAccelerationStructureKHR` via `pNext`;
+  the image write declares `IMAGE_LAYOUT_GENERAL`, which the frame's first barrier
+  makes true before every trace.
+- **The resize contract.** The storage image view is recreated with the swapchain,
+  so after every successful `recreateSwapchain` the render loop calls
+  `prepareRtForSwapchain`, which (a) rewrites the descriptor set to the fresh view
+  — race-free because the recreate device-idles first — and (b) re-gates the trace
+  dispatch dimensions (`swap.extent`) against the `vkCmdTraceRaysKHR` VUIDs
+  (compute work-group limits × `maxRayDispatchInvocationCount`; spec minimum 2^30,
+  so any realistic swapchain passes — checked anyway to fail loudly rather than hit
+  undefined behavior on an exotic driver). The same call runs once at startup, so
+  the two post-recreate obligations are one code path.
+- **Teardown.** `~RtPipeline` waits for device idle, then destroys pipeline →
+  (parked shader module, failure paths only) → pipeline layout → descriptor pool →
+  descriptor set layout → SBT buffer/memory, all null-guarded.
+
 ## Conventions
 
 - Everything in `namespace xrphoton`; `main.cpp` pulls it in with `using namespace`.
@@ -432,10 +531,12 @@ gain as it lands:
    [Acceleration structures](#acceleration-structures). BLAS/TLAS build — geometry
    upload, build sizes, scratch buffers, and the device-address plumbing the RT
    pipeline needs.
-3. **Ray tracing pipeline + shader binding table.** Ray generation / miss / hit
+3. ~~**Ray tracing pipeline + shader binding table.**~~ ✅ **Landed** — see
+   [Ray tracing pipeline](#ray-tracing-pipeline). Ray generation / miss / hit
    shaders, the pipeline, and the SBT layout `vkCmdTraceRaysKHR` indexes into.
-4. **Renderer extraction.** Once the above lands, `drawFrame` and the record function
-   move into a `renderer.{hpp,cpp}` unit; `main.cpp` becomes orchestration only.
+4. **Renderer extraction.** Now that the above has landed, `drawFrame` and
+   `recordTraceCommandBuffer` move into a `renderer.{hpp,cpp}` unit; `main.cpp`
+   becomes orchestration only and `drawFrame`'s plumbing parameters go away.
 5. **Frames in flight.** Likely a parallel change — see the note in
    [Synchronization model](#synchronization-model).
 

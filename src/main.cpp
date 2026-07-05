@@ -1,4 +1,5 @@
 #include "acceleration_structure.hpp"
+#include "rt_pipeline.hpp"
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
 
@@ -64,17 +65,17 @@ void recordImageBarrier(
         &barrier);
 }
 
-// Record the entire (placeholder) frame into a one-time-submit command buffer:
-//   1. barrier the storage image UNDEFINED -> TRANSFER_DST_OPTIMAL,
-//   2. clear storage to a solid dark red,
-//   3. barrier storage TRANSFER_DST_OPTIMAL -> TRANSFER_SRC_OPTIMAL,
+// Record the entire frame into a one-time-submit command buffer:
+//   1. barrier the storage image UNDEFINED -> GENERAL,
+//   2. trace: one ray per pixel writes the storage image (triangle over dark red),
+//   3. barrier storage GENERAL -> TRANSFER_SRC_OPTIMAL,
 //   4. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
 //   5. blit storage into the acquired image,
 //   6. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
-// This is the seed of the renderer; real ray tracing output will replace the storage
-// clear while the storage->swapchain presentation path remains.
-VkResult recordClearSwapchainImageCommandBuffer(
+VkResult recordTraceCommandBuffer(
     VkCommandBuffer commandBuffer,
+    const RayTracingFunctions& functions,
+    const RtPipeline& rt,
     VkImage storageImage,
     VkImage swapchainImage,
     VkExtent2D extent)
@@ -96,52 +97,61 @@ VkResult recordClearSwapchainImageCommandBuffer(
     colorRange.baseArrayLayer = 0;
     colorRange.layerCount = 1;
 
-    // Discard the previous storage contents and make the whole image writable by the
-    // placeholder transfer clear. Future traceRays work replaces this clear.
+    // Discard the previous storage contents and hand the whole image to the raygen
+    // shader: GENERAL is the layout storage-image writes require, and it must match
+    // the layout the descriptor set declared.
     recordImageBarrier(
         commandBuffer,
         storageImage,
         VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_GENERAL,
         0,
-        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT,
         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
         colorRange);
 
-    // The placeholder frame color (linear RGBA): a dark red.
-    VkClearColorValue clearColor = {
-        {
-            0.24f,
-            0.02f,
-            0.015f,
-            1.0f,
-        },
-    };
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt.pipeline);
 
-    vkCmdClearColorImage(
+    vkCmdBindDescriptorSets(
         commandBuffer,
-        storageImage,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        &clearColor,
+        VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+        rt.pipelineLayout,
+        0,
         1,
-        &colorRange);
+        &rt.descriptorSet,
+        0,
+        nullptr);
 
+    // No acceleration-structure barrier here: the AS build's trailing barrier already
+    // made the TLAS visible to every future RAY_TRACING_SHADER read. The dispatch
+    // dimensions were gated against the device limits when the swapchain (re)appeared.
+    functions.cmdTraceRays(
+        commandBuffer,
+        &rt.raygenRegion,
+        &rt.missRegion,
+        &rt.hitRegion,
+        &rt.callableRegion,
+        extent.width,
+        extent.height,
+        1);
+
+    // Trace writes become visible to the blit's reads.
     recordImageBarrier(
         commandBuffer,
         storageImage,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT,
         VK_ACCESS_TRANSFER_READ_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         colorRange);
 
     // The acquired image is first touched at TRANSFER. The submit waits on acquire at
-    // TRANSFER, so both this swapchain transition and this step's storage clear/blit are
-    // serialized behind acquire; true pre-acquire overlap begins once traceRays writes
-    // storage at RAY_TRACING_SHADER instead of using a transfer clear.
+    // TRANSFER, so this transition and the blit are serialized behind acquire — but the
+    // trace above runs at RAY_TRACING_SHADER, outside that wait stage, so the GPU may
+    // trace before the image is even acquired.
     recordImageBarrier(
         commandBuffer,
         swapchainImage,
@@ -200,14 +210,56 @@ VkResult recordClearSwapchainImageCommandBuffer(
     return vkEndCommandBuffer(commandBuffer);
 }
 
+// The RT pipeline's two obligations whenever the swapchain (re)appears, kept as one
+// code path per the plan: rewrite the descriptor set to the current storage image view
+// (the view is recreated with the swapchain; the recreate's device-idle makes the
+// rewrite race-free), and gate the trace dispatch dimensions against the device
+// limits. The spec minimum for maxRayDispatchInvocationCount is 2^30, so any realistic
+// swapchain passes — checked anyway to fail loudly rather than hit undefined behavior
+// on an exotic driver.
+bool prepareRtForSwapchain(
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    const RtPipeline& rt,
+    VkAccelerationStructureKHR tlas,
+    const Swapchain& swap)
+{
+    writeRtDescriptorSet(device, rt.descriptorSet, tlas, swap.storageImageView);
+
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProperties{};
+    rtProperties.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &rtProperties;
+
+    vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+
+    // The vkCmdTraceRaysKHR VUIDs bound each dispatch dimension by the corresponding
+    // compute work-group limits (count × size) and the product by
+    // maxRayDispatchInvocationCount. Depth is a constant 1, which every device allows.
+    const VkPhysicalDeviceLimits& limits = properties.properties.limits;
+    const uint64_t width = swap.extent.width;
+    const uint64_t height = swap.extent.height;
+
+    return width <= static_cast<uint64_t>(limits.maxComputeWorkGroupCount[0])
+            * limits.maxComputeWorkGroupSize[0]
+        && height <= static_cast<uint64_t>(limits.maxComputeWorkGroupCount[1])
+            * limits.maxComputeWorkGroupSize[1]
+        && width * height <= rtProperties.maxRayDispatchInvocationCount;
+}
+
 // Render and present one frame (a single frame in flight). Steps: wait the in-flight
-// fence -> acquire an image -> record and submit the clear -> present. OUT_OF_DATE and
+// fence -> acquire an image -> record and submit the trace -> present. OUT_OF_DATE and
 // SUBOPTIMAL are returned (not treated as errors) so main() can trigger a swapchain
 // recreate; a successful frame returns the acquire result so a SUBOPTIMAL acquire still
 // propagates. Any other non-success VkResult is a hard error.
 VkResult drawFrame(
     VulkanContext& ctx,
     Swapchain& swap,
+    const RayTracingFunctions& rayTracingFunctions,
+    const RtPipeline& rtPipeline,
     VkQueue traceQueue,
     VkQueue presentQueue)
 {
@@ -261,8 +313,10 @@ VkResult drawFrame(
         return result;
     }
 
-    result = recordClearSwapchainImageCommandBuffer(
+    result = recordTraceCommandBuffer(
         ctx.commandBuffer,
+        rayTracingFunctions,
+        rtPipeline,
         swap.storageImage,
         swap.images[imageIndex],
         swap.extent);
@@ -280,9 +334,9 @@ VkResult drawFrame(
     }
 
     // Submission waits on the image-available semaphore at the TRANSFER stage, matching
-    // the first swapchain touch: the blit destination transition. In this placeholder,
-    // the storage clear is also transfer work, so it waits too; future trace shader work
-    // can run before acquire because it is outside this TRANSFER wait stage.
+    // the first swapchain touch: the blit destination transition. The trace runs at
+    // RAY_TRACING_SHADER, outside that wait stage, so the GPU may overlap it with (or
+    // run it before) the acquire — only the blit onto the swapchain image waits.
     const VkSemaphore waitSemaphores[] = {
         ctx.imageAvailableSemaphore,
     };
@@ -647,6 +701,57 @@ int main()
 
     std::cout << "Built Vulkan acceleration structures (triangle BLAS, single-instance TLAS).\n";
 
+    // Declared after ctx so it destructs before the device it borrows; like the other
+    // borrowing owners it waits for device idle itself, so its order relative to swap
+    // and the acceleration structures is immaterial.
+    RtPipeline rtPipeline;
+
+    const VkResult descriptorSetResult = createRtDescriptorSet(&rtPipeline, ctx.device);
+
+    if (descriptorSetResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan ray tracing descriptor set.\n";
+        return 1;
+    }
+
+    std::cout << "Created Vulkan ray tracing descriptor set.\n";
+
+    const VkResult rtPipelineResult = createRtPipeline(
+        &rtPipeline,
+        ctx.device,
+        rayTracingFunctions);
+
+    if (rtPipelineResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan ray tracing pipeline.\n";
+        return 1;
+    }
+
+    std::cout << "Created Vulkan ray tracing pipeline.\n";
+
+    const VkResult sbtResult = buildShaderBindingTable(
+        &rtPipeline,
+        physicalDevice,
+        ctx.device,
+        rayTracingFunctions);
+
+    if (sbtResult != VK_SUCCESS) {
+        std::cerr << "Failed to build Vulkan shader binding table.\n";
+        return 1;
+    }
+
+    std::cout << "Built Vulkan shader binding table.\n";
+
+    if (!prepareRtForSwapchain(
+            physicalDevice,
+            ctx.device,
+            rtPipeline,
+            accelerationStructure.tlas,
+            swap)) {
+        std::cerr << "Swapchain extent exceeds the device's ray dispatch limits.\n";
+        return 1;
+    }
+
+    std::cout << "Wrote Vulkan ray tracing descriptor set (TLAS + storage image).\n";
+
     std::cout << "Entering GLFW event loop.\n";
 
     while (!glfwWindowShouldClose(ctx.window)) {
@@ -655,6 +760,8 @@ int main()
         const VkResult frameResult = drawFrame(
             ctx,
             swap,
+            rayTracingFunctions,
+            rtPipeline,
             traceQueue,
             presentQueue);
 
@@ -672,6 +779,18 @@ int main()
 
             if (recreateResult != VK_SUCCESS) {
                 std::cerr << "Failed to recreate Vulkan swapchain.\n";
+                return 1;
+            }
+
+            // The recreate rebuilt the storage image, so the RT pipeline's descriptor
+            // set and dispatch-limit check must run again before the next trace.
+            if (!prepareRtForSwapchain(
+                    physicalDevice,
+                    ctx.device,
+                    rtPipeline,
+                    accelerationStructure.tlas,
+                    swap)) {
+                std::cerr << "Swapchain extent exceeds the device's ray dispatch limits.\n";
                 return 1;
             }
 

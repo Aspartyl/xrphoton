@@ -27,8 +27,10 @@ void rayGenMain()
     uint2 pixel = DispatchRaysIndex().xy;
     float2 ndc = (float2(pixel) + 0.5) / float2(DispatchRaysDimensions().xy) * 2.0 - 1.0;
 
+    // Launch IDs count rows downward from the top of the image, so ndc.y is negated
+    // to keep the world y-up: geometry authored with +y up renders upright.
     RayDesc ray;
-    ray.Origin = float3(ndc, -1.0);
+    ray.Origin = float3(ndc.x, -ndc.y, -1.0);
     ray.Direction = float3(0.0, 0.0, 1.0);
     // tMin keeps self-intersection conventions even though nothing here can
     // self-intersect; tMax comfortably covers the unit-scale scene.
