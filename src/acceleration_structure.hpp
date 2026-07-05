@@ -55,6 +55,14 @@ struct AccelerationStructure
     ~AccelerationStructure();
 };
 
+// Part of device suitability: true if the BLAS vertex format supports acceleration
+// structure builds on this device. The spec mandates this support for the format in
+// use wherever the accelerationStructure feature exists, so this is a conformance
+// backstop that fails loudly at selection rather than a real capability query — the
+// same philosophy as the trace dispatch-limit gate. Kept here (rather than in
+// vulkan_context) so selection and the BLAS build share one format definition.
+bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevice);
+
 // Populate *as: upload the triangle geometry, build the BLAS over it and the TLAS over
 // its single instance (recorded back-to-back into commandBuffer with a build-to-build
 // barrier), submit on traceQueue, and block until the GPU finishes. The scratch buffers

@@ -24,6 +24,11 @@ constexpr uint32_t TriangleIndices[] = {0, 1, 2};
 constexpr uint32_t TrianglePrimitiveCount = 1;
 constexpr uint32_t InstanceCount = 1;
 
+// The vertex format the BLAS build declares. Defined once so the suitability gate
+// and the build input can never diverge (the StorageImageFormat pattern from
+// swapchain.cpp).
+constexpr VkFormat BlasVertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+
 // Usage shared by every acceleration-structure build input (vertex/index/instance
 // buffers): readable by the build, addressable because the build consumes device
 // addresses rather than descriptors.
@@ -182,6 +187,18 @@ void destroyBufferAndMemory(
 
 } // namespace
 
+bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevice)
+{
+    VkFormatProperties formatProperties{};
+    vkGetPhysicalDeviceFormatProperties(
+        physicalDevice,
+        BlasVertexFormat,
+        &formatProperties);
+
+    return (formatProperties.bufferFeatures
+        & VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR) != 0;
+}
+
 AccelerationStructure::~AccelerationStructure()
 {
     // A default-constructed owner never received a device and owns nothing.
@@ -278,7 +295,7 @@ VkResult buildAccelerationStructures(
     blasGeometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
     blasGeometry.geometry.triangles.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-    blasGeometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    blasGeometry.geometry.triangles.vertexFormat = BlasVertexFormat;
     blasGeometry.geometry.triangles.vertexData.deviceAddress =
         getBufferAddress(device, functions, as->vertexBuffer);
     blasGeometry.geometry.triangles.vertexStride = 3 * sizeof(float);

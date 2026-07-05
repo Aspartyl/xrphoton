@@ -1,5 +1,6 @@
 #include "vulkan_context.hpp"
 
+#include "acceleration_structure.hpp"
 #include "swapchain.hpp"
 
 #include <cstring>
@@ -12,15 +13,18 @@ namespace xrphoton
 namespace
 {
 // Device extensions every selected GPU must support and that the logical device
-// enables. The first five form the hardware ray tracing stack (acceleration
-// structures, the RT pipeline, and their prerequisites: buffer device address,
-// deferred host operations, pipeline libraries); the last is presentation.
+// enables. The first three form the hardware ray tracing stack: acceleration
+// structures, the RT pipeline, and deferred host operations (which
+// VK_KHR_acceleration_structure requires enabled even though nothing here defers);
+// the last is presentation. Deliberately absent: buffer device address is core in
+// the 1.3 baseline (the feature is enabled via the core
+// VkPhysicalDeviceBufferDeviceAddressFeatures struct, and a 1.3 driver need not
+// still advertise the promoted KHR extension string), and pipeline libraries are
+// only an optional interaction of the RT pipeline extension, never used here.
 constexpr const char* RequiredDeviceExtensions[] = {
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
-    VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-    VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
 
@@ -194,6 +198,7 @@ bool isPhysicalDeviceSuitable(
         && hasRequiredApiVersion(physicalDevice)
         && areRequiredDeviceExtensionsAvailable(physicalDevice)
         && hasRequiredSwapchainSupport(physicalDevice, surface)
+        && hasRequiredAccelerationStructureFormatSupport(physicalDevice)
         && areRequiredRayTracingFeaturesAvailable(physicalDevice);
 }
 
@@ -548,8 +553,11 @@ VkResult createBuffer(
 
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions)
 {
+    // Resolved by its core name: buffer device address is core in the 1.3 baseline,
+    // and the KHR alias is only guaranteed to resolve when the promoted extension is
+    // enabled — which it deliberately no longer is (see RequiredDeviceExtensions).
     functions->getBufferDeviceAddress = reinterpret_cast<PFN_vkGetBufferDeviceAddressKHR>(
-        vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddressKHR"));
+        vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress"));
     functions->createAccelerationStructure = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(
         vkGetDeviceProcAddr(device, "vkCreateAccelerationStructureKHR"));
     functions->destroyAccelerationStructure = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(

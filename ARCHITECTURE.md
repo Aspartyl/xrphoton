@@ -79,7 +79,9 @@ Includes are kept acyclic by a deliberate rule:
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
 1. `isPhysicalDeviceSuitable` (in `vulkan_context.cpp`) calls
-   `hasRequiredSwapchainSupport` (declared in `swapchain.hpp`).
+   `hasRequiredSwapchainSupport` (declared in `swapchain.hpp`) and
+   `hasRequiredAccelerationStructureFormatSupport` (declared in
+   `acceleration_structure.hpp`).
 2. The swapchain functions need the full definition of `QueueFamilyIndices`, which
    they get by including `vulkan_context.hpp` in `swapchain.cpp`.
 3. `buildAccelerationStructures` needs the full `RayTracingFunctions` plus the shared
@@ -200,6 +202,7 @@ queueFamilies.isComplete()           // a compute+graphics (trace) and a present
   && hasRequiredApiVersion            // >= Vulkan 1.3
   && areRequiredDeviceExtensions...   // the RT stack + swapchain
   && hasRequiredSwapchainSupport      // format, present mode, usages, + storage/blit support
+  && hasRequiredAccelerationStruct... // BLAS vertex format backstop (spec-mandated support)
   && areRequiredRayTracingFeatures... // the features actually enabled
 ```
 
@@ -212,8 +215,20 @@ This gates the storage→blit path at *device selection* so multi-GPU selection 
 pick a device that passes the old checks and then fails later in `createStorageImage`.
 
 `RequiredDeviceExtensions` (in `vulkan_context.cpp`) is the hardware ray tracing
-stack — acceleration structure, ray tracing pipeline, buffer device address, deferred
-host operations, pipeline library — plus `VK_KHR_swapchain` for presentation.
+stack — acceleration structure, ray tracing pipeline, deferred host operations
+(required *enabled* by `VK_KHR_acceleration_structure` even though nothing here
+defers) — plus `VK_KHR_swapchain` for presentation. Deliberately absent: **buffer
+device address** is core in the 1.3 baseline (its feature is enabled through the
+core `VkPhysicalDeviceBufferDeviceAddressFeatures` struct, and
+`vkGetBufferDeviceAddress` is resolved by its core name — a 1.3 driver need not
+still advertise the promoted KHR extension string), and **pipeline library** is
+only an optional interaction of the RT pipeline extension, never used here.
+
+`hasRequiredAccelerationStructureFormatSupport` (in `acceleration_structure.cpp`,
+next to the format it checks) verifies the BLAS vertex format supports acceleration
+structure builds. The spec mandates that support wherever the feature exists, so
+this is a conformance backstop in the "check anyway, fail loudly" family (like the
+trace dispatch gate), not a real capability query.
 
 The ray tracing feature chain
 (`VkPhysicalDeviceBufferDeviceAddressFeatures` → `RayTracingPipelineFeatures` →
