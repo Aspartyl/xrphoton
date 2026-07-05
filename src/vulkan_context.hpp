@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -12,6 +13,15 @@ namespace xrphoton
 // version the program targets (1.3 baseline).
 constexpr const char* ValidationLayerName = "VK_LAYER_KHRONOS_validation";
 constexpr uint32_t RequiredApiVersion = VK_API_VERSION_1_3;
+// Temporarily one until the cross-frame storage-image barriers land; then raise to two.
+constexpr uint32_t MaxFramesInFlight = 1;
+
+struct FrameResources
+{
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
+    VkFence inFlightFence = VK_NULL_HANDLE;
+};
 
 // Owns every program-lifetime Vulkan/GLFW handle. Its destructor tears them down
 // in reverse creation order (with null guards), so each failure path in main() is a
@@ -25,9 +35,7 @@ struct VulkanContext
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
-    VkFence inFlightFence = VK_NULL_HANDLE;
+    std::array<FrameResources, MaxFramesInFlight> frames;
 
     VulkanContext() = default;
     VulkanContext(const VulkanContext&) = delete;
@@ -126,23 +134,22 @@ VkResult createLogicalDevice(
     VkDevice* device);
 
 // Create the command pool on the trace family (with per-buffer reset enabled) and
-// allocate a single primary command buffer from it.
+// allocate one primary command buffer per frame slot.
 VkResult createCommandPool(
     VkDevice device,
     const QueueFamilyIndices& queueFamilies,
     VkCommandPool* commandPool);
-VkResult allocateCommandBuffer(
+VkResult allocateCommandBuffers(
     VkDevice device,
     VkCommandPool commandPool,
-    VkCommandBuffer* commandBuffer);
+    std::array<FrameResources, MaxFramesInFlight>* frames);
 
-// Create the per-frame sync objects for the single in-flight frame: an unsignaled
-// image-available semaphore and an in-flight fence created already signaled (so the
-// first drawFrame's wait returns immediately). On failure no handle is leaked.
+// Create each frame slot's image-available semaphore and in-flight fence. Fences are
+// created already signaled so the first wait for every slot returns immediately. On
+// failure, handles created so far are left in *frames for VulkanContext to destroy.
 VkResult createFrameSyncObjects(
     VkDevice device,
-    VkSemaphore* imageAvailableSemaphore,
-    VkFence* inFlightFence);
+    std::array<FrameResources, MaxFramesInFlight>* frames);
 
 // Find a memory type allowed by a resource's type bits and satisfying all requested
 // properties.

@@ -295,10 +295,10 @@ int main()
 
     std::cout << "Created Vulkan command pool.\n";
 
-    const VkResult commandBufferResult = allocateCommandBuffer(
+    const VkResult commandBufferResult = allocateCommandBuffers(
         ctx.device,
         ctx.commandPool,
-        &ctx.commandBuffer);
+        &ctx.frames);
 
     if (commandBufferResult != VK_SUCCESS) {
         std::cerr << "Failed to allocate Vulkan command buffer.\n";
@@ -309,8 +309,7 @@ int main()
 
     const VkResult syncObjectsResult = createFrameSyncObjects(
         ctx.device,
-        &ctx.imageAvailableSemaphore,
-        &ctx.inFlightFence);
+        &ctx.frames);
 
     if (syncObjectsResult != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan frame sync objects.\n";
@@ -321,7 +320,7 @@ int main()
 
     // Declared after ctx so it destructs before the device it borrows; its destructor
     // waits for device idle itself, so ordering relative to swap is immaterial. The
-    // build borrows the frame command buffer and in-flight fence before the render loop
+    // build borrows frame 0's command buffer and in-flight fence before the render loop
     // starts, and returns them in the state the first drawFrame expects (fence
     // signaled, command buffer resettable).
     AccelerationStructure accelerationStructure;
@@ -330,9 +329,9 @@ int main()
         physicalDevice,
         ctx.device,
         rayTracingFunctions,
-        ctx.commandBuffer,
+        ctx.frames[0].commandBuffer,
         traceQueue,
-        ctx.inFlightFence);
+        ctx.frames[0].inFlightFence);
 
     if (accelerationStructureResult != VK_SUCCESS) {
         std::cerr << "Failed to build Vulkan acceleration structures.\n";
@@ -389,9 +388,7 @@ int main()
         .device = ctx.device,
         .traceQueue = traceQueue,
         .presentQueue = presentQueue,
-        .commandBuffer = ctx.commandBuffer,
-        .imageAvailableSemaphore = ctx.imageAvailableSemaphore,
-        .inFlightFence = ctx.inFlightFence,
+        .frames = ctx.frames.data(),
         .tlas = accelerationStructure.tlas,
         .functions = &rayTracingFunctions,
         .rtPipeline = &rtPipeline,
@@ -407,10 +404,13 @@ int main()
 
     std::cout << "Entering GLFW event loop.\n";
 
+    uint32_t currentFrame = 0;
+
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
 
-        const VkResult frameResult = drawFrame(renderer);
+        const VkResult frameResult = drawFrame(renderer, currentFrame);
+        currentFrame = (currentFrame + 1) % MaxFramesInFlight;
 
         // The surface no longer matches the swapchain (typically a resize): rebuild it
         // and skip presenting this frame.

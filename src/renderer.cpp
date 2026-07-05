@@ -227,16 +227,22 @@ bool prepareRtForSwapchain(const Renderer& renderer)
         && width * height <= rtProperties.maxRayDispatchInvocationCount;
 }
 
-VkResult drawFrame(const Renderer& renderer)
+VkResult drawFrame(const Renderer& renderer, uint32_t frameIndex)
 {
     const Swapchain& swap = *renderer.swap;
+
+    if (renderer.frames == nullptr || frameIndex >= MaxFramesInFlight) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    const FrameResources& frame = renderer.frames[frameIndex];
 
     // Block until the previous frame's submission has completed before reusing its
     // command buffer and sync objects.
     VkResult result = vkWaitForFences(
         renderer.device,
         1,
-        &renderer.inFlightFence,
+        &frame.inFlightFence,
         VK_TRUE,
         std::numeric_limits<uint64_t>::max());
 
@@ -249,7 +255,7 @@ VkResult drawFrame(const Renderer& renderer)
         renderer.device,
         swap.swapchain,
         std::numeric_limits<uint64_t>::max(),
-        renderer.imageAvailableSemaphore,
+        frame.imageAvailableSemaphore,
         VK_NULL_HANDLE,
         &imageIndex);
 
@@ -275,14 +281,14 @@ VkResult drawFrame(const Renderer& renderer)
     // createRenderFinishedSemaphores), which present then waits on.
     const VkSemaphore renderFinishedSemaphore = swap.renderFinishedSemaphores[imageIndex];
 
-    result = vkResetCommandBuffer(renderer.commandBuffer, 0);
+    result = vkResetCommandBuffer(frame.commandBuffer, 0);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
     result = recordTraceCommandBuffer(
-        renderer.commandBuffer,
+        frame.commandBuffer,
         *renderer.functions,
         *renderer.rtPipeline,
         swap.storageImage,
@@ -295,7 +301,7 @@ VkResult drawFrame(const Renderer& renderer)
 
     // Reset the fence to unsignaled only now that recording succeeded and a submit is
     // guaranteed to follow — otherwise the next frame's wait would block forever.
-    result = vkResetFences(renderer.device, 1, &renderer.inFlightFence);
+    result = vkResetFences(renderer.device, 1, &frame.inFlightFence);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -306,7 +312,7 @@ VkResult drawFrame(const Renderer& renderer)
     // RAY_TRACING_SHADER, outside that wait stage, so the GPU may overlap it with (or
     // run it before) the acquire — only the blit onto the swapchain image waits.
     const VkSemaphore waitSemaphores[] = {
-        renderer.imageAvailableSemaphore,
+        frame.imageAvailableSemaphore,
     };
     const VkPipelineStageFlags waitStages[] = {
         VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -321,11 +327,11 @@ VkResult drawFrame(const Renderer& renderer)
     submitInfo.pWaitSemaphores = waitSemaphores;
     submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &renderer.commandBuffer;
+    submitInfo.pCommandBuffers = &frame.commandBuffer;
     submitInfo.signalSemaphoreCount = static_cast<uint32_t>(std::size(signalSemaphores));
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    result = vkQueueSubmit(renderer.traceQueue, 1, &submitInfo, renderer.inFlightFence);
+    result = vkQueueSubmit(renderer.traceQueue, 1, &submitInfo, frame.inFlightFence);
 
     if (result != VK_SUCCESS) {
         return result;

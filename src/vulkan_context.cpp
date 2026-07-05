@@ -419,37 +419,41 @@ VkResult createCommandPool(
     return vkCreateCommandPool(device, &commandPoolCreateInfo, nullptr, commandPool);
 }
 
-VkResult allocateCommandBuffer(
+VkResult allocateCommandBuffers(
     VkDevice device,
     VkCommandPool commandPool,
-    VkCommandBuffer* commandBuffer)
+    std::array<FrameResources, MaxFramesInFlight>* frames)
 {
+    std::array<VkCommandBuffer, MaxFramesInFlight> commandBuffers{};
+
     VkCommandBufferAllocateInfo commandBufferAllocateInfo{};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     commandBufferAllocateInfo.commandPool = commandPool;
     commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandBufferAllocateInfo.commandBufferCount = 1;
+    commandBufferAllocateInfo.commandBufferCount = MaxFramesInFlight;
 
-    return vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffer);
-}
-
-VkResult createFrameSyncObjects(
-    VkDevice device,
-    VkSemaphore* imageAvailableSemaphore,
-    VkFence* inFlightFence)
-{
-    VkSemaphoreCreateInfo semaphoreCreateInfo{};
-    semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    VkResult result = vkCreateSemaphore(
+    const VkResult result = vkAllocateCommandBuffers(
         device,
-        &semaphoreCreateInfo,
-        nullptr,
-        imageAvailableSemaphore);
+        &commandBufferAllocateInfo,
+        commandBuffers.data());
 
     if (result != VK_SUCCESS) {
         return result;
     }
+
+    for (uint32_t frameIndex = 0; frameIndex < MaxFramesInFlight; ++frameIndex) {
+        (*frames)[frameIndex].commandBuffer = commandBuffers[frameIndex];
+    }
+
+    return VK_SUCCESS;
+}
+
+VkResult createFrameSyncObjects(
+    VkDevice device,
+    std::array<FrameResources, MaxFramesInFlight>* frames)
+{
+    VkSemaphoreCreateInfo semaphoreCreateInfo{};
+    semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     // Created already signaled so the very first drawFrame can wait on it without
     // deadlocking (there is no prior submission to signal it).
@@ -457,13 +461,22 @@ VkResult createFrameSyncObjects(
     fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    result = vkCreateFence(device, &fenceCreateInfo, nullptr, inFlightFence);
+    for (FrameResources& frame : *frames) {
+        VkResult result = vkCreateSemaphore(
+            device,
+            &semaphoreCreateInfo,
+            nullptr,
+            &frame.imageAvailableSemaphore);
 
-    if (result != VK_SUCCESS) {
-        // Roll back the semaphore so a failed call leaves no half-built sync state.
-        vkDestroySemaphore(device, *imageAvailableSemaphore, nullptr);
-        *imageAvailableSemaphore = VK_NULL_HANDLE;
-        return result;
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        result = vkCreateFence(device, &fenceCreateInfo, nullptr, &frame.inFlightFence);
+
+        if (result != VK_SUCCESS) {
+            return result;
+        }
     }
 
     return VK_SUCCESS;
@@ -587,21 +600,29 @@ VulkanContext::~VulkanContext()
         (void)vkDeviceWaitIdle(device);
     }
 
-    if (inFlightFence != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
-        vkDestroyFence(device, inFlightFence, nullptr);
-        std::cout << "Destroyed Vulkan in-flight fence.\n";
+    if (device != VK_NULL_HANDLE) {
+        for (const FrameResources& frame : frames) {
+            if (frame.inFlightFence != VK_NULL_HANDLE) {
+                vkDestroyFence(device, frame.inFlightFence, nullptr);
+                std::cout << "Destroyed Vulkan in-flight fence.\n";
+            }
+        }
+
+        for (const FrameResources& frame : frames) {
+            if (frame.imageAvailableSemaphore != VK_NULL_HANDLE) {
+                vkDestroySemaphore(device, frame.imageAvailableSemaphore, nullptr);
+                std::cout << "Destroyed Vulkan image-available semaphore.\n";
+            }
+        }
     }
 
-    if (imageAvailableSemaphore != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
-        vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
-        std::cout << "Destroyed Vulkan image-available semaphore.\n";
-    }
-
-    if (commandBuffer != VK_NULL_HANDLE
-        && device != VK_NULL_HANDLE
-        && commandPool != VK_NULL_HANDLE) {
-        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-        std::cout << "Freed Vulkan command buffer.\n";
+    if (device != VK_NULL_HANDLE && commandPool != VK_NULL_HANDLE) {
+        for (const FrameResources& frame : frames) {
+            if (frame.commandBuffer != VK_NULL_HANDLE) {
+                vkFreeCommandBuffers(device, commandPool, 1, &frame.commandBuffer);
+                std::cout << "Freed Vulkan command buffer.\n";
+            }
+        }
     }
 
     if (commandPool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {

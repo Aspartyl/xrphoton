@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstdint>
+
 #include <vulkan/vulkan.h>
 
 namespace xrphoton
 {
+struct FrameResources;
 struct RayTracingFunctions;
 struct RtPipeline;
 struct Swapchain;
@@ -21,9 +24,7 @@ struct Renderer
     VkDevice device = VK_NULL_HANDLE;
     VkQueue traceQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
-    VkFence inFlightFence = VK_NULL_HANDLE;
+    const FrameResources* frames = nullptr;
     VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
     const RayTracingFunctions* functions = nullptr;
     const RtPipeline* rtPipeline = nullptr;
@@ -39,10 +40,11 @@ struct Renderer
 // exotic driver.
 bool prepareRtForSwapchain(const Renderer& renderer);
 
-// Render and present one frame (a single frame in flight). Steps: wait the in-flight
-// fence -> acquire an image -> record and submit the trace -> present. OUT_OF_DATE and
-// SUBOPTIMAL are returned (not treated as errors) so the caller can trigger a
-// swapchain recreate; a successful frame returns the acquire result so a SUBOPTIMAL
-// acquire still propagates. Any other non-success VkResult is a hard error.
-VkResult drawFrame(const Renderer& renderer);
+// Render and present one frame using frameIndex's command buffer and sync objects.
+// Steps: wait the in-flight fence -> acquire an image -> record and submit the trace
+// -> present. OUT_OF_DATE and SUBOPTIMAL are returned (not treated as errors) so the
+// caller can trigger a swapchain recreate; a successful frame returns the acquire
+// result so a SUBOPTIMAL acquire still propagates. Any other non-success VkResult is
+// a hard error.
+VkResult drawFrame(const Renderer& renderer, uint32_t frameIndex);
 }
