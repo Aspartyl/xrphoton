@@ -1,8 +1,14 @@
 #include "rt_pipeline.hpp"
 
+#include "vulkan_context.hpp"
+
 #include <iostream>
 
 #include <vulkan/vulkan.h>
+
+// Build-generated: the embedded SPIR-V module holding all three ray tracing entry
+// points (see the shader custom command in CMakeLists.txt).
+#include "triangle_spv.h"
 
 namespace xrphoton
 {
@@ -157,5 +163,107 @@ void writeRtDescriptorSet(
     writes[1].pImageInfo = &storageImageInfo;
 
     vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+}
+
+VkResult createRtPipeline(
+    RtPipeline* rt,
+    VkDevice device,
+    const RayTracingFunctions& functions)
+{
+    VkPipelineLayoutCreateInfo layoutCreateInfo{};
+    layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutCreateInfo.setLayoutCount = 1;
+    layoutCreateInfo.pSetLayouts = &rt->descriptorSetLayout;
+
+    VkResult result = vkCreatePipelineLayout(
+        device,
+        &layoutCreateInfo,
+        nullptr,
+        &rt->pipelineLayout);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkShaderModuleCreateInfo moduleCreateInfo{};
+    moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    moduleCreateInfo.codeSize = triangle_spv_sizeInBytes;
+    moduleCreateInfo.pCode = triangle_spv;
+
+    // Parked in the owner (not local RAII) so the failure paths below can bare-return.
+    result = vkCreateShaderModule(device, &moduleCreateInfo, nullptr, &rt->shaderModule);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    // All three stages reference the one module; the entry-point names are the ones
+    // the shader compile preserved (-fvk-use-entrypoint-name).
+    VkPipelineShaderStageCreateInfo stages[3]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    stages[0].module = rt->shaderModule;
+    stages[0].pName = "rayGenMain";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
+    stages[1].module = rt->shaderModule;
+    stages[1].pName = "missMain";
+    stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    stages[2].module = rt->shaderModule;
+    stages[2].pName = "closestHitMain";
+
+    // Group order is the SBT contract: 0 raygen, 1 miss, 2 hit. Every shader index a
+    // group does not use must be VK_SHADER_UNUSED_KHR explicitly — zero-init would
+    // leave 0, which is a valid stage index (the raygen stage).
+    VkRayTracingShaderGroupCreateInfoKHR groups[3]{};
+    for (VkRayTracingShaderGroupCreateInfoKHR& group : groups) {
+        group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+        group.generalShader = VK_SHADER_UNUSED_KHR;
+        group.closestHitShader = VK_SHADER_UNUSED_KHR;
+        group.anyHitShader = VK_SHADER_UNUSED_KHR;
+        group.intersectionShader = VK_SHADER_UNUSED_KHR;
+    }
+    groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[0].generalShader = 0;
+    groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[1].generalShader = 1;
+    // Triangles-hit group with closest hit only: the geometry is OPAQUE, so an any-hit
+    // shader would never run, and triangle intersection is fixed-function.
+    groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[2].closestHitShader = 2;
+
+    VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo{};
+    pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+    pipelineCreateInfo.stageCount = 3;
+    pipelineCreateInfo.pStages = stages;
+    pipelineCreateInfo.groupCount = 3;
+    pipelineCreateInfo.pGroups = groups;
+    // Primary rays only; 1 is the spec-guaranteed minimum for
+    // maxRayRecursionDepth, so no limit query is needed.
+    pipelineCreateInfo.maxPipelineRayRecursionDepth = 1;
+    pipelineCreateInfo.layout = rt->pipelineLayout;
+
+    // No deferred host operation, no pipeline cache: one small pipeline built once
+    // at startup.
+    result = functions.createRayTracingPipelines(
+        device,
+        VK_NULL_HANDLE,
+        VK_NULL_HANDLE,
+        1,
+        &pipelineCreateInfo,
+        nullptr,
+        &rt->pipeline);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    // Modules are only linkage inputs; once the pipeline exists the module is dead
+    // weight, so release it now rather than at teardown.
+    vkDestroyShaderModule(device, rt->shaderModule, nullptr);
+    rt->shaderModule = VK_NULL_HANDLE;
+
+    return VK_SUCCESS;
 }
 }

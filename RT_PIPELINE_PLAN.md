@@ -91,7 +91,7 @@ The usual RAII-owner pattern, program-lifetime, borrows `VkDevice`:
   already device-idles, so rewriting the set is race-free). This is the one new
   resize obligation — the render loop's recreate branch gains one call.
 
-## Step 4 — Pipeline
+## Step 4 — Pipeline ✅ (landed)
 
 - One `VkShaderModule` from the embedded SPIR-V (`vkCreateShaderModule` over
   `triangle_spv` / `triangle_spv_sizeInBytes`), and three
