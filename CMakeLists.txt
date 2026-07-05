@@ -55,6 +55,7 @@ add_executable(xrPhoton
     src/swapchain.cpp
     src/acceleration_structure.cpp
     src/rt_pipeline.cpp
+    src/renderer.cpp
 )
 
 if(XRPHOTON_ENABLE_VALIDATION)

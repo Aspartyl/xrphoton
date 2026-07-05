@@ -17,8 +17,9 @@ pipeline and shader binding table** (see
 background — which is then blitted to the acquired swapchain image and presented.
 The present path is fully wired (swapchain creation, per-frame synchronization,
 resize handling including the descriptor rewrite the resize obligates), and every
-piece of the RT stack is now exercised each frame. The next structural move is
-extracting `drawFrame` and the record function into a `renderer.{hpp,cpp}` unit.
+piece of the RT stack is now exercised each frame. The frame path lives in its own
+`renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only. The next structural
+move is frames in flight.
 
 ## Goals and constraints
 
@@ -38,7 +39,7 @@ extracting `drawFrame` and the record function into a `renderer.{hpp,cpp}` unit.
 
 ## Module map
 
-The code is five translation units, all in `namespace xrphoton`. The split is along
+The code is six translation units, all in `namespace xrphoton`. The split is along
 **resource lifetime** (program-lifetime vs. recreated-on-resize) and **orchestration
 vs. mechanism**.
 
@@ -46,6 +47,11 @@ vs. mechanism**.
         ┌───────────────────────────────────────────────────────────────────┐
         │ main.cpp                                                          │
         │   orchestration + the render loop                                 │
+        └───────────────────────────────┬───────────────────────────────────┘
+                                        │ calls drawFrame / prepareRtForSwapchain
+        ┌───────────────────────────────▼───────────────────────────────────┐
+        │ renderer.{hpp,cpp}                                                │
+        │   Renderer (non-owning view) + the frame path                     │
         │   drawFrame / recordTraceCommandBuffer / prepareRtForSwapchain    │
         └──────┬──────────────┬──────────────────┬──────────────────┬───────┘
                │ uses         │ uses             │ uses             │ uses
@@ -58,13 +64,17 @@ vs. mechanism**.
 └──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
 
+(`main.cpp` also uses the four resource units directly for bring-up; the diagram
+shows the frame-path layering.)
+
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, command pool/buffer, frame sync), `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including the shared `findMemoryType` / `createBuffer`) | Program lifetime — created once |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the storage output image + its memory and view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
-| [src/main.cpp](src/main.cpp) | `main()` orchestration, `drawFrame`, `recordTraceCommandBuffer`, `prepareRtForSwapchain` | Program lifetime |
+| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` | Owns nothing — a parameter bundle over borrowed handles |
+| [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
 
 ### Header dependency rule
 
@@ -73,8 +83,11 @@ Includes are kept acyclic by a deliberate rule:
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
   `RayTracingFunctions`.
-- `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`, or
-  `RtPipeline`.
+- `renderer.hpp` only **forward-declares** `RayTracingFunctions`, `RtPipeline`, and
+  `Swapchain`; it never mentions `VulkanContext` — the renderer borrows specific
+  handles, not the context, so the unit is decoupled from bring-up entirely.
+- `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`,
+  `RtPipeline`, or `Renderer`.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -91,6 +104,9 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
    build-generated `triangle_spv.h` (the embedded shader module — see
    [Ray tracing pipeline](#ray-tracing-pipeline)).
+5. `renderer.cpp` includes `rt_pipeline.hpp`, `swapchain.hpp`, and
+   `vulkan_context.hpp` to resolve the three structs its header only
+   forward-declares.
 
 File-local helpers live in an anonymous namespace inside each `.cpp`; only the
 cross-file surface is declared in the headers.
@@ -126,6 +142,16 @@ Four RAII owners — split by resource lifetime:
 
 Things that are neither created nor destroyed by the program (`physicalDevice`, the
 `VkQueue` handles, the resolved `RayTracingFunctions`) stay as plain `main()` locals.
+
+`Renderer` is deliberately **not** a fifth owner: it is a parameter bundle over
+borrowed handles (in the spirit of `QueueFamilyIndices`), with no destructor and no
+idle wait. Its handle members are copies of program-lifetime objects; `Swapchain` is
+held by pointer because its members are replaced on every recreate. `main()` creates
+it after everything it points at, so it cannot outlive what it borrows. Whether the
+per-frame objects (command buffer, image-available semaphore, in-flight fence) should
+*move* into renderer ownership is a question deferred to frames in flight — today the
+AS build borrows them before the RT pipeline exists, which would force two-phase
+renderer initialization.
 
 ### Destruction order
 
@@ -187,10 +213,13 @@ returns `1` on failure (RAII handles the unwind):
     buffer and in-flight fence from step 9 and returns them in the state the first
     `drawFrame` expects.
 11. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
-    `buildShaderBindingTable`, then the initial `prepareRtForSwapchain` (descriptor
-    write + dispatch-limit gate) — see [Ray tracing pipeline](#ray-tracing-pipeline).
-12. **Render loop.** `drawFrame` per iteration; recreate on out-of-date/suboptimal,
-    followed by `prepareRtForSwapchain` against the fresh storage image.
+    `buildShaderBindingTable` — see [Ray tracing pipeline](#ray-tracing-pipeline).
+12. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
+    it borrows exists — then the initial `prepareRtForSwapchain` (descriptor write +
+    dispatch-limit gate) runs against it.
+13. **Render loop.** `drawFrame(renderer)` per iteration; recreate on
+    out-of-date/suboptimal, followed by `prepareRtForSwapchain` against the fresh
+    storage image.
 
 ### Device selection
 
@@ -241,8 +270,8 @@ device creation.
 `QueueFamilyIndices` tracks two roles:
 
 - **`traceFamily`** — a family supporting **both compute and graphics**. Named
-  "trace" because it is where ray tracing work will be recorded; today it records the
-  clear and the blit. The single-command-buffer renderer needs one family for both
+  "trace" because it is where the ray tracing work is recorded; each frame records
+  the trace and the blit. The single-command-buffer renderer needs one family for both
   `vkCmdTraceRaysKHR` (compute) and `vkCmdBlitImage` (graphics-only), so a device that
   exposes graphics and compute *only* on disjoint families is deliberately rejected
   (a split graphics/blit queue — with its ownership transfers and extra semaphores —
@@ -260,7 +289,9 @@ indices from `pickPhysicalDevice`.
 
 ## The frame
 
-A single frame is in flight at a time. `drawFrame` in [src/main.cpp](src/main.cpp):
+A single frame is in flight at a time. `drawFrame` in
+[src/renderer.cpp](src/renderer.cpp), reaching everything it needs through the
+`Renderer` view:
 
 ```
 vkWaitForFences(inFlightFence)         // block until the previous frame completed
@@ -297,10 +328,9 @@ into the storage image, then blit it into the acquired swapchain image:
    format is sRGB the storage `UNORM` value is gamma-encoded for presentation here.
 6. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
 
-This function is still the embryonic renderer: the next roadmap item extracts
-`drawFrame` + `recordTraceCommandBuffer` into a `renderer.{hpp,cpp}` unit, leaving
-`main.cpp` as orchestration only, and deletes the pipeline/descriptor plumbing
-parameters `drawFrame` grew in the meantime.
+`recordTraceCommandBuffer` (and its `recordImageBarrier` helper) are file-private in
+`renderer.cpp`; the unit's exported surface is `drawFrame` and
+`prepareRtForSwapchain`, each taking only the `Renderer` view.
 
 ## Synchronization model
 
@@ -549,9 +579,11 @@ gain as it lands:
 3. ~~**Ray tracing pipeline + shader binding table.**~~ ✅ **Landed** — see
    [Ray tracing pipeline](#ray-tracing-pipeline). Ray generation / miss / hit
    shaders, the pipeline, and the SBT layout `vkCmdTraceRaysKHR` indexes into.
-4. **Renderer extraction.** Now that the above has landed, `drawFrame` and
-   `recordTraceCommandBuffer` move into a `renderer.{hpp,cpp}` unit; `main.cpp`
-   becomes orchestration only and `drawFrame`'s plumbing parameters go away.
+4. ~~**Renderer extraction.**~~ ✅ **Landed** — `drawFrame`,
+   `recordTraceCommandBuffer`, and `prepareRtForSwapchain` live in
+   `renderer.{hpp,cpp}`; `main.cpp` is orchestration only and the plumbing
+   parameters collapsed into the non-owning `Renderer` view (see
+   [Module map](#module-map) and [Ownership model](#ownership-model)).
 5. **Frames in flight.** Likely a parallel change — see the note in
    [Synchronization model](#synchronization-model).
 
