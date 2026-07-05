@@ -13,8 +13,7 @@ namespace xrphoton
 // version the program targets (1.3 baseline).
 constexpr const char* ValidationLayerName = "VK_LAYER_KHRONOS_validation";
 constexpr uint32_t RequiredApiVersion = VK_API_VERSION_1_3;
-// Temporarily one until the cross-frame storage-image barriers land; then raise to two.
-constexpr uint32_t MaxFramesInFlight = 1;
+constexpr uint32_t MaxFramesInFlight = 2;
 
 struct FrameResources
 {

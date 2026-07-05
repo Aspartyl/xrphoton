@@ -49,13 +49,32 @@ void recordImageBarrier(
         &barrier);
 }
 
+void recordExecutionBarrier(
+    VkCommandBuffer commandBuffer,
+    VkPipelineStageFlags srcStageMask,
+    VkPipelineStageFlags dstStageMask)
+{
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        srcStageMask,
+        dstStageMask,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        0,
+        nullptr);
+}
+
 // Record the entire frame into a one-time-submit command buffer:
 //   1. barrier the storage image UNDEFINED -> GENERAL,
 //   2. trace: one ray per pixel writes the storage image (triangle over dark red),
 //   3. barrier storage GENERAL -> TRANSFER_SRC_OPTIMAL,
 //   4. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
 //   5. blit storage into the acquired image,
-//   6. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
+//   6. chain the next trace behind this frame's storage-image read,
+//   7. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
 VkResult recordTraceCommandBuffer(
     VkCommandBuffer commandBuffer,
     const RayTracingFunctions& functions,
@@ -82,8 +101,9 @@ VkResult recordTraceCommandBuffer(
     colorRange.layerCount = 1;
 
     // Discard the previous storage contents and hand the whole image to the raygen
-    // shader: GENERAL is the layout storage-image writes require, and it must match
-    // the layout the descriptor set declared.
+    // shader. The source stage chains from the previous frame's trailing execution
+    // barrier without intersecting the acquire wait's TRANSFER stage, so tracing can
+    // still run before this frame's swapchain image is acquired.
     recordImageBarrier(
         commandBuffer,
         storageImage,
@@ -91,7 +111,7 @@ VkResult recordTraceCommandBuffer(
         VK_IMAGE_LAYOUT_GENERAL,
         0,
         VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
         colorRange);
 
@@ -176,6 +196,16 @@ VkResult recordTraceCommandBuffer(
         1,
         &blitRegion,
         VK_FILTER_NEAREST);
+
+    // A later frame may discard/transition the shared storage image before this frame
+    // retires. Chain that next trace behind this blit's storage-image read without
+    // creating a memory dependency; a write-after-read hazard only needs execution
+    // ordering, and using RAY_TRACING_SHADER as the destination avoids the acquire wait's
+    // TRANSFER stage.
+    recordExecutionBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 
     // Transition into the layout the presentation engine requires. The dstStageMask is
     // BOTTOM_OF_PIPE because no further GPU stage consumes the image; the render-finished
