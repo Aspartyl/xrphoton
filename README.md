@@ -24,16 +24,18 @@ way of doing each thing.
 
 ## Status
 
-Right now it renders a single triangle. That said, the whole ray tracing stack
-is already behind it: every frame traces a ray per pixel through a real
-BLAS/TLAS with `vkCmdTraceRaysKHR`, writes a storage image and blits it to the
-swapchain, with two frames in flight and proper resize handling. Shaders are
-written in [Slang](https://shader-slang.org/) and compiled into the binary at
-build time, so it's a single executable with no runtime shader files.
+Right now it renders a single triangle you can fly around (WASD + mouse look).
+That said, the whole ray tracing stack is already behind it: every frame traces
+a ray per pixel through a real BLAS/TLAS with `vkCmdTraceRaysKHR` from a
+perspective camera fed to the shader via push constants, writes a storage image
+and blits it to the swapchain, with two frames in flight and proper resize
+handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
+into the binary at build time, so it's a single executable with no runtime
+shader files.
 
-Next up: camera and input, then real geometry and materials, dynamic scenes
-(TLAS refits, skinning), actual path tracing with lights, and finally temporal
-accumulation and denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+Next up: real geometry and materials, then dynamic scenes (TLAS refits,
+skinning), actual path tracing with lights, and finally temporal accumulation
+and denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 

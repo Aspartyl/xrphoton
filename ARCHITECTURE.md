@@ -5,21 +5,24 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 ## Status
 
-xrPhoton renders its first ray traced pixels. It brings up a Vulkan instance and
-device configured for hardware ray tracing, creates a swapchain, builds the ray
-tracing **acceleration structures** (a BLAS over a hardcoded triangle and a
-single-instance TLAS — see
+xrPhoton renders its first ray traced pixels, and is interactive. It brings up a
+Vulkan instance and device configured for hardware ray tracing, creates a
+swapchain, builds the ray tracing **acceleration structures** (a BLAS over a
+hardcoded triangle and a single-instance TLAS — see
 [Acceleration structures](#acceleration-structures)), creates the **ray tracing
 pipeline and shader binding table** (see
 [Ray tracing pipeline](#ray-tracing-pipeline)), and runs a render loop in which
-`vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS, writing a device-local
-**storage image** — the triangle in barycentric colors over a dark red miss
-background — which is then blitted to the acquired swapchain image and presented.
-The present path is fully wired (swapchain creation, two-frame-in-flight
-synchronization, resize handling including the descriptor rewrite the resize
-obligates), and every piece of the RT stack is now exercised each frame. The frame
-path lives in its own `renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only.
-The tracked bring-up roadmap is complete.
+`vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS from a **perspective
+fly camera** (WASD + mouse look, delivered to the raygen shader via push
+constants — see [Camera](#camera)), writing a device-local **storage image** —
+the triangle in barycentric colors over a dark red miss background — which is
+then blitted to the acquired swapchain image and presented. The present path is
+fully wired (swapchain creation, two-frame-in-flight synchronization, resize
+handling including the descriptor rewrite the resize obligates), and every piece
+of the RT stack is now exercised each frame. The frame path lives in its own
+`renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only. The tracked
+bring-up roadmap is complete; of the follow-on roadmap, camera + push constants
+has landed.
 
 ## Goals and constraints
 
@@ -39,7 +42,7 @@ The tracked bring-up roadmap is complete.
 
 ## Module map
 
-The code is six translation units, all in `namespace xrphoton`. The split is along
+The code is seven translation units, all in `namespace xrphoton`. The split is along
 **resource lifetime** (program-lifetime vs. recreated-on-resize) and **orchestration
 vs. mechanism**.
 
@@ -64,15 +67,18 @@ vs. mechanism**.
 └──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
 
-(`main.cpp` also uses the four resource units directly for bring-up; the diagram
-shows the frame-path layering.)
+(`main.cpp` also uses the four resource units directly for bring-up, and drives
+`camera.{hpp,cpp}` — the Vulkan-free input/math unit whose `CameraPushConstants`
+payload main() builds each frame and passes through `drawFrame` into the raygen
+stage; the diagram shows the frame-path layering.)
 
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including the shared `findMemoryType` / `createBuffer`) | Program lifetime — created once |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the storage output image + its memory and view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
-| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
+| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | `Vec3`, `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
+| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
 
@@ -83,12 +89,16 @@ Includes are kept acyclic by a deliberate rule:
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
   `RayTracingFunctions`.
-- `renderer.hpp` only **forward-declares** `FrameResources`,
-  `RayTracingFunctions`, `RtPipeline`, and `Swapchain`; it never mentions
-  `VulkanContext` — the renderer borrows specific handles, not the context, so the
-  unit is decoupled from bring-up entirely.
+- `renderer.hpp` only **forward-declares** `CameraPushConstants`,
+  `FrameResources`, `RayTracingFunctions`, `RtPipeline`, and `Swapchain`; it
+  never mentions `VulkanContext` — the renderer borrows specific handles, not the
+  context, so the unit is decoupled from bring-up entirely.
 - `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`,
   `RtPipeline`, or `Renderer`.
+- `camera.hpp` includes **no project or Vulkan header at all** (only `<cstddef>`
+  for its `offsetof` ABI asserts) and forward-declares `GLFWwindow`;
+  `makeCameraPushConstants` takes a plain `float aspect` rather than a
+  `VkExtent2D` precisely to keep the unit Vulkan-free.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -105,9 +115,12 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
    build-generated `triangle_spv.h` (the embedded shader module — see
    [Ray tracing pipeline](#ray-tracing-pipeline)).
-5. `renderer.cpp` includes `rt_pipeline.hpp`, `swapchain.hpp`, and
+5. `renderer.cpp` includes `camera.hpp`, `rt_pipeline.hpp`, `swapchain.hpp`, and
    `vulkan_context.hpp` to resolve the borrowed structs its header only
    forward-declares.
+6. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
+   the pipeline layout's push-constant range; `camera.cpp` includes
+   `GLFW/glfw3.h` for the real input API its header only forward-declared.
 
 File-local helpers live in an anonymous namespace inside each `.cpp`; only the
 cross-file surface is declared in the headers.
@@ -291,10 +304,18 @@ indices from `pickPhysicalDevice`.
 
 ## The frame
 
-Up to `MaxFramesInFlight` frames can be queued. `main()` owns a `currentFrame` cursor
-and rotates it after every `drawFrame(renderer, currentFrame)` call; each slot has its
-own command buffer, image-available semaphore, and in-flight fence. `drawFrame` in
-[src/renderer.cpp](src/renderer.cpp) reaches everything through the `Renderer` view:
+Up to `MaxFramesInFlight` frames can be queued. Each loop iteration `main()` first
+computes a clamped delta time (`MaxFrameDt` = 0.1 s — window drags and resize
+stalls can block the loop for seconds, and an unclamped dt would teleport the
+camera), calls `updateCamera`, and derives the frame's `CameraPushConstants` from
+the camera state and the current `swap.extent` aspect ratio (read fresh every
+iteration, so a recreate needs no camera-specific handling). `main()` owns a
+`currentFrame` cursor and rotates it after every
+`drawFrame(renderer, currentFrame, cameraPush)` call; each slot has its own
+command buffer, image-available semaphore, and in-flight fence. `drawFrame` in
+[src/renderer.cpp](src/renderer.cpp) reaches everything through the `Renderer`
+view (the camera payload rides as a parameter, not a `Renderer` member — it is
+per-frame data, not a program-lifetime handle):
 
 ```
 frame = frames[frameIndex]
@@ -327,6 +348,9 @@ into the storage image, then blit it into the acquired swapchain image:
    frame's trailing storage-image barrier without involving the acquire wait's
    `TRANSFER` stage.
 2. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
+   push the frame's `CameraPushConstants` (`vkCmdPushConstants`, raygen-only —
+   recorded into this slot's own command buffer after its fence wait, which is
+   what makes the camera race-free across frames in flight by construction),
    then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
    extent — one ray per pixel. **No acceleration-structure barrier here**: the AS
    build's trailing barrier already made the TLAS visible to every future
@@ -520,12 +544,13 @@ program-lifetime except for one resize obligation described below.
 Decisions and contracts worth preserving:
 
 - **Shaders are Slang, embedded at build time.** All three stages live in one
-  [shaders/triangle.slang](shaders/triangle.slang) module: `rayGenMain` (hardcoded
-  orthographic camera — per-pixel NDC origin behind the triangle plane, direction
-  +Z — storage-image write at binding 1, `[format("rgba8")]` because the device's
-  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (the dark red
-  the bring-up clear used), `closestHitMain` (barycentric-derived color, proving
-  attribute interpolation and not just a hit). CMake compiles it with `slangc
+  [shaders/triangle.slang](shaders/triangle.slang) module: `rayGenMain`
+  (perspective rays from the camera push constants — see [Camera](#camera) for
+  the payload contract — storage-image write at binding 1, `[format("rgba8")]`
+  because the device's `shaderStorageImageWriteWithoutFormat` is not enabled),
+  `missMain` (the dark red the bring-up clear used), `closestHitMain`
+  (barycentric-derived color, proving attribute interpolation and not just a
+  hit). CMake compiles it with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
   self-contained C header (`triangle_spv.h`, includes prepended by the build) that
   `rt_pipeline.cpp` `#include`s — no runtime file paths, keeping the
@@ -567,6 +592,12 @@ Decisions and contracts worth preserving:
   The TLAS write chains `VkWriteDescriptorSetAccelerationStructureKHR` via `pNext`;
   the image write declares `IMAGE_LAYOUT_GENERAL`, which the frame's first barrier
   makes true before every trace.
+- **Pipeline layout: the one set layout plus a raygen-only push-constant range**
+  (`sizeof(CameraPushConstants)`, 64 bytes at offset 0). The frame path's
+  `vkCmdPushConstants` uses the identical stage flags — the
+  `vkCmdPushConstants` VUIDs require every pushed byte+stage to fall inside a
+  declared range and the push to cover every stage of any range it overlaps.
+  The payload contract itself lives in [Camera](#camera).
 - **The resize contract.** The storage image view is recreated with the swapchain,
   so after every successful `recreateSwapchain` the render loop calls
   `prepareRtForSwapchain`, which (a) rewrites the descriptor set to the fresh view
@@ -579,6 +610,71 @@ Decisions and contracts worth preserving:
 - **Teardown.** `~RtPipeline` waits for device idle, then destroys pipeline →
   (parked shader module, failure paths only) → pipeline layout → descriptor pool →
   descriptor set layout → SBT buffer/memory, all null-guarded.
+
+## Camera
+
+A perspective fly camera, delivered to the raygen shader via push constants.
+Owned by `main()` as a plain value struct (`Camera` in
+[src/camera.hpp](src/camera.hpp)) — no Vulkan objects, no RAII; the unit is pure
+input + math, and its header is Vulkan-free (see the header dependency rule).
+
+Decisions and contracts worth preserving:
+
+- **Push constants over per-frame uniform buffers, deliberately.** The payload
+  is 64 bytes — half the spec-guaranteed 128-byte `maxPushConstantsSize` — it is
+  recorded into each frame slot's own command buffer after that slot's fence
+  wait, so frames in flight cannot race on it *by construction*, and no
+  descriptor layout change was needed (only the push range on the pipeline
+  layout). Per-`FrameResources`-slot uniform buffers are the designated
+  promotion path when a payload outgrows the push range — expected at scene
+  time, not camera time.
+- **Origin + pre-scaled ray basis, not inverse view/projection matrices.**
+  `CameraPushConstants` carries the camera origin plus three basis vectors:
+  `forward` unit-length, `right`/`up` pre-scaled on the CPU by
+  `tan(verticalFov/2)` (and aspect, for `right`). The raygen shader computes
+  `normalize(forward + ndc.x·right − ndc.y·up)` — no per-pixel matrix multiply,
+  no w-divide — and the CPU side stays matrix-free (yaw/pitch → basis needs only
+  `sin`/`cos`, cross, normalize). The first consumer of a real view-projection
+  matrix is temporal reprojection (roadmap step 5), which can build one from
+  this same camera state when it lands. Scaling `right` by the swapchain aspect
+  each frame is what fixed the bring-up NDC-square stretch on resize.
+- **No math library (yet).** `Vec3` plus a handful of file-private helpers in
+  `camera.cpp` is everything this step needs; GLM vs. growing the in-house math
+  is a geometry/scene-time decision (instance transforms), to be made with real
+  requirements in hand. The `normalize` helper returns zero for near-zero input,
+  and the movement path additionally skips near-zero sums — `normalize({0,0,0})`
+  is the classic NaN that permanently poisons the position.
+- **Payload ABI.** The shader sees four `float3` fields at 16-byte offsets
+  (0/16/32/48); the CPU struct pins the same shape with explicit pad floats and
+  `static_assert`s on both `sizeof` (64) and the `offsetof` of every field —
+  `float3` rounds up to 16-byte alignment under every GPU layout rule set, so
+  the offsets are unconditional. Keep the shader struct and the CPU struct
+  field-for-field identical.
+- **Basis convention.** World y-up; yaw 0 / pitch 0 looks down **+Z**, and
+  `right = normalize(cross(WorldUp, forward))`, `up = cross(forward, right)` —
+  chosen so world +X maps screen-right and +Y screen-up, exactly the bring-up
+  shader's screen mapping (the first perspective frame reads as "the same
+  triangle, now with depth"). The `−ndc.y` flip **stays in the shader**: launch
+  IDs counting rows downward is a property of dispatch-index space, not of the
+  camera, so the CPU sends an un-flipped, world-up `up`. Pitch is clamped
+  strictly inside ±90° (`PitchLimit` = 89°): at exactly ±90° `forward` is
+  parallel to `WorldUp` and the `right` cross product degenerates to NaNs.
+- **Controls (all GLFW input policy lives in `updateCamera`).** Game-style
+  always-captured mouse look: the cursor is captured at startup
+  (`GLFW_CURSOR_DISABLED`, plus raw mouse motion where supported — the support
+  check matters on Wayland); Escape releases it, left click recaptures, and the
+  camera is fully frozen while the cursor is free. WASD moves along the look
+  direction (the unscaled basis, never the FOV-scaled push vectors),
+  Space/LeftCtrl along ±world-up, LeftShift sprints; the summed direction is
+  normalized so diagonals are not faster. Mouse look polls `glfwGetCursorPos`
+  deltas against an anchor stored in `Camera`; the anchor is invalidated on
+  every capture transition and re-anchored one frame before deltas apply —
+  otherwise the first captured frame integrates the whole cursor jump as one
+  giant rotation.
+- **Frame timing lives in `main()`.** `glfwGetTime()` deltas, clamped to
+  `MaxFrameDt` (0.1 s) so window drags and resize stalls cannot teleport the
+  camera. A real loop with fixed-timestep simulation is deferred to the dynamic
+  scene step.
 
 ## Conventions
 
@@ -601,18 +697,12 @@ Decisions and contracts worth preserving:
 
 ## Roadmap
 
-1. **Camera + push constants.** Pending — replace the raygen shader's hardcoded
-   orthographic setup with a perspective camera (origin + ray basis, or inverse
-   view/projection matrices) delivered via push constants, plus a GLFW fly camera
-   so the engine is interactive from the first possible moment. Fixes the latent
-   aspect-ratio distortion on resize (the current NDC-square mapping stretches).
-   Push constants over per-frame uniform buffers deliberately: the payload fits
-   the spec-guaranteed 128-byte range, the data is recorded into the command
-   buffer so frames in flight cannot race on it, and no descriptor layout change
-   is needed. Per-`FrameResources`-slot uniform buffers are the designated
-   promotion path when a payload outgrows the push range — expected at scene
-   time, not camera time.
-2. **Geometry + scene representation.** Pending — real meshes replacing the
+1. **Camera + push constants.** **Landed** — a perspective fly camera (origin +
+   pre-scaled ray basis) delivered via raygen-only push constants, with GLFW
+   fly controls, fixing the bring-up aspect-ratio distortion on resize. See
+   [Camera](#camera) for the decisions and contracts.
+2. **Geometry + scene representation.** Pending — **the next step to build**.
+   Real meshes replacing the
    hardcoded triangle: indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple
    BLASes with instance transforms, and material data in storage buffers indexed
@@ -628,8 +718,9 @@ Decisions and contracts worth preserving:
    GPU buffer — slot rotation is what prevents overwriting instance data a frame
    in flight still reads). Then deformables: compute-pass skinning into per-slot
    vertex buffers followed by per-character BLAS refits, for NPCs and mutants.
-   Also the natural point for a real loop with delta-time (fixed-timestep
-   simulation can wait for game systems).
+   Also the natural point to grow the loop's timing (the fly camera added
+   simple clamped delta-time; fixed-timestep simulation can wait for game
+   systems).
 4. **Lighting + path tracing.** Pending — the renderer becomes an actual path
    tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
    pipeline recursion depth at 1), next-event estimation with shadow rays,
