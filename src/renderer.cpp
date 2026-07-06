@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 
+#include "camera.hpp"
 #include "rt_pipeline.hpp"
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
@@ -79,6 +80,7 @@ VkResult recordTraceCommandBuffer(
     VkCommandBuffer commandBuffer,
     const RayTracingFunctions& functions,
     const RtPipeline& rt,
+    const CameraPushConstants& camera,
     VkImage storageImage,
     VkImage swapchainImage,
     VkExtent2D extent)
@@ -126,6 +128,14 @@ VkResult recordTraceCommandBuffer(
         &rt.descriptorSet,
         0,
         nullptr);
+
+    vkCmdPushConstants(
+        commandBuffer,
+        rt.pipelineLayout,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        0,
+        sizeof(CameraPushConstants),
+        &camera);
 
     // No acceleration-structure barrier here: the AS build's trailing barrier already
     // made the TLAS visible to every future RAY_TRACING_SHADER read. The dispatch
@@ -259,7 +269,10 @@ bool prepareRtForSwapchain(const Renderer& renderer)
         && width * height <= rtProperties.maxRayDispatchInvocationCount;
 }
 
-VkResult drawFrame(const Renderer& renderer, uint32_t frameIndex)
+VkResult drawFrame(
+    const Renderer& renderer,
+    uint32_t frameIndex,
+    const CameraPushConstants& camera)
 {
     const Swapchain& swap = *renderer.swap;
     const FrameResources& frame = renderer.frames[frameIndex];
@@ -320,6 +333,7 @@ VkResult drawFrame(const Renderer& renderer, uint32_t frameIndex)
         frame.commandBuffer,
         *renderer.functions,
         *renderer.rtPipeline,
+        camera,
         swap.storageImage,
         swap.images[imageIndex],
         swap.extent);

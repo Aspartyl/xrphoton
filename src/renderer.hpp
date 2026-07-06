@@ -6,6 +6,7 @@
 
 namespace xrphoton
 {
+struct CameraPushConstants;
 struct FrameResources;
 struct RayTracingFunctions;
 struct RtPipeline;
@@ -40,11 +41,15 @@ struct Renderer
 // exotic driver.
 bool prepareRtForSwapchain(const Renderer& renderer);
 
-// Render and present one frame using frameIndex's command buffer and sync objects.
-// Steps: wait the in-flight fence -> acquire an image -> record and submit the trace
-// -> present. OUT_OF_DATE and SUBOPTIMAL are returned (not treated as errors) so the
-// caller can trigger a swapchain recreate; a successful frame returns the acquire
-// result so a SUBOPTIMAL acquire still propagates. Any other non-success VkResult is
-// a hard error.
-VkResult drawFrame(const Renderer& renderer, uint32_t frameIndex);
+// Render and present one frame using frameIndex's command buffer and sync objects,
+// pushing the camera payload into that command buffer before tracing. Steps: wait the
+// in-flight fence -> acquire an image -> record and submit the trace -> present.
+// OUT_OF_DATE and SUBOPTIMAL are returned (not treated as errors) so the caller can
+// trigger a swapchain recreate; a successful frame returns the acquire result so a
+// SUBOPTIMAL acquire still propagates. Any other non-success VkResult is a hard
+// error.
+VkResult drawFrame(
+    const Renderer& renderer,
+    uint32_t frameIndex,
+    const CameraPushConstants& camera);
 }

@@ -1,4 +1,5 @@
 #include "acceleration_structure.hpp"
+#include "camera.hpp"
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
 #include "swapchain.hpp"
@@ -404,12 +405,18 @@ int main()
 
     std::cout << "Entering GLFW event loop.\n";
 
+    const Camera camera;
     uint32_t currentFrame = 0;
 
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
 
-        const VkResult frameResult = drawFrame(renderer, currentFrame);
+        const float aspect = static_cast<float>(swap.extent.width)
+            / static_cast<float>(swap.extent.height);
+        const VkResult frameResult = drawFrame(
+            renderer,
+            currentFrame,
+            makeCameraPushConstants(camera, aspect));
         currentFrame = (currentFrame + 1) % MaxFramesInFlight;
 
         // The surface no longer matches the swapchain (typically a resize): rebuild it
