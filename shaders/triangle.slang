@@ -13,6 +13,17 @@ uniform RaytracingAccelerationStructure topLevelAS;
 [format("rgba8")]
 uniform RWTexture2D<float4> outputImage;
 
+struct CameraPushConstants
+{
+    float3 origin;
+    float3 forward;
+    float3 right;
+    float3 up;
+};
+
+[[vk::push_constant]]
+ConstantBuffer<CameraPushConstants> camera;
+
 struct Payload
 {
     float3 color;
@@ -21,17 +32,17 @@ struct Payload
 [shader("raygeneration")]
 void rayGenMain()
 {
-    // Orthographic camera hardcoded for the bring-up triangle: each pixel's ray
-    // starts at its NDC position behind the triangle plane (z = 0) and travels +Z.
-    // No camera abstraction or push constants yet — that comes with a real scene.
+    // The CPU sends a camera origin plus a pre-scaled perspective basis: forward is
+    // unit length, while right/up already include FOV and aspect scaling.
     uint2 pixel = DispatchRaysIndex().xy;
     float2 ndc = (float2(pixel) + 0.5) / float2(DispatchRaysDimensions().xy) * 2.0 - 1.0;
 
-    // Launch IDs count rows downward from the top of the image, so ndc.y is negated
-    // to keep the world y-up: geometry authored with +y up renders upright.
+    // Launch IDs count rows downward from the top of the image, so ndc.y is still
+    // negated here to keep world y-up: that flip belongs to dispatch space, not the
+    // camera basis the CPU sends.
     RayDesc ray;
-    ray.Origin = float3(ndc.x, -ndc.y, -1.0);
-    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.Origin = camera.origin;
+    ray.Direction = normalize(camera.forward + ndc.x * camera.right - ndc.y * camera.up);
     // tMin keeps self-intersection conventions even though nothing here can
     // self-intersect; tMax comfortably covers the unit-scale scene.
     ray.TMin = 0.001;

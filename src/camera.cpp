@@ -92,6 +92,9 @@ CameraBasis makeCameraBasis(float yaw, float pitch)
 {
     const float clampedPitch = std::clamp(pitch, -PitchLimit, PitchLimit);
     const float cosPitch = std::cos(clampedPitch);
+
+    // Preserve the bring-up shader's screen mapping: at yaw 0, world +X maps
+    // screen-right and world +Y maps screen-up while the camera looks down +Z.
     const Vec3 forward{
         cosPitch * std::sin(yaw),
         std::sin(clampedPitch),

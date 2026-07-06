@@ -24,6 +24,7 @@ constexpr float DefaultVerticalFov = 1.0471976f;
 struct Camera
 {
     Vec3 position{0.0f, 0.0f, -2.0f};
+    // yaw 0 / pitch 0 looks down world +Z, preserving the old startup view.
     float yaw = 0.0f;
     float pitch = 0.0f;
     float verticalFov = DefaultVerticalFov;
