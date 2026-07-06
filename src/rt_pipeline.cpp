@@ -1,5 +1,6 @@
 #include "rt_pipeline.hpp"
 
+#include "camera.hpp"
 #include "vulkan_context.hpp"
 
 #include <cstdint>
@@ -191,10 +192,17 @@ VkResult createRtPipeline(
     VkDevice device,
     const RayTracingFunctions& functions)
 {
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(CameraPushConstants);
+
     VkPipelineLayoutCreateInfo layoutCreateInfo{};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layoutCreateInfo.setLayoutCount = 1;
     layoutCreateInfo.pSetLayouts = &rt->descriptorSetLayout;
+    layoutCreateInfo.pushConstantRangeCount = 1;
+    layoutCreateInfo.pPushConstantRanges = &pushRange;
 
     VkResult result = vkCreatePipelineLayout(
         device,

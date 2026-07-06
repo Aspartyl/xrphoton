@@ -7,8 +7,9 @@ namespace xrphoton
 struct RayTracingFunctions;
 
 // Owns the ray tracing pipeline machinery: the descriptor set layout binding the TLAS
-// and the storage image, the pipeline layout over it, the descriptor pool and the one
-// set allocated from it, the pipeline itself, and the shader binding table buffer.
+// and the storage image, the pipeline layout over it plus the camera push constants,
+// the descriptor pool and the one set allocated from it, the pipeline itself, and the
+// shader binding table buffer.
 // Program-lifetime and swapchain-independent except for one obligation: the storage
 // image view is recreated with the swapchain, so the descriptor set must be rewritten
 // after every recreate (the set handle is held here for exactly that — it is freed
@@ -70,14 +71,14 @@ void writeRtDescriptorSet(
     VkAccelerationStructureKHR tlas,
     VkImageView storageImageView);
 
-// Create the pipeline layout (the one descriptor set, no push constants yet) and the
-// ray tracing pipeline: three stages sharing the single embedded shader module, three
-// groups in the order the SBT build relies on — 0 raygen, 1 miss, 2 triangles-hit
-// (closest hit only; the geometry is OPAQUE, so no any-hit). Primary rays only, so
-// maxPipelineRayRecursionDepth is 1, which the spec guarantees supported. Requires
-// createRtDescriptorSet to have succeeded (uses the set layout and the adopted
-// device); on failure *rt again holds whatever was created and the caller can
-// bare-return.
+// Create the pipeline layout (the one descriptor set plus raygen camera push
+// constants) and the ray tracing pipeline: three stages sharing the single embedded
+// shader module, three groups in the order the SBT build relies on — 0 raygen,
+// 1 miss, 2 triangles-hit (closest hit only; the geometry is OPAQUE, so no any-hit).
+// Primary rays only, so maxPipelineRayRecursionDepth is 1, which the spec guarantees
+// supported. Requires createRtDescriptorSet to have succeeded (uses the set layout
+// and the adopted device); on failure *rt again holds whatever was created and the
+// caller can bare-return.
 VkResult createRtPipeline(
     RtPipeline* rt,
     VkDevice device,
