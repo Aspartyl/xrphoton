@@ -5,6 +5,7 @@
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <iterator>
@@ -20,6 +21,7 @@ namespace
 constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
+constexpr double MaxFrameDt = 0.1;
 
 // Compile-time request from the XRPHOTON_ENABLE_VALIDATION CMake option. The runtime
 // decision (validationEnabled in main) additionally requires the layer and debug-utils
@@ -405,11 +407,23 @@ int main()
 
     std::cout << "Entering GLFW event loop.\n";
 
-    const Camera camera;
+    glfwSetInputMode(ctx.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
+        glfwSetInputMode(ctx.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+    }
+
+    Camera camera;
+    double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
 
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
+
+        const double now = glfwGetTime();
+        const float dt = static_cast<float>(std::min(now - lastTime, MaxFrameDt));
+        lastTime = now;
+
+        updateCamera(&camera, ctx.window, dt);
 
         const float aspect = static_cast<float>(swap.extent.width)
             / static_cast<float>(swap.extent.height);
