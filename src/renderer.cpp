@@ -195,8 +195,8 @@ VkResult recordTraceCommandBuffer(
         1,
     };
 
-    // Keep this as a blit, not a copy: blit performs format conversion. If the selected
-    // swapchain format is sRGB, the storage UNORM value is encoded for presentation here.
+    // Keep this as a blit, not a copy: blit performs format conversion. The selected
+    // swapchain format is sRGB, so the storage UNORM value is encoded for presentation.
     vkCmdBlitImage(
         commandBuffer,
         storageImage,

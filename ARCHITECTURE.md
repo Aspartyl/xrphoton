@@ -254,9 +254,10 @@ queueFamilies.isComplete()           // a compute+graphics (trace) and a present
 just raw swapchain support: beyond a usable format, present mode, and the required
 image usages, it requires that the storage format
 (`R8G8B8A8_UNORM`) supports the storage/transfer/blit-source features and that at
-least one available surface format is **blit-compatible** as a blit destination.
-This gates the storage→blit path at *device selection* so multi-GPU selection cannot
-pick a device that passes the old checks and then fails later in `createStorageImage`.
+least one available surface format is an 8-bit **sRGB** format paired with
+`SRGB_NONLINEAR` and usable as a blit destination. Device selection and format choice
+use the same predicate, so multi-GPU selection cannot pick a device that passes the
+gate and then fails later in swapchain creation.
 
 `RequiredDeviceExtensions` (in `vulkan_context.cpp`) is the hardware ray tracing
 stack — acceleration structure, ray tracing pipeline, deferred host operations
@@ -360,8 +361,8 @@ into the storage image, then blit it into the acquired swapchain image:
    transfer-read), to be the blit source.
 4. Barrier the acquired image `UNDEFINED → TRANSFER_DST_OPTIMAL`, the blit destination.
 5. `vkCmdBlitImage` storage → swapchain (matching extents, `VK_FILTER_NEAREST`). A
-   **blit**, not a copy, on purpose: blit does format conversion, so if the swapchain
-   format is sRGB the storage `UNORM` value is gamma-encoded for presentation here.
+   **blit**, not a copy, on purpose: the selected swapchain format is always sRGB, so
+   format conversion gamma-encodes the storage `UNORM` value for presentation here.
 6. Execution-only barrier `TRANSFER → RAY_TRACING_SHADER`, so a later frame cannot
    overwrite the shared storage image until this frame's blit has finished reading
    it. No memory dependency is needed for this write-after-read hazard; only ordering
@@ -431,10 +432,10 @@ Two subtleties worth preserving:
 
 Selection policy inside `createSwapchain`:
 
-- **Format:** restricted to formats the storage→swapchain blit can target; among those,
-  prefer `B8G8R8A8_SRGB` + `SRGB_NONLINEAR`, otherwise the first blit-compatible one.
-  An incompatible `formats[0]` is **never** used as a fallback — the suitability gate
-  guarantees a compatible format exists.
+- **Format:** restricted to `B8G8R8A8_SRGB` or `R8G8B8A8_SRGB`, paired with
+  `SRGB_NONLINEAR` and usable as a blit destination. Prefer BGRA, then RGBA; UNORM and
+  10-bit formats are rejected until the renderer has an explicit output-encoding pass.
+  The suitability gate uses the same predicate and guarantees one candidate exists.
 - **Present mode:** prefer `MAILBOX`; fall back to `FIFO` (always supported).
 - **Extent:** the surface's `currentExtent` when fixed; otherwise the window
   framebuffer size clamped to the surface min/max.

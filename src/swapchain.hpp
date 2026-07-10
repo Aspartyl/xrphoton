@@ -34,11 +34,11 @@ struct Swapchain
     ~Swapchain();
 };
 
-// Part of device suitability: true if the surface exposes at least one compatible
-// format and present mode, supports the image usages the render path needs, and can
-// blit from the storage output format into the swapchain format. Kept here (rather
-// than in vulkan_context) so physical-device selection and swapchain creation share
-// one definition of "adequate swapchain support".
+// Part of device suitability: true if the surface exposes at least one supported 8-bit
+// sRGB + SRGB_NONLINEAR format and a present mode, supports the image usages the render
+// path needs, and can blit from the storage output into that surface format. Kept here
+// (rather than in vulkan_context) so physical-device selection and swapchain creation
+// share one definition of "adequate swapchain support".
 bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
 
 // Populate *swap with a fresh swapchain, its image views, and one render-finished

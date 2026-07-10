@@ -51,16 +51,14 @@ bool storageImageFormatFeaturesSupported(VkPhysicalDevice physicalDevice, VkForm
         == RequiredStorageImageFormatFeatures;
 }
 
-// Blits can convert between non-integer color formats, but not between integer and
-// non-integer classes. Keep the accepted present formats explicit and conservative.
-bool isKnownPresentableNonIntegerColorFormat(VkFormat format)
+// The present blit relies on the destination format to encode the storage image's
+// linear UNORM values for display. Until the renderer has an explicit output-encoding
+// pass, only 8-bit sRGB swapchain formats preserve that contract.
+bool isSupportedSrgbSwapchainFormat(VkFormat format)
 {
     switch (format) {
     case VK_FORMAT_B8G8R8A8_SRGB:
-    case VK_FORMAT_B8G8R8A8_UNORM:
     case VK_FORMAT_R8G8B8A8_SRGB:
-    case VK_FORMAT_R8G8B8A8_UNORM:
-    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
         return true;
     default:
         return false;
@@ -73,7 +71,7 @@ bool isBlitCompatibleSwapchainFormat(
     VkFormat storageFormat)
 {
     if (storageFormat != StorageImageFormat
-        || !isKnownPresentableNonIntegerColorFormat(swapchainFormat)) {
+        || !isSupportedSrgbSwapchainFormat(swapchainFormat)) {
         return false;
     }
 
@@ -82,6 +80,21 @@ bool isBlitCompatibleSwapchainFormat(
 
     return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)
         == VK_FORMAT_FEATURE_BLIT_DST_BIT;
+}
+
+// Device selection and surface-format choice share this full predicate so a device
+// cannot pass suitability with a format that swapchain creation would later reject.
+// The VkFormat controls the sRGB encoding performed by the blit; the color space tells
+// the presentation engine to interpret those encoded values as nonlinear sRGB.
+bool isSupportedSwapchainSurfaceFormat(
+    VkPhysicalDevice physicalDevice,
+    const VkSurfaceFormatKHR& surfaceFormat)
+{
+    return surfaceFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+        && isBlitCompatibleSwapchainFormat(
+            physicalDevice,
+            surfaceFormat.format,
+            StorageImageFormat);
 }
 
 // Gather surface capabilities, formats, and present modes. Returns with valid == false
@@ -153,37 +166,31 @@ SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice physicalDevice, V
     return support;
 }
 
-// Prefer 8-bit BGRA sRGB (the common, correctly gamma-managed choice) when it is
-// compatible with the storage-image blit path; otherwise take the first compatible
-// format. Never fall back to an incompatible format.
+// Prefer 8-bit BGRA sRGB (the common native presentation layout), then RGBA sRGB.
+// Both candidates use SRGB_NONLINEAR and satisfy the storage-image blit predicate;
+// UNORM and 10-bit formats are rejected until an explicit output-encoding pass exists.
 VkSurfaceFormatKHR chooseSwapchainSurfaceFormat(
     VkPhysicalDevice physicalDevice,
     const std::vector<VkSurfaceFormatKHR>& formats)
 {
-    const VkSurfaceFormatKHR* firstCompatibleFormat = nullptr;
+    const VkSurfaceFormatKHR* rgbaSrgbFormat = nullptr;
 
     for (const VkSurfaceFormatKHR& format : formats) {
-        const bool compatible = isBlitCompatibleSwapchainFormat(
-            physicalDevice,
-            format.format,
-            StorageImageFormat);
-
-        if (!compatible) {
+        if (!isSupportedSwapchainSurfaceFormat(physicalDevice, format)) {
             continue;
         }
 
-        if (firstCompatibleFormat == nullptr) {
-            firstCompatibleFormat = &format;
+        if (format.format == VK_FORMAT_B8G8R8A8_SRGB) {
+            return format;
         }
 
-        if (format.format == VK_FORMAT_B8G8R8A8_SRGB
-            && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            return format;
+        if (rgbaSrgbFormat == nullptr) {
+            rgbaSrgbFormat = &format;
         }
     }
 
-    if (firstCompatibleFormat != nullptr) {
-        return *firstCompatibleFormat;
+    if (rgbaSrgbFormat != nullptr) {
+        return *rgbaSrgbFormat;
     }
 
     return {};
@@ -619,7 +626,7 @@ bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR s
     }
 
     for (const VkSurfaceFormatKHR& format : support.formats) {
-        if (isBlitCompatibleSwapchainFormat(physicalDevice, format.format, StorageImageFormat)) {
+        if (isSupportedSwapchainSurfaceFormat(physicalDevice, format)) {
             return true;
         }
     }
