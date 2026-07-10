@@ -85,7 +85,8 @@ int main()
     const VkResult result = vkEnumerateInstanceVersion(&instanceVersion);
 
     if (result != VK_SUCCESS) {
-        std::cerr << "Failed to enumerate Vulkan instance version.\n";
+        std::cerr << "Failed to enumerate Vulkan instance version: "
+                  << formatVkResult(result) << ".\n";
         return 1;
     }
 
@@ -181,7 +182,8 @@ int main()
     const VkResult createResult = vkCreateInstance(&instanceCreateInfo, nullptr, &ctx.instance);
 
     if (createResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan instance.\n";
+        std::cerr << "Failed to create Vulkan instance: "
+                  << formatVkResult(createResult) << ".\n";
         return 1;
     }
 
@@ -196,7 +198,8 @@ int main()
             &ctx.debugMessenger);
 
         if (debugMessengerResult != VK_SUCCESS) {
-            std::cerr << "Failed to create Vulkan debug messenger.\n";
+            std::cerr << "Failed to create Vulkan debug messenger: "
+                      << formatVkResult(debugMessengerResult) << ".\n";
             return 1;
         }
 
@@ -210,7 +213,8 @@ int main()
         &ctx.surface);
 
     if (surfaceResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan surface.\n";
+        std::cerr << "Failed to create Vulkan surface: "
+                  << formatVkResult(surfaceResult) << ".\n";
         return 1;
     }
 
@@ -242,7 +246,8 @@ int main()
     const VkResult deviceResult = createLogicalDevice(physicalDevice, queueFamilies, &ctx.device);
 
     if (deviceResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan logical device.\n";
+        std::cerr << "Failed to create Vulkan logical device: "
+                  << formatVkResult(deviceResult) << ".\n";
         return 1;
     }
 
@@ -277,7 +282,8 @@ int main()
         queueFamilies);
 
     if (swapchainResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan swapchain.\n";
+        std::cerr << "Failed to create Vulkan swapchain: "
+                  << formatVkResult(swapchainResult) << ".\n";
         return 1;
     }
 
@@ -292,7 +298,8 @@ int main()
         &ctx.commandPool);
 
     if (commandPoolResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan command pool.\n";
+        std::cerr << "Failed to create Vulkan command pool: "
+                  << formatVkResult(commandPoolResult) << ".\n";
         return 1;
     }
 
@@ -304,7 +311,8 @@ int main()
         &ctx.frames);
 
     if (commandBufferResult != VK_SUCCESS) {
-        std::cerr << "Failed to allocate Vulkan per-frame command buffers.\n";
+        std::cerr << "Failed to allocate Vulkan per-frame command buffers: "
+                  << formatVkResult(commandBufferResult) << ".\n";
         return 1;
     }
 
@@ -315,7 +323,8 @@ int main()
         &ctx.frames);
 
     if (syncObjectsResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan frame sync objects.\n";
+        std::cerr << "Failed to create Vulkan frame sync objects: "
+                  << formatVkResult(syncObjectsResult) << ".\n";
         return 1;
     }
 
@@ -337,7 +346,8 @@ int main()
         ctx.frames[0].inFlightFence);
 
     if (accelerationStructureResult != VK_SUCCESS) {
-        std::cerr << "Failed to build Vulkan acceleration structures.\n";
+        std::cerr << "Failed to build Vulkan acceleration structures: "
+                  << formatVkResult(accelerationStructureResult) << ".\n";
         return 1;
     }
 
@@ -351,7 +361,8 @@ int main()
     const VkResult descriptorSetResult = createRtDescriptorSet(&rtPipeline, ctx.device);
 
     if (descriptorSetResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan ray tracing descriptor set.\n";
+        std::cerr << "Failed to create Vulkan ray tracing descriptor set: "
+                  << formatVkResult(descriptorSetResult) << ".\n";
         return 1;
     }
 
@@ -363,7 +374,8 @@ int main()
         rayTracingFunctions);
 
     if (rtPipelineResult != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan ray tracing pipeline.\n";
+        std::cerr << "Failed to create Vulkan ray tracing pipeline: "
+                  << formatVkResult(rtPipelineResult) << ".\n";
         return 1;
     }
 
@@ -376,7 +388,8 @@ int main()
         rayTracingFunctions);
 
     if (sbtResult != VK_SUCCESS) {
-        std::cerr << "Failed to build Vulkan shader binding table.\n";
+        std::cerr << "Failed to build Vulkan shader binding table: "
+                  << formatVkResult(sbtResult) << ".\n";
         return 1;
     }
 
@@ -446,7 +459,8 @@ int main()
                 queueFamilies);
 
             if (recreateResult != VK_SUCCESS) {
-                std::cerr << "Failed to recreate Vulkan swapchain.\n";
+                std::cerr << "Failed to recreate Vulkan swapchain: "
+                          << formatVkResult(recreateResult) << ".\n";
                 return 1;
             }
 
@@ -461,7 +475,8 @@ int main()
         }
 
         if (frameResult != VK_SUCCESS) {
-            std::cerr << "Failed to draw Vulkan frame.\n";
+            std::cerr << "Failed to draw Vulkan frame: "
+                      << formatVkResult(frameResult) << ".\n";
             return 1;
         }
 

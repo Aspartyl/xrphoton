@@ -37,7 +37,8 @@ has landed.
 - **RAII over manual cleanup.** Resource teardown lives in destructors, never in
   hand-unwound failure paths. See [Ownership model](#ownership-model).
 - **No exceptions.** Errors propagate as `VkResult` / `bool` return values and are
-  reported to `std::cerr`.
+  reported to `std::cerr`; Vulkan failures include the symbolic result name and numeric
+  value, with a numeric fallback for results unknown to the current formatter.
 - **C++23, no compiler extensions** (`CMAKE_CXX_EXTENSIONS OFF`).
 
 ## Module map

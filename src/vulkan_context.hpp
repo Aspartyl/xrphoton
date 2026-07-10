@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -93,6 +94,10 @@ struct RayTracingFunctions
 
 // Print a packed VkVersion as "major.minor.patch" to std::cout (no trailing newline).
 void printVulkanVersion(uint32_t version);
+
+// Format a VkResult as its symbolic name plus numeric value. Results unknown to this
+// Vulkan baseline retain the numeric value as a forward-compatible fallback.
+std::string formatVkResult(VkResult result);
 
 // True if the named instance layer / extension is present in this Vulkan runtime.
 // Both enumerate the available set and report errors to std::cerr.
