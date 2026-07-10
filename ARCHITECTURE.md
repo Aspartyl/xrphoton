@@ -500,6 +500,12 @@ Decisions and contracts worth preserving:
   a BLAS's acceleration-structure address for the TLAS instance requires it of the
   buffer underneath (VUID 09542). The **TLAS backing buffer** deliberately does not:
   nothing queries a TLAS address.
+- **Build-input alignment guard.** The triangle vertex and index device addresses must
+  each be 4-byte aligned, and the non-pointer instance array must be 16-byte aligned.
+  Correct usage flags do not guarantee those command-specific alignments, so startup
+  checks all three dedicated-buffer addresses and fails with a named diagnostic rather
+  than recording undefined work. Real-geometry suballocation will align its offsets;
+  this guard covers the dedicated bring-up buffers until then.
 - **Scratch alignment.** The spec requires the scratch **device address** — not the
   buffer size or offset — to be a multiple of
   `minAccelerationStructureScratchOffsetAlignment`, and a buffer's base address

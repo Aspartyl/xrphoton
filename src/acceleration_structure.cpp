@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 
@@ -36,6 +37,13 @@ constexpr VkBufferUsageFlags BuildInputBufferUsage =
     VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
     | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
+// Command-specific address alignments for the current build inputs: a component of
+// R32G32B32_SFLOAT, a UINT32 index, and a non-pointer instance array respectively.
+// Correct buffer usage does not itself guarantee these alignments for the base BDA.
+constexpr VkDeviceSize VertexInputAddressAlignment = 4;
+constexpr VkDeviceSize IndexInputAddressAlignment = 4;
+constexpr VkDeviceSize InstanceInputAddressAlignment = 16;
+
 // Round a device address up to the next multiple of alignment. Vulkan alignment limits
 // are powers of two, so the mask form is exact.
 VkDeviceAddress alignUp(VkDeviceAddress address, VkDeviceSize alignment)
@@ -53,6 +61,24 @@ VkDeviceAddress getBufferAddress(
     addressInfo.buffer = buffer;
 
     return functions.getBufferDeviceAddress(device, &addressInfo);
+}
+
+// Fail loudly instead of recording a build with undefined behavior. Real geometry
+// suballocation will align the offsets themselves; dedicated startup buffers only need
+// this guard against an unexpectedly under-aligned base address.
+bool hasRequiredBuildInputAlignment(
+    VkDeviceAddress address,
+    VkDeviceSize requiredAlignment,
+    const char* inputName)
+{
+    if ((address % requiredAlignment) == 0) {
+        return true;
+    }
+
+    std::cerr << "Vulkan " << inputName << " build-input device address 0x"
+              << std::hex << address << std::dec
+              << " is not aligned to " << requiredAlignment << " bytes.\n";
+    return false;
 }
 
 // Create a host-visible buffer and copy `size` bytes of `data` into it. Coherent memory
@@ -287,6 +313,25 @@ VkResult buildAccelerationStructures(
         return result;
     }
 
+    const VkDeviceAddress vertexAddress =
+        getBufferAddress(device, functions, as->vertexBuffer);
+    const VkDeviceAddress indexAddress =
+        getBufferAddress(device, functions, as->indexBuffer);
+
+    if (!hasRequiredBuildInputAlignment(
+            vertexAddress,
+            VertexInputAddressAlignment,
+            "vertex")) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    if (!hasRequiredBuildInputAlignment(
+            indexAddress,
+            IndexInputAddressAlignment,
+            "index")) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     // OPAQUE lets the eventual trace skip any-hit shading for this geometry; nothing in
     // the scene needs transparency.
     VkAccelerationStructureGeometryKHR blasGeometry{};
@@ -296,13 +341,11 @@ VkResult buildAccelerationStructures(
     blasGeometry.geometry.triangles.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
     blasGeometry.geometry.triangles.vertexFormat = BlasVertexFormat;
-    blasGeometry.geometry.triangles.vertexData.deviceAddress =
-        getBufferAddress(device, functions, as->vertexBuffer);
+    blasGeometry.geometry.triangles.vertexData.deviceAddress = vertexAddress;
     blasGeometry.geometry.triangles.vertexStride = 3 * sizeof(float);
     blasGeometry.geometry.triangles.maxVertex = 2;
     blasGeometry.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
-    blasGeometry.geometry.triangles.indexData.deviceAddress =
-        getBufferAddress(device, functions, as->indexBuffer);
+    blasGeometry.geometry.triangles.indexData.deviceAddress = indexAddress;
 
     VkAccelerationStructureBuildGeometryInfoKHR blasBuildInfo{};
     blasBuildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
@@ -383,14 +426,23 @@ VkResult buildAccelerationStructures(
         return result;
     }
 
+    const VkDeviceAddress instanceAddress =
+        getBufferAddress(device, functions, as->instanceBuffer);
+
+    if (!hasRequiredBuildInputAlignment(
+            instanceAddress,
+            InstanceInputAddressAlignment,
+            "instance")) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     VkAccelerationStructureGeometryKHR tlasGeometry{};
     tlasGeometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
     tlasGeometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
     tlasGeometry.geometry.instances.sType =
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
     tlasGeometry.geometry.instances.arrayOfPointers = VK_FALSE;
-    tlasGeometry.geometry.instances.data.deviceAddress =
-        getBufferAddress(device, functions, as->instanceBuffer);
+    tlasGeometry.geometry.instances.data.deviceAddress = instanceAddress;
 
     VkAccelerationStructureBuildGeometryInfoKHR tlasBuildInfo{};
     tlasBuildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;

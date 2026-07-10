@@ -65,13 +65,15 @@ bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevi
 
 // Populate *as: upload the triangle geometry, build the BLAS over it and the TLAS over
 // its single instance (recorded back-to-back into commandBuffer with a build-to-build
-// barrier), submit on traceQueue, and block until the GPU finishes. The scratch buffers
-// are released before returning, so on success *as holds only program-lifetime
-// resources. The fence is reset, used for the submit, and waited on — on success it is
-// left signaled, so passing the pre-loop in-flight fence preserves the signaled state
-// the first drawFrame depends on. On failure the fence may be left unsignaled and *as
-// holds whatever was created so far; ~AccelerationStructure cleans it up, so the caller
-// can bare-return.
+// barrier), submit on traceQueue, and block until the GPU finishes. Before recording,
+// the three build-input device addresses are checked against their required 4/4/16-byte
+// alignments; an under-aligned base address fails with VK_ERROR_INITIALIZATION_FAILED.
+// The scratch buffers are released before returning, so on success *as holds only
+// program-lifetime resources. The fence is reset, used for the submit, and waited on —
+// on success it is left signaled, so passing the pre-loop in-flight fence preserves the
+// signaled state the first drawFrame depends on. On failure the fence may be left
+// unsignaled and *as holds whatever was created so far; ~AccelerationStructure cleans it
+// up, so the caller can bare-return.
 VkResult buildAccelerationStructures(
     AccelerationStructure* as,
     VkPhysicalDevice physicalDevice,
