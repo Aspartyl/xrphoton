@@ -181,8 +181,9 @@ than relying on a sibling having done so.
 
 Each destructor:
 
-1. Calls `vkDeviceWaitIdle` first, so no in-flight work still references the
-   resources about to be freed.
+1. Calls `vkDeviceWaitIdle` first, so no submitted device work still references the
+   resources about to be freed. The narrower presentation-engine exception for
+   `Swapchain` is documented under [Presentation teardown](#presentation-teardown).
 2. Tears down its handles in reverse creation order, each guarded by a
    `VK_NULL_HANDLE` / null check so partial bring-up (an early `return 1;`) still
    cleans up correctly.
@@ -395,7 +396,7 @@ The frame model has two rotating frame slots:
 | `frames[i].inFlightFence` | one **per frame in flight** | `VulkanContext` | Signaled when that slot's submit completes; the next reuse of the slot waits on it. Created **already signaled** so the first wait for each slot does not deadlock. |
 | `frames[i].commandBuffer` | one **per frame in flight** | `VulkanContext` | Reset and rerecorded only after the matching in-flight fence proves the slot's previous submission has retired. |
 
-Two subtleties worth preserving:
+Synchronization details worth preserving:
 
 - **Stage matching and pre-acquire overlap.** The acquire semaphore waits at
   `TRANSFER`, matching the first thing the submit does to the *swapchain* image: the
@@ -422,6 +423,23 @@ Two subtleties worth preserving:
   acquiring with that slot's image-available semaphore again, proving any prior
   submission that consumed the semaphore has retired before the semaphore is reused.
 
+### Presentation teardown
+
+Steady-state render-finished semaphore reuse is spec-grounded: each semaphore is
+indexed by acquired swapchain image, and the next submission waits on that image's
+acquisition before it can signal the same semaphore again, proving the previous present
+has finished consuming it. Recreate and shutdown are narrower: without a maintenance
+extension, `vkQueuePresentKHR` exposes no completion fence, so `vkDeviceWaitIdle`
+formally retires submitted device work but does not prove that the presentation engine
+has released its wait semaphores. [Khronos documents this gap and the same pragmatic
+idle-then-destroy practice](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html).
+The engine deliberately accepts it: per-image semaphores make the normal frame path
+correct, unextended Vulkan offers no stronger direct teardown signal, and an optional
+extension path would create a second teardown system for no observed failure here. If
+`VK_KHR_swapchain_maintenance1` becomes part of the required baseline, per-present
+fences are the upgrade path and must be waited before presentation resources are
+destroyed; until then, do not add a parallel present-fence path.
+
 ## Swapchain and resize handling
 
 `Swapchain` is the unit that gets rebuilt when the surface changes. The trigger is a
@@ -433,7 +451,9 @@ Two subtleties worth preserving:
 1. `waitForDrawableFramebuffer` — block (pumping events) while the window has a
    zero-area framebuffer, e.g. while minimized. Returns false if the window is closing,
    in which case recreation is skipped.
-2. `vkDeviceWaitIdle` — no in-flight frame may reference the old resources.
+2. `vkDeviceWaitIdle` — retire submitted device work before destroying the old
+   resources, subject to the documented [presentation teardown](#presentation-teardown)
+   gap.
 3. `destroySwapchainResources` then `createSwapchainResources` — the same teardown
    path the destructor uses, then a fresh build.
 
@@ -748,6 +768,30 @@ Decisions and contracts worth preserving:
    filter — not offline-style progressive accumulation, which a moving camera
    and living scene rule out.
 
-As each item is built, update the [Status](#status) section, add a subsystem section,
+### Trigger-based engineering work
+
+These changes are deliberately deferred until the design input that determines their
+final shape exists:
+
+- **Real-geometry allocation and lifetime (items 2–3).** Introduce Vulkan Memory
+  Allocator (VMA) as the engine's allocator and replace direct
+  one-`vkAllocateMemory`-per-resource allocation. Make explicit aligned buffer
+  suballocation the definitive solution for acceleration-structure input addresses.
+  Decide whether vertex, index, and instance inputs remain resident only once TLAS
+  refits, BLAS updates, and shader geometry access establish their real lifetimes. Keep
+  the tiny bring-up build-input buffers until then; freeing them now saves effectively
+  nothing and creates churn.
+- **Presentation completion.** Do not add swapchain present fences unless
+  `VK_KHR_swapchain_maintenance1` becomes part of the required baseline. At that point,
+  replace the [documented teardown assumption](#presentation-teardown) with
+  per-present fences.
+- **UI/compositing surface usage.** Once that path is defined, reconsider the currently
+  unused swapchain image views and `COLOR_ATTACHMENT` usage and capability gate
+  together.
+- **Slang import dependencies.** When shaders begin importing other source files, make
+  Slang emit a dependency file and connect it to CMake's custom command. Depending
+  directly on `triangle.slang` is sufficient while it has no imports.
+
+As roadmap work lands, update the [Status](#status) section, add a subsystem section,
 and revise the ownership/synchronization sections if the new code changes those
 invariants.
