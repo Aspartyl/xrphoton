@@ -103,7 +103,7 @@ Includes are kept acyclic by a deliberate rule:
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
-1. `isPhysicalDeviceSuitable` (in `vulkan_context.cpp`) calls
+1. `queryPhysicalDeviceSuitability` (in `vulkan_context.cpp`) calls
    `hasRequiredSwapchainSupport` (declared in `swapchain.hpp`) and
    `hasRequiredAccelerationStructureFormatSupport` (declared in
    `acceleration_structure.hpp`).
@@ -239,17 +239,26 @@ returns `1` on failure (RAII handles the unwind):
 
 ### Device selection
 
-`isPhysicalDeviceSuitable` is an aggregate test, ordered cheapest-first so the
-short-circuiting `&&` skips expensive queries once a device has already failed:
+`pickPhysicalDevice` builds a complete suitability report for each candidate and takes
+the first one that passes every category:
 
 ```
 queueFamilies.isComplete()           // a compute+graphics (trace) and a present family
-  && hasRequiredApiVersion            // >= Vulkan 1.3
-  && areRequiredDeviceExtensions...   // the RT stack + swapchain
+  && apiVersion >= 1.3                // the core API baseline
+  && requiredExtensions.isComplete()  // the RT stack + swapchain
   && hasRequiredSwapchainSupport      // format, present mode, usages, + storage/blit support
   && hasRequiredAccelerationStruct... // BLAS vertex format backstop (spec-mandated support)
-  && areRequiredRayTracingFeatures... // the features actually enabled
+  && requiredRayTracingFeatures...    // the features actually enabled
 ```
+
+Rejected candidates are named and every failed independent category is written to
+`std::cerr`; extension and feature failures name each missing item. Ray tracing feature
+structs are queried only when the candidate exposes the core version that defines the
+buffer-device-address struct and advertises the extensions that define the other two,
+because putting an unsupported feature struct in the `pNext` chain is invalid. This
+diagnostic pass does a little more startup querying than the former short-circuiting
+aggregate, but physical-device selection still uses the same requirements and still
+chooses the first suitable GPU.
 
 `hasRequiredSwapchainSupport` now covers the render path's format prerequisites, not
 just raw swapchain support: beyond a usable format, present mode, and the required

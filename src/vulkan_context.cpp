@@ -56,8 +56,7 @@ const char* getVkResultName(VkResult result)
     case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
     case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
     case VK_ERROR_FRAGMENTATION: return "VK_ERROR_FRAGMENTATION";
-    case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS:
-        return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
+    case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS: return "VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS";
     case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
     case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
     case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
@@ -84,25 +83,62 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugMessengerCallback(
     return VK_FALSE;
 }
 
-// True only if every entry in RequiredDeviceExtensions is advertised by the device.
-bool areRequiredDeviceExtensionsAvailable(VkPhysicalDevice physicalDevice)
+// Result of enumerating the required extension set. Keeping both the query result and
+// every missing name lets device selection explain an enumeration failure without
+// misreporting it as unsupported hardware, and report all missing extensions at once.
+struct RequiredDeviceExtensionSupport
 {
-    uint32_t extensionCount = 0;
-    VkResult result = vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
+    VkResult queryResult = VK_SUCCESS;
+    std::vector<const char*> missingExtensions;
 
-    if (result != VK_SUCCESS) {
-        return false;
+    bool isComplete() const
+    {
+        return queryResult == VK_SUCCESS && missingExtensions.empty();
     }
 
-    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-    result = vkEnumerateDeviceExtensionProperties(
+    bool hasRequiredExtension(const char* extensionName) const
+    {
+        if (queryResult != VK_SUCCESS) {
+            return false;
+        }
+
+        for (const char* missingExtension : missingExtensions) {
+            if (std::strcmp(missingExtension, extensionName) == 0) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+};
+
+RequiredDeviceExtensionSupport queryRequiredDeviceExtensionSupport(
+    VkPhysicalDevice physicalDevice)
+{
+    RequiredDeviceExtensionSupport support{};
+    uint32_t extensionCount = 0;
+    support.queryResult = vkEnumerateDeviceExtensionProperties(
         physicalDevice,
         nullptr,
         &extensionCount,
-        availableExtensions.data());
+        nullptr);
 
-    if (result != VK_SUCCESS) {
-        return false;
+    if (support.queryResult != VK_SUCCESS) {
+        return support;
+    }
+
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+
+    if (extensionCount > 0) {
+        support.queryResult = vkEnumerateDeviceExtensionProperties(
+            physicalDevice,
+            nullptr,
+            &extensionCount,
+            availableExtensions.data());
+
+        if (support.queryResult != VK_SUCCESS) {
+            return support;
+        }
     }
 
     for (const char* requiredExtension : RequiredDeviceExtensions) {
@@ -116,27 +152,41 @@ bool areRequiredDeviceExtensionsAvailable(VkPhysicalDevice physicalDevice)
         }
 
         if (!found) {
-            return false;
+            support.missingExtensions.push_back(requiredExtension);
         }
     }
 
-    return true;
+    return support;
 }
 
-bool hasRequiredApiVersion(VkPhysicalDevice physicalDevice)
+// The feature structs for acceleration structures and ray tracing pipelines are only
+// valid in a query when the candidate advertises their defining extensions. Callers
+// therefore gate this function on the API version and those extension names.
+struct RayTracingFeatureSupport
 {
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+    bool wasQueried = false;
+    bool hasBufferDeviceAddress = false;
+    bool hasAccelerationStructure = false;
+    bool hasRayTracingPipeline = false;
 
-    return properties.apiVersion >= RequiredApiVersion;
-}
+    bool isComplete() const
+    {
+        return wasQueried
+            && hasBufferDeviceAddress
+            && hasAccelerationStructure
+            && hasRayTracingPipeline;
+    }
+};
 
 // Query the ray tracing feature chain and confirm the device actually enables the
 // three capabilities the renderer depends on. The structs are linked through pNext so a
 // single vkGetPhysicalDeviceFeatures2 call fills them all; createLogicalDevice later
 // re-uses the same chain shape to turn the features on.
-bool areRequiredRayTracingFeaturesAvailable(VkPhysicalDevice physicalDevice)
+RayTracingFeatureSupport queryRequiredRayTracingFeatureSupport(
+    VkPhysicalDevice physicalDevice)
 {
+    RayTracingFeatureSupport support{};
+
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
     bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
 
@@ -154,9 +204,12 @@ bool areRequiredRayTracingFeaturesAvailable(VkPhysicalDevice physicalDevice)
 
     vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalDeviceFeatures);
 
-    return bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE
-        && accelerationStructureFeatures.accelerationStructure == VK_TRUE
-        && rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
+    support.wasQueried = true;
+    support.hasBufferDeviceAddress = bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE;
+    support.hasAccelerationStructure =
+        accelerationStructureFeatures.accelerationStructure == VK_TRUE;
+    support.hasRayTracingPipeline = rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
+    return support;
 }
 
 // Locate the queue families the renderer needs. The trace family must support both
@@ -223,22 +276,124 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceK
     return indices;
 }
 
-// Aggregate suitability test used by pickPhysicalDevice. *queueFamilies always receives
-// the scan result, so the caller of a suitable device gets its indices without
-// re-querying. Ordered cheapest-first so the short-circuiting && skips the more
-// expensive enumeration/feature queries once a device has already failed an earlier check.
-bool isPhysicalDeviceSuitable(
-    VkPhysicalDevice physicalDevice,
-    VkSurfaceKHR surface,
-    QueueFamilyIndices* queueFamilies)
+// Complete per-candidate report used both for the selection decision and for rejection
+// diagnostics. Independent categories are all evaluated so one run describes every
+// actionable problem instead of revealing them one launch at a time.
+struct PhysicalDeviceSuitability
 {
-    *queueFamilies = findQueueFamilies(physicalDevice, surface);
-    return queueFamilies->isComplete()
-        && hasRequiredApiVersion(physicalDevice)
-        && areRequiredDeviceExtensionsAvailable(physicalDevice)
-        && hasRequiredSwapchainSupport(physicalDevice, surface)
-        && hasRequiredAccelerationStructureFormatSupport(physicalDevice)
-        && areRequiredRayTracingFeaturesAvailable(physicalDevice);
+    VkPhysicalDeviceProperties properties{};
+    QueueFamilyIndices queueFamilies{};
+    RequiredDeviceExtensionSupport extensions{};
+    RayTracingFeatureSupport rayTracingFeatures{};
+    bool hasSwapchainSupport = false;
+    bool hasAccelerationStructureFormatSupport = false;
+
+    bool hasRequiredApiVersion() const
+    {
+        return properties.apiVersion >= RequiredApiVersion;
+    }
+
+    bool isSuitable() const
+    {
+        return queueFamilies.isComplete()
+            && hasRequiredApiVersion()
+            && extensions.isComplete()
+            && hasSwapchainSupport
+            && hasAccelerationStructureFormatSupport
+            && rayTracingFeatures.isComplete();
+    }
+};
+
+PhysicalDeviceSuitability queryPhysicalDeviceSuitability(
+    VkPhysicalDevice physicalDevice,
+    VkSurfaceKHR surface)
+{
+    PhysicalDeviceSuitability suitability{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &suitability.properties);
+    suitability.queueFamilies = findQueueFamilies(physicalDevice, surface);
+    suitability.extensions = queryRequiredDeviceExtensionSupport(physicalDevice);
+    suitability.hasSwapchainSupport = hasRequiredSwapchainSupport(physicalDevice, surface);
+    suitability.hasAccelerationStructureFormatSupport =
+        hasRequiredAccelerationStructureFormatSupport(physicalDevice);
+
+    // Buffer device address is core from VK 1.2 onward, while the other two feature
+    // structs remain defined by device extensions. Do not put unsupported structs in
+    // pNext, even though querying a 1.2 candidate can still enrich its 1.3 rejection.
+    const bool canQueryRayTracingFeatures =
+        suitability.properties.apiVersion >= VK_API_VERSION_1_2
+        && suitability.extensions.hasRequiredExtension(
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)
+        && suitability.extensions.hasRequiredExtension(
+            VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+
+    if (canQueryRayTracingFeatures) {
+        suitability.rayTracingFeatures =
+            queryRequiredRayTracingFeatureSupport(physicalDevice);
+    }
+
+    return suitability;
+}
+
+void reportPhysicalDeviceRejection(const PhysicalDeviceSuitability& suitability)
+{
+    const char* deviceName = suitability.properties.deviceName[0] != '\0'
+        ? suitability.properties.deviceName
+        : "<unnamed>";
+    std::cerr << "Rejected Vulkan physical device \"" << deviceName << "\":\n";
+
+    if (!suitability.queueFamilies.hasTraceFamily) {
+        std::cerr << "  - no queue family supports both graphics and compute\n";
+    }
+
+    if (!suitability.queueFamilies.hasPresentFamily) {
+        std::cerr << "  - no usable present queue family was found for this surface\n";
+    }
+
+    if (!suitability.hasRequiredApiVersion()) {
+        std::cerr << "  - requires Vulkan "
+                  << VK_VERSION_MAJOR(RequiredApiVersion) << '.'
+                  << VK_VERSION_MINOR(RequiredApiVersion) << '.'
+                  << VK_VERSION_PATCH(RequiredApiVersion)
+                  << ", but the device exposes "
+                  << VK_VERSION_MAJOR(suitability.properties.apiVersion) << '.'
+                  << VK_VERSION_MINOR(suitability.properties.apiVersion) << '.'
+                  << VK_VERSION_PATCH(suitability.properties.apiVersion) << '\n';
+    }
+
+    if (suitability.extensions.queryResult != VK_SUCCESS) {
+        std::cerr << "  - could not enumerate device extensions: "
+                  << formatVkResult(suitability.extensions.queryResult) << '\n';
+    } else {
+        for (const char* missingExtension : suitability.extensions.missingExtensions) {
+            std::cerr << "  - missing required device extension "
+                      << missingExtension << '\n';
+        }
+    }
+
+    if (!suitability.hasSwapchainSupport) {
+        std::cerr << "  - required swapchain support is unavailable (surface queries, "
+                     "formats, present modes, image usages, or storage/blit capabilities)\n";
+    }
+
+    if (!suitability.hasAccelerationStructureFormatSupport
+        && suitability.extensions.hasRequiredExtension(
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) {
+        std::cerr << "  - the BLAS vertex format cannot be used for acceleration-structure builds\n";
+    }
+
+    if (suitability.rayTracingFeatures.wasQueried) {
+        if (!suitability.rayTracingFeatures.hasBufferDeviceAddress) {
+            std::cerr << "  - missing required feature bufferDeviceAddress\n";
+        }
+
+        if (!suitability.rayTracingFeatures.hasAccelerationStructure) {
+            std::cerr << "  - missing required feature accelerationStructure\n";
+        }
+
+        if (!suitability.rayTracingFeatures.hasRayTracingPipeline) {
+            std::cerr << "  - missing required feature rayTracingPipeline\n";
+        }
+    }
 }
 
 } // namespace
@@ -385,9 +540,15 @@ VkPhysicalDevice pickPhysicalDevice(
     }
 
     for (VkPhysicalDevice physicalDevice : physicalDevices) {
-        if (isPhysicalDeviceSuitable(physicalDevice, surface, queueFamilies)) {
+        const PhysicalDeviceSuitability suitability =
+            queryPhysicalDeviceSuitability(physicalDevice, surface);
+        *queueFamilies = suitability.queueFamilies;
+
+        if (suitability.isSuitable()) {
             return physicalDevice;
         }
+
+        reportPhysicalDeviceRejection(suitability);
     }
 
     std::cerr << "No suitable Vulkan physical device was found.\n";
@@ -429,7 +590,7 @@ VkResult createLogicalDevice(
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
-    // Enable the same feature chain that areRequiredRayTracingFeaturesAvailable verified,
+    // Enable the same feature chain that queryRequiredRayTracingFeatureSupport verified,
     // this time with the flags set to VK_TRUE so the device exposes them. The chain is
     // passed through VkPhysicalDeviceFeatures2 on the create info's pNext.
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};

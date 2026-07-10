@@ -120,11 +120,12 @@ VkResult createDebugUtilsMessenger(
 void destroyDebugUtilsMessenger(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger);
 
 // Pick the first physical device meeting every requirement (queue families, API
-// version, device extensions, swapchain support, ray tracing features), writing the
-// chosen device's queue family indices to *queueFamilies — preferring a single family
-// for both trace and present so the swapchain can use EXCLUSIVE sharing. Returns
-// VK_NULL_HANDLE and logs to std::cerr if none qualifies; *queueFamilies then holds
-// the last rejected device's scan and must not be used.
+// version, device extensions, swapchain/format support, ray tracing features), writing
+// the chosen device's queue family indices to *queueFamilies — preferring a single
+// family for both trace and present so the swapchain can use EXCLUSIVE sharing. Every
+// rejected candidate is logged to std::cerr with its failed categories and exact
+// missing extensions/features. Returns VK_NULL_HANDLE if none qualifies;
+// *queueFamilies then holds the last rejected device's scan and must not be used.
 VkPhysicalDevice pickPhysicalDevice(
     VkInstance instance,
     VkSurfaceKHR surface,
