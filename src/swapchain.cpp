@@ -12,17 +12,16 @@ namespace xrphoton
 {
 namespace
 {
-// Image usages the swapchain images must support: TRANSFER_DST for the clear/blit that
-// produces each frame, and COLOR_ATTACHMENT to keep the door open for attachment-based
-// rendering later. A surface lacking either is rejected.
+// Image usages the swapchain images must support: TRANSFER_DST for the blit that produces
+// each frame, and COLOR_ATTACHMENT to keep the door open for attachment-based rendering
+// later. A surface lacking either is rejected.
 constexpr VkImageUsageFlags RequiredSwapchainImageUsage =
     VK_IMAGE_USAGE_TRANSFER_DST_BIT
     | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 constexpr VkFormat StorageImageFormat = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr VkImageUsageFlags RequiredStorageImageUsage =
     VK_IMAGE_USAGE_STORAGE_BIT
-    | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-    | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
 // Everything queried about a surface in one shot. `valid` is false if any of the
 // underlying queries failed, so callers can treat a half-filled struct as "unsupported".
@@ -34,8 +33,8 @@ struct SwapchainSupportDetails
     bool valid = false;
 };
 
-// The storage image must be usable as the eventual shader output, as the source of the
-// present blit, and as the destination of this step's placeholder clear.
+// The storage image must be usable as the ray tracing output and as the source of the
+// present blit.
 bool storageImageFormatFeaturesSupported(VkPhysicalDevice physicalDevice, VkFormat storageFormat)
 {
     VkFormatProperties properties{};
@@ -44,8 +43,7 @@ bool storageImageFormatFeaturesSupported(VkPhysicalDevice physicalDevice, VkForm
     constexpr VkFormatFeatureFlags RequiredStorageImageFormatFeatures =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
         | VK_FORMAT_FEATURE_BLIT_SRC_BIT
-        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
-        | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
 
     return (properties.optimalTilingFeatures & RequiredStorageImageFormatFeatures)
         == RequiredStorageImageFormatFeatures;

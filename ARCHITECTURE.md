@@ -393,12 +393,9 @@ Two subtleties worth preserving:
   work. So the swapchain transition cannot begin before the image is acquired. The
   trace (steps 1–2) runs at `RAY_TRACING_SHADER`, **outside** that wait stage, so the
   GPU is free to trace before — or overlapping — the acquire; only the blit onto the
-  swapchain image is serialized behind it. This is the pre-acquire overlap this
-  section predicted while the storage write was still a transfer clear; it is now
-  real, with no submit-side change — the wait stage was chosen for this from the
-  start. The present barrier's `dstStageMask` is `BOTTOM_OF_PIPE` because no later
-  GPU stage consumes the image — the render-finished semaphore is what the present
-  actually waits on.
+  swapchain image is serialized behind it. The present barrier's `dstStageMask` is
+  `BOTTOM_OF_PIPE` because no later GPU stage consumes the image — the render-finished
+  semaphore is what the present actually waits on.
 - **Shared storage image reuse.** The storage image is still one image shared by all
   frame slots. To keep frame N+1 from discarding it while frame N's blit is still
   reading it, the frame records a trailing execution-only barrier after the blit:
@@ -461,9 +458,8 @@ needs deeper overlap.
 - **Format:** `R8G8B8A8_UNORM` — a member of Vulkan's guaranteed storage-image set,
   defined once as `StorageImageFormat` in `swapchain.cpp` so the suitability gate and
   the allocation use the exact same value.
-- **Usage:** `STORAGE` (the traceRays write) `| TRANSFER_SRC` (blit source)
-  `| TRANSFER_DST` (kept from the bring-up clear era; harmless and cheap).
-  `TILING_OPTIMAL`, 1 mip / 1 layer, `EXCLUSIVE` sharing — unlike the swapchain
+- **Usage:** `STORAGE` (the traceRays write) `| TRANSFER_SRC` (blit source), with
+  `TILING_OPTIMAL`, 1 mip / 1 layer, and `EXCLUSIVE` sharing. Unlike the swapchain
   images, it is only ever touched on the trace queue, so it needs no cross-family
   sharing.
 - **Memory:** `findMemoryType` picks the first type matching the image's type bits and
@@ -549,7 +545,7 @@ Decisions and contracts worth preserving:
   (perspective rays from the camera push constants — see [Camera](#camera) for
   the payload contract — storage-image write at binding 1, `[format("rgba8")]`
   because the device's `shaderStorageImageWriteWithoutFormat` is not enabled),
-  `missMain` (the dark red the bring-up clear used), `closestHitMain`
+  `missMain` (the dark red background), `closestHitMain`
   (barycentric-derived color, proving attribute interpolation and not just a
   hit). CMake compiles it with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a

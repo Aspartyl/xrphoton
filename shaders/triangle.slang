@@ -62,8 +62,7 @@ void rayGenMain()
 [shader("miss")]
 void missMain(inout Payload payload)
 {
-    // The same dark red the placeholder clear used, so the first traced frame
-    // reads as "the triangle appeared", not "the background changed".
+    // Dark red keeps miss pixels visually distinct from the barycentric triangle.
     payload.color = float3(0.24, 0.02, 0.015);
 }
 

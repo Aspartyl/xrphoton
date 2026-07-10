@@ -22,8 +22,8 @@ struct Swapchain
     VkFormat imageFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     std::vector<VkSemaphore> renderFinishedSemaphores;
-    // Resize-bound trace output target. Placeholder frames clear this image, then
-    // blit it into the acquired swapchain image; ray tracing will write it later.
+    // Resize-bound trace output target. Ray tracing writes this image, then the frame
+    // path blits it into the acquired swapchain image for presentation.
     VkImage storageImage = VK_NULL_HANDLE;
     VkDeviceMemory storageImageMemory = VK_NULL_HANDLE;
     VkImageView storageImageView = VK_NULL_HANDLE;
