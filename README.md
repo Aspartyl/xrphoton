@@ -39,10 +39,20 @@ and denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 
+Development build with Vulkan validation requested:
+
 ```sh
-cmake -S . -B build
-cmake --build build
-./build/xrPhoton
+cmake --preset debug
+cmake --build --preset debug
+./build/debug/xrPhoton
+```
+
+Optimized build with debug information and Vulkan validation disabled:
+
+```sh
+cmake --preset release
+cmake --build --preset release
+./build/release/xrPhoton
 ```
 
 Needs:
