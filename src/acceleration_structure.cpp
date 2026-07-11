@@ -295,11 +295,15 @@ VkResult buildAccelerationStructures(
     const VkDeviceSize scratchAlignment =
         accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment;
 
-    VkResult result = createHostVisibleBuffer(
+    VkResult result = uploadDeviceLocalBuffer(
         allocator,
+        device,
+        commandBuffer,
+        traceQueue,
+        fence,
         TriangleVertices,
         sizeof(TriangleVertices),
-        BuildInputBufferUsage,
+        BuildInputBufferUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         &as->vertexBuffer,
         &as->vertexBufferAllocation);
 
@@ -307,11 +311,15 @@ VkResult buildAccelerationStructures(
         return result;
     }
 
-    result = createHostVisibleBuffer(
+    result = uploadDeviceLocalBuffer(
         allocator,
+        device,
+        commandBuffer,
+        traceQueue,
+        fence,
         TriangleIndices,
         sizeof(TriangleIndices),
-        BuildInputBufferUsage,
+        BuildInputBufferUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         &as->indexBuffer,
         &as->indexBufferAllocation);
 
@@ -506,6 +514,13 @@ VkResult buildAccelerationStructures(
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    // The second staged upload left the borrowed command buffer executable. Reset it
+    // before reusing it for the acceleration-structure build submission.
+    result = vkResetCommandBuffer(commandBuffer, 0);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
 
     result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
 

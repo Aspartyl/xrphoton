@@ -25,7 +25,8 @@ bring-up roadmap is complete; of the follow-on roadmap, camera + push constants
 has landed, and the geometry + scene representation step is underway: M1
 replaced all direct device-memory allocation with the vendored Vulkan Memory
 Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
-with a rotated and translated triangle.
+with a rotated and translated triangle. M3a moved the triangle's vertex/index data
+to device-local buffers through the staged upload path that real geometry will reuse.
 
 ## Goals and constraints
 
@@ -78,7 +79,7 @@ stage; the diagram shows the frame-path layering.)
 
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
-| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator` / shared VMA-backed `createBuffer`) | Program lifetime — created once |
+| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
@@ -117,11 +118,11 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
 2. The swapchain functions need the full definition of `QueueFamilyIndices`, which
    they get by including `vulkan_context.hpp` in `swapchain.cpp`.
 3. `buildAccelerationStructures` needs the full `RayTracingFunctions` plus the shared
-   VMA-backed `createBuffer` helper, which it gets by including
+   VMA-backed `createBuffer` / staged `uploadDeviceLocalBuffer` helpers, which it gets by including
    `vulkan_context.hpp` in `acceleration_structure.cpp`.
 4. `rt_pipeline.cpp` likewise includes `vulkan_context.hpp` for the full
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
-   build-generated `triangle_spv.h` (the embedded shader module — see
+   build-generated `raytrace_spv.h` (the embedded shader module — see
    [Ray tracing pipeline](#ray-tracing-pipeline)).
 5. `renderer.cpp` includes `camera.hpp`, `rt_pipeline.hpp`, `swapchain.hpp`, and
    `vulkan_context.hpp` to resolve the borrowed structs its header only
@@ -148,7 +149,7 @@ Four RAII owners — split by resource lifetime:
   recreate path. Its `VkDevice` and `VmaAllocator` are **non-owning** — borrowed
   from `VulkanContext` and used only to destroy the children above.
 - **`AccelerationStructure`** (program lifetime, built once at startup) owns: the
-  triangle vertex/index buffers, the instance buffer, the BLAS and TLAS handles with
+  device-local triangle vertex/index buffers, the host-visible instance buffer, the BLAS and TLAS handles with
   their backing buffers, and — transiently, during the build only — the scratch
   buffers and their VMA allocations. Like `Swapchain` it borrows its `VkDevice` and
   `VmaAllocator`; it additionally keeps the
@@ -532,10 +533,17 @@ Decisions and contracts worth preserving:
   them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The visible non-identity
   M2 transform proves both the transpose and the rotate-then-translate order before
   real scene loading introduces N instances.
-- **Host-visible inputs, no staging.** The vertex/index/instance buffers are
-  host-visible + coherent and written by `memcpy`. Deliberate: a staging pass would
-  add an entire copy/submit path to move 60-odd bytes. Staging lands later, alongside
-  real geometry loading. The backing and scratch buffers are device-local.
+- **Staged device-local geometry.** Vertex and index data use
+  `uploadDeviceLocalBuffer`: a transient mapped, host-coherent transfer-source buffer
+  feeds a `TRANSFER_DST` device-local buffer, then dies after the submission fence.
+  The destination is parked directly in `AccelerationStructure`, preserving the
+  null-guarded partial-failure teardown contract. The instance buffer remains mapped
+  host-visible memory because dynamic-scene TLAS updates will rewrite it from the CPU.
+- **Upload visibility crosses submissions deliberately.** Every upload ends with a
+  `VkMemoryBarrier` from `TRANSFER` writes to acceleration-structure-build reads and
+  ray-tracing-shader reads. The fence wait only synchronizes the device with the host;
+  the barrier's second scope is what makes the copy visible to later queue submissions,
+  so neither the AS build nor frame path needs an upload-specific barrier.
 - **Device-address rules.** The build consumes buffer *device addresses*, not
   descriptors, so the input and scratch buffers carry
   `SHADER_DEVICE_ADDRESS` usage. The program-lifetime VMA allocator is created with
@@ -567,11 +575,11 @@ Decisions and contracts worth preserving:
   pipeline barrier's second scope covers all later commands in submission order on
   the queue, so it makes the TLAS visible to every future `vkCmdTraceRaysKHR`
   without the frame path needing its own barrier.
-- **Borrowed sync.** The submit reuses `frames[0]`'s in-flight fence: reset →
-  submit → wait leaves the fence signaled, exactly the state the first `drawFrame`'s
-  wait depends on, without introducing a temporary fence that could leak on a
-  failure path. The other frame slots are untouched (their fences are created
-  signaled).
+- **Borrowed sync.** Both uploads and the AS build reuse `frames[0]`'s command buffer
+  and in-flight fence. Each reset → submit → wait cycle leaves the fence signaled,
+  exactly the state the next startup submission and first `drawFrame` wait depend on,
+  without introducing temporary sync objects that could leak on a failure path. The
+  command buffer is reset between submissions; the other frame slots are untouched.
 - **Scratch release.** The scratch buffers live in the owner (not as locals) so a
   failed build bare-returns and the destructor cleans up; on success they are
   destroyed immediately after the fence wait rather than held for the program's
@@ -592,7 +600,7 @@ program-lifetime except for one resize obligation described below.
 Decisions and contracts worth preserving:
 
 - **Shaders are Slang, embedded at build time.** All three stages live in one
-  [shaders/triangle.slang](shaders/triangle.slang) module: `rayGenMain`
+  [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
   (perspective rays from the camera push constants — see [Camera](#camera) for
   the payload contract — storage-image write at binding 1, `[format("rgba8")]`
   because the device's `shaderStorageImageWriteWithoutFormat` is not enabled),
@@ -600,7 +608,7 @@ Decisions and contracts worth preserving:
   (barycentric-derived color, proving attribute interpolation and not just a
   hit). CMake compiles it with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
-  self-contained C header (`triangle_spv.h`, includes prepended by the build) that
+  self-contained C header (`raytrace_spv.h`, includes prepended by the build) that
   `rt_pipeline.cpp` `#include`s — no runtime file paths, keeping the
   single-executable ethos. slangc is located via `find_program` (it is not a
   FindVulkan component).
@@ -617,8 +625,9 @@ Decisions and contracts worth preserving:
   `maxPipelineRayRecursionDepth = 1` (primary rays only; 1 is the spec-guaranteed
   minimum, so no limit query).
 - **SBT layout.** One host-visible + coherent buffer
-  (`SHADER_BINDING_TABLE | SHADER_DEVICE_ADDRESS`), written once at startup — same
-  no-staging rationale as the geometry buffers. Record stride =
+  (`SHADER_BINDING_TABLE | SHADER_DEVICE_ADDRESS`), written once at startup. It stays
+  mapped because it is a tiny specialized table, independent of the reusable
+  device-local geometry-upload policy. Record stride =
   `shaderGroupHandleSize` rounded to `shaderGroupHandleAlignment`; each region
   starts at a `shaderGroupBaseAlignment` multiple from the table base. The
   alignment math uses a **general** round-up-to-multiple (not the AS build's
@@ -750,8 +759,9 @@ Decisions and contracts worth preserving:
    pre-scaled ray basis) delivered via raygen-only push constants, with GLFW
    fly controls, fixing the bring-up aspect-ratio distortion on resize. See
    [Camera](#camera) for the decisions and contracts.
-2. **Geometry + scene representation.** **Underway** — VMA adoption and the GLM
-   instance-transform proof have landed; staged geometry uploads are next.
+2. **Geometry + scene representation.** **Underway** — VMA adoption, the GLM
+   instance-transform proof, and staged device-local geometry uploads have landed;
+   the procedural BDA attribute-fetch probe is next.
    Real meshes replacing the
    hardcoded triangle: indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple
@@ -792,7 +802,8 @@ final shape exists:
 
 - **Real-geometry allocation and lifetime (items 2–3).** VMA adoption and replacement
   of direct one-`vkAllocateMemory`-per-resource allocation landed in geometry M1.
-  Explicit aligned buffer suballocation remains for the unified real-geometry buffers.
+  M3a established the staged device-local upload path; explicit aligned buffer
+  suballocation remains for the unified real-geometry buffers.
   Decide whether vertex, index, and instance inputs remain resident only once TLAS
   refits, BLAS updates, and shader geometry access establish their real lifetimes. Keep
   the tiny bring-up build-input buffers until then; freeing them now saves effectively
@@ -806,7 +817,7 @@ final shape exists:
   together.
 - **Slang import dependencies.** When shaders begin importing other source files, make
   Slang emit a dependency file and connect it to CMake's custom command. Depending
-  directly on `triangle.slang` is sufficient while it has no imports.
+  directly on `raytrace.slang` is sufficient while it has no imports.
 
 As roadmap work lands, update the [Status](#status) section, add a subsystem section,
 and revise the ownership/synchronization sections if the new code changes those

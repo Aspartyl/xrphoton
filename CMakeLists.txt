@@ -36,16 +36,16 @@ find_program(XRPHOTON_SLANGC slangc REQUIRED
 # preserves the source entry-point names the pipeline stages select by. Slang's
 # direct SPIR-V emission targets 1.5; ray tracing needs at least 1.4.
 set(SHADER_HEADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
-set(SHADER_HEADER ${SHADER_HEADER_DIR}/triangle_spv.h)
+set(SHADER_HEADER ${SHADER_HEADER_DIR}/raytrace_spv.h)
 add_custom_command(
     OUTPUT ${SHADER_HEADER}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
     COMMAND ${XRPHOTON_SLANGC}
-            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.slang
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytrace.slang
             -target spirv
             -fvk-use-entrypoint-name
             -source-embed-style u32
-            -source-embed-name triangle_spv
+            -source-embed-name raytrace_spv
             -o ${SHADER_HEADER}
     # slangc's embed output uses uint32_t/size_t without including their headers;
     # prepend the includes so the generated header is self-contained. The C
@@ -53,8 +53,8 @@ add_custom_command(
     # .h often pick C).
     COMMAND sed -i -e "1i #include <stddef.h>" -e "1i #include <stdint.h>"
             ${SHADER_HEADER}
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.slang
-    COMMENT "Compiling triangle.slang to SPIR-V header"
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytrace.slang
+    COMMENT "Compiling raytrace.slang to SPIR-V header"
     VERBATIM
 )
 

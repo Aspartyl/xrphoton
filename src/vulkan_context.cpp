@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -397,6 +398,28 @@ void reportPhysicalDeviceRejection(const PhysicalDeviceSuitability& suitability)
     }
 }
 
+// The destination allocation is parked directly in its caller-owned output, but the
+// staging allocation has no owner beyond one upload. This local owner keeps every
+// pre-submit failure path leak-free without adding staging state to a program-lifetime
+// resource owner.
+struct StagingBuffer
+{
+    VmaAllocator allocator = nullptr;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = nullptr;
+
+    StagingBuffer() = default;
+    StagingBuffer(const StagingBuffer&) = delete;
+    StagingBuffer& operator=(const StagingBuffer&) = delete;
+
+    ~StagingBuffer()
+    {
+        if (buffer != VK_NULL_HANDLE || allocation != nullptr) {
+            vmaDestroyBuffer(allocator, buffer, allocation);
+        }
+    }
+};
+
 } // namespace
 
 void printVulkanVersion(uint32_t version)
@@ -750,6 +773,133 @@ VkResult createBuffer(
         buffer,
         allocation,
         nullptr);
+}
+
+VkResult uploadDeviceLocalBuffer(
+    VmaAllocator allocator,
+    VkDevice device,
+    VkCommandBuffer commandBuffer,
+    VkQueue queue,
+    VkFence fence,
+    const void* data,
+    VkDeviceSize size,
+    VkBufferUsageFlags usage,
+    VkBuffer* buffer,
+    VmaAllocation* allocation)
+{
+    VkResult result = createBuffer(
+        allocator,
+        size,
+        usage,
+        0,
+        buffer,
+        allocation);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    StagingBuffer staging{};
+    staging.allocator = allocator;
+    result = createBuffer(
+        allocator,
+        size,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+            | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        &staging.buffer,
+        &staging.allocation);
+
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VmaAllocationInfo stagingAllocationInfo{};
+    vmaGetAllocationInfo(allocator, staging.allocation, &stagingAllocationInfo);
+    if (stagingAllocationInfo.pMappedData == nullptr) {
+        return VK_ERROR_MEMORY_MAP_FAILED;
+    }
+
+    std::memcpy(stagingAllocationInfo.pMappedData, data, size);
+
+    // The borrowed per-frame command buffer may still be executable from a previous
+    // startup upload; the pool's RESET_COMMAND_BUFFER flag makes this reusable path
+    // independent of its incoming non-pending state.
+    result = vkResetCommandBuffer(commandBuffer, 0);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkBufferCopy copyRegion{};
+    copyRegion.size = size;
+    vkCmdCopyBuffer(commandBuffer, staging.buffer, *buffer, 1, &copyRegion);
+
+    // A fence wait only synchronizes the device with the host. This device-side
+    // dependency makes the transfer write visible to AS builds and BDA shader reads
+    // in later queue submissions, so those consumers need no upload-specific barrier.
+    VkMemoryBarrier uploadBarrier{};
+    uploadBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    uploadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    uploadBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
+        | VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
+            | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        0,
+        1,
+        &uploadBarrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+
+    result = vkEndCommandBuffer(commandBuffer);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = vkResetFences(device, 1, &fence);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    result = vkQueueSubmit(queue, 1, &submitInfo, fence);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = vkWaitForFences(
+        device,
+        1,
+        &fence,
+        VK_TRUE,
+        std::numeric_limits<uint64_t>::max());
+
+    if (result != VK_SUCCESS) {
+        // The transient staging buffer cannot escape through the API. Retire any work
+        // the failed fence wait may have left pending before its local owner destroys it.
+        (void)vkQueueWaitIdle(queue);
+        return result;
+    }
+
+    return VK_SUCCESS;
 }
 
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions)

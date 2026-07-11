@@ -23,8 +23,7 @@ struct AccelerationStructure
     // structure handle below must set this first (alongside device).
     PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
 
-    // Triangle geometry the BLAS is built from, host-visible by design (see the plan's
-    // scope decisions: no staging until real geometry loading lands).
+    // Device-local triangle geometry uploaded through transient staging buffers.
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VmaAllocation vertexBufferAllocation = nullptr;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
@@ -66,17 +65,16 @@ struct AccelerationStructure
 // vulkan_context) so selection and the BLAS build share one format definition.
 bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevice);
 
-// Populate *as: upload the triangle geometry, build the BLAS over it and the TLAS over
-// its single instance (recorded back-to-back into commandBuffer with a build-to-build
-// barrier), submit on traceQueue, and block until the GPU finishes. Before recording,
-// the three build-input device addresses are checked against their required 4/4/16-byte
-// alignments; an under-aligned base address fails with VK_ERROR_INITIALIZATION_FAILED.
-// The scratch buffers are released before returning, so on success *as holds only
-// program-lifetime resources. The fence is reset, used for the submit, and waited on —
-// on success it is left signaled, so passing the pre-loop in-flight fence preserves the
-// signaled state the first drawFrame depends on. On failure the fence may be left
-// unsignaled and *as holds whatever was created so far; ~AccelerationStructure cleans it
-// up, so the caller can bare-return.
+// Populate *as: stage the triangle into device-local buffers, then build the BLAS over
+// it and the TLAS over its single instance (recorded back-to-back with a build-to-build
+// barrier). Each submission borrows commandBuffer/traceQueue/fence and blocks until the
+// GPU finishes. The three build-input device addresses are checked against their
+// required 4/4/16-byte alignments; an under-aligned base address fails with
+// VK_ERROR_INITIALIZATION_FAILED. The scratch buffers are released before returning,
+// so on success *as holds only program-lifetime resources and the fence is signaled for
+// the first drawFrame wait. On failure the fence may be left unsignaled and *as holds
+// whatever was created so far; ~AccelerationStructure cleans it up, so the caller can
+// bare-return.
 VkResult buildAccelerationStructures(
     AccelerationStructure* as,
     VkPhysicalDevice physicalDevice,

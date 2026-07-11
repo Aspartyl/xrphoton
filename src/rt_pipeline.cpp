@@ -13,7 +13,7 @@
 
 // Build-generated: the embedded SPIR-V module holding all three ray tracing entry
 // points (see the shader custom command in CMakeLists.txt).
-#include "triangle_spv.h"
+#include "raytrace_spv.h"
 
 namespace xrphoton
 {
@@ -210,8 +210,8 @@ VkResult createRtPipeline(
 
     VkShaderModuleCreateInfo moduleCreateInfo{};
     moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    moduleCreateInfo.codeSize = triangle_spv_sizeInBytes;
-    moduleCreateInfo.pCode = triangle_spv;
+    moduleCreateInfo.codeSize = raytrace_spv_sizeInBytes;
+    moduleCreateInfo.pCode = raytrace_spv;
 
     // Parked in the owner (not local RAII) so the failure paths below can bare-return.
     result = vkCreateShaderModule(device, &moduleCreateInfo, nullptr, &rt->shaderModule);

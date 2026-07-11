@@ -180,6 +180,23 @@ VkResult createBuffer(
     VkBuffer* buffer,
     VmaAllocation* allocation);
 
+// Create a device-local buffer, copy data into it through a transient mapped staging
+// buffer, and submit the copy on the borrowed command buffer/queue/fence. The trailing
+// barrier makes the transfer visible to later acceleration-structure builds and ray
+// tracing shaders; usage is the complete destination usage and must include
+// TRANSFER_DST. On success the fence is returned signaled.
+VkResult uploadDeviceLocalBuffer(
+    VmaAllocator allocator,
+    VkDevice device,
+    VkCommandBuffer commandBuffer,
+    VkQueue queue,
+    VkFence fence,
+    const void* data,
+    VkDeviceSize size,
+    VkBufferUsageFlags usage,
+    VkBuffer* buffer,
+    VmaAllocation* allocation);
+
 // Resolve every ray tracing entry point into *functions. Returns false (leaving any
 // partially resolved pointers in place) if any one of them is unavailable.
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions);
