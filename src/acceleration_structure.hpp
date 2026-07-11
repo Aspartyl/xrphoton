@@ -2,6 +2,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "vma_fwd.hpp"
+
 namespace xrphoton
 {
 struct RayTracingFunctions;
@@ -15,6 +17,7 @@ struct RayTracingFunctions;
 struct AccelerationStructure
 {
     VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
     // vkDestroyAccelerationStructureKHR is an extension entry point resolved at runtime,
     // so the destructor cannot call it statically. Whoever creates an acceleration
     // structure handle below must set this first (alongside device).
@@ -23,31 +26,31 @@ struct AccelerationStructure
     // Triangle geometry the BLAS is built from, host-visible by design (see the plan's
     // scope decisions: no staging until real geometry loading lands).
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation vertexBufferAllocation = nullptr;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation indexBufferAllocation = nullptr;
 
     // The one VkAccelerationStructureInstanceKHR the TLAS is built from.
     VkBuffer instanceBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory instanceBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation instanceBufferAllocation = nullptr;
 
     VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
     VkBuffer blasBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory blasBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation blasBufferAllocation = nullptr;
 
     // The TLAS handle is what the RT descriptor set will eventually bind
     // (VkWriteDescriptorSetAccelerationStructureKHR takes the handle, not an address).
     VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
     VkBuffer tlasBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory tlasBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation tlasBufferAllocation = nullptr;
 
     // Build-time scratch, owned here (not locally in the build path) so a failed build
     // can still bare-return and rely on ~AccelerationStructure for cleanup. The build
     // entry point frees them early once the build has been waited on successfully.
     VkBuffer blasScratchBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory blasScratchBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation blasScratchBufferAllocation = nullptr;
     VkBuffer tlasScratchBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory tlasScratchBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation tlasScratchBufferAllocation = nullptr;
 
     AccelerationStructure() = default;
     AccelerationStructure(const AccelerationStructure&) = delete;
@@ -78,6 +81,7 @@ VkResult buildAccelerationStructures(
     AccelerationStructure* as,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     const RayTracingFunctions& functions,
     VkCommandBuffer commandBuffer,
     VkQueue traceQueue,

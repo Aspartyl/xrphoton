@@ -22,7 +22,9 @@ handling including the descriptor rewrite the resize obligates), and every piece
 of the RT stack is now exercised each frame. The frame path lives in its own
 `renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only. The tracked
 bring-up roadmap is complete; of the follow-on roadmap, camera + push constants
-has landed.
+has landed, and the geometry + scene representation step is underway: its M1
+foundation replaced all direct device-memory allocation with the vendored Vulkan
+Memory Allocator (VMA) while preserving the triangle renderer.
 
 ## Goals and constraints
 
@@ -43,7 +45,7 @@ has landed.
 
 ## Module map
 
-The code is seven translation units, all in `namespace xrphoton`. The split is along
+The code is eight translation units, all in `namespace xrphoton`. The split is along
 **resource lifetime** (program-lifetime vs. recreated-on-resize) and **orchestration
 vs. mechanism**.
 
@@ -63,7 +65,7 @@ vs. mechanism**.
 │ vulkan_context.{hpp, │ │ swapchain.{hpp,cpp}│ │ acceleration_   │ │ rt_pipeline.  │
 │ cpp}                 │ │   Swapchain owner  │ │ structure.      │ │ {hpp,cpp}     │
 │   VulkanContext owner│ │   create/recreate/ │ │ {hpp,cpp}       │ │   RtPipeline  │
-│   instance, device,  │ │   support query    │ │   BLAS/TLAS     │ │   owner; SBT; │
+│ instance/device/VMA  │ │   support query    │ │   BLAS/TLAS     │ │   owner; SBT; │
 │   queues, RT fns     │ │                    │ │   startup build │ │   descriptors │
 └──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
@@ -75,8 +77,9 @@ stage; the diagram shows the frame-path layering.)
 
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
-| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including the shared `findMemoryType` / `createBuffer`) | Program lifetime — created once |
-| [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the storage output image + its memory and view) and its create/recreate/query lifecycle | Recreated on resize |
+| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator` / shared VMA-backed `createBuffer`) | Program lifetime — created once |
+| [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
+| [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | `Vec3`, `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
@@ -96,6 +99,8 @@ Includes are kept acyclic by a deliberate rule:
   context, so the unit is decoupled from bring-up entirely.
 - `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`,
   `RtPipeline`, or `Renderer`.
+- Project headers include only `vma_fwd.hpp`; the full vendored
+  `vk_mem_alloc.h` is confined to implementation files that call VMA.
 - `camera.hpp` includes **no project or Vulkan header at all** (only `<cstddef>`
   for its `offsetof` ABI asserts) and forward-declares `GLFWwindow`;
   `makeCameraPushConstants` takes a plain `float aspect` rather than a
@@ -110,7 +115,7 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
 2. The swapchain functions need the full definition of `QueueFamilyIndices`, which
    they get by including `vulkan_context.hpp` in `swapchain.cpp`.
 3. `buildAccelerationStructures` needs the full `RayTracingFunctions` plus the shared
-   `createBuffer` / `findMemoryType` helpers, which it gets by including
+   VMA-backed `createBuffer` helper, which it gets by including
    `vulkan_context.hpp` in `acceleration_structure.cpp`.
 4. `rt_pipeline.cpp` likewise includes `vulkan_context.hpp` for the full
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
@@ -131,19 +136,20 @@ cross-file surface is declared in the headers.
 Four RAII owners — split by resource lifetime:
 
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
-  window, the instance, the debug messenger, the surface, the device, the command
-  pool, and the `frames` array. Each `FrameResources` slot owns one command buffer,
-  one image-available semaphore, and one in-flight fence.
+  window, the instance, the debug messenger, the surface, the device, the one
+  `VmaAllocator`, the command pool, and the `frames` array. Each `FrameResources`
+  slot owns one command buffer, one image-available semaphore, and one in-flight fence.
 - **`Swapchain`** (recreated on resize) owns: the swapchain, its images, its image
   views, the format/extent, the **per-image** render-finished semaphores, and the
-  **storage image** (the trace output target — its `VkImage`, backing
-  `VkDeviceMemory`, and `VkImageView`), which is sized to the swapchain extent and so
-  rides the same recreate path. Its `VkDevice` is **non-owning** — borrowed from
-  `VulkanContext` and used only to destroy the children above.
+  **storage image** (the trace output target — its `VkImage`, `VmaAllocation`, and
+  `VkImageView`), which is sized to the swapchain extent and so rides the same
+  recreate path. Its `VkDevice` and `VmaAllocator` are **non-owning** — borrowed
+  from `VulkanContext` and used only to destroy the children above.
 - **`AccelerationStructure`** (program lifetime, built once at startup) owns: the
   triangle vertex/index buffers, the instance buffer, the BLAS and TLAS handles with
   their backing buffers, and — transiently, during the build only — the scratch
-  buffers. Like `Swapchain` it borrows its `VkDevice`; it additionally keeps the
+  buffers and their VMA allocations. Like `Swapchain` it borrows its `VkDevice` and
+  `VmaAllocator`; it additionally keeps the
   `vkDestroyAccelerationStructureKHR` pointer (a runtime-resolved extension entry
   point) so its destructor can tear down the two `VkAccelerationStructureKHR` handles
   without caller involvement.
@@ -151,9 +157,9 @@ Four RAII owners — split by resource lifetime:
   set layout, the pipeline layout, the descriptor pool and the one descriptor set
   allocated from it (freed implicitly with the pool, but held as a member — both the
   render path and the rewrite-on-recreate path need the handle), the ray tracing
-  pipeline, the SBT buffer + memory, the four `VkStridedDeviceAddressRegionKHR`s the
+  pipeline, the SBT buffer + VMA allocation, the four `VkStridedDeviceAddressRegionKHR`s the
   trace consumes, and — transiently, during creation only — the shader module. Like
-  the others it borrows its `VkDevice`. Its destructor needs no extension entry
+  the others it borrows its `VkDevice` and `VmaAllocator`. Its destructor needs no extension entry
   points (`vkDestroyPipeline` etc. are core), unlike `AccelerationStructure`.
 
 Things that are neither created nor destroyed by the program (`physicalDevice`, the
@@ -172,7 +178,8 @@ view after everything it points at, so it cannot outlive what it borrows.
 ### Destruction order
 
 In `main()` the `VulkanContext` is declared **first**, so every other owner destructs
-before the device and surface it borrows from. This is the single most important
+before the allocator, device, and surface it borrows from. `VulkanContext` destroys
+the allocator immediately before the device. This is the single most important
 ordering invariant in the program, and it is what lets every failure path in `main()`
 be a bare `return 1;` with no manual cleanup. Beyond "after `ctx`", the borrowing
 owners (`Swapchain`, `AccelerationStructure`, `RtPipeline`) need no ordering
@@ -492,8 +499,8 @@ needs deeper overlap.
   `TILING_OPTIMAL`, 1 mip / 1 layer, and `EXCLUSIVE` sharing. Unlike the swapchain
   images, it is only ever touched on the trace queue, so it needs no cross-family
   sharing.
-- **Memory:** `findMemoryType` picks the first type matching the image's type bits and
-  `DEVICE_LOCAL` (GPU-only); creation fails if none.
+- **Memory:** `vmaCreateImage` uses `VMA_MEMORY_USAGE_AUTO` with `DEVICE_LOCAL`
+  required; VMA selects, allocates, and binds a compatible memory type.
 - **Capability gating:** see [Device selection](#device-selection). Selection
   guarantees a supported device; `createStorageImage` keeps a cheap backstop that
   re-asserts the format helpers and fails `VK_ERROR_FEATURE_NOT_PRESENT` on a logic
@@ -524,9 +531,10 @@ Decisions and contracts worth preserving:
   real geometry loading. The backing and scratch buffers are device-local.
 - **Device-address rules.** The build consumes buffer *device addresses*, not
   descriptors, so the input and scratch buffers carry
-  `SHADER_DEVICE_ADDRESS` usage (and `createBuffer` derives the matching
-  `VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT` on the allocation from that usage, so the
-  two can never diverge). The **BLAS backing buffer** also needs the usage — querying
+  `SHADER_DEVICE_ADDRESS` usage. The program-lifetime VMA allocator is created with
+  `VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`, so VMA derives the matching
+  Vulkan memory-allocation flag from that usage and the two cannot diverge. The
+  **BLAS backing buffer** also needs the usage — querying
   a BLAS's acceleration-structure address for the TLAS instance requires it of the
   buffer underneath (VUID 09542). The **TLAS backing buffer** deliberately does not:
   nothing queries a TLAS address.
@@ -563,7 +571,7 @@ Decisions and contracts worth preserving:
   lifetime.
 - **Teardown.** `~AccelerationStructure` waits for device idle, destroys the TLAS and
   BLAS handles first (they are *placed on* their backing buffers), then the buffers
-  and memory, all null-guarded.
+  and VMA allocations, all null-guarded.
 
 ## Ray tracing pipeline
 
@@ -642,7 +650,7 @@ Decisions and contracts worth preserving:
   the two post-recreate obligations are one code path.
 - **Teardown.** `~RtPipeline` waits for device idle, then destroys pipeline →
   (parked shader module, failure paths only) → pipeline layout → descriptor pool →
-  descriptor set layout → SBT buffer/memory, all null-guarded.
+  descriptor set layout → SBT buffer/allocation, all null-guarded.
 
 ## Camera
 
@@ -773,10 +781,9 @@ Decisions and contracts worth preserving:
 These changes are deliberately deferred until the design input that determines their
 final shape exists:
 
-- **Real-geometry allocation and lifetime (items 2–3).** Introduce Vulkan Memory
-  Allocator (VMA) as the engine's allocator and replace direct
-  one-`vkAllocateMemory`-per-resource allocation. Make explicit aligned buffer
-  suballocation the definitive solution for acceleration-structure input addresses.
+- **Real-geometry allocation and lifetime (items 2–3).** VMA adoption and replacement
+  of direct one-`vkAllocateMemory`-per-resource allocation landed in geometry M1.
+  Explicit aligned buffer suballocation remains for the unified real-geometry buffers.
   Decide whether vertex, index, and instance inputs remain resident only once TLAS
   refits, BLAS updates, and shader geometry access establish their real lifetimes. Keep
   the tiny bring-up build-input buffers until then; freeing them now saves effectively

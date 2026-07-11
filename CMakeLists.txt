@@ -51,6 +51,7 @@ add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER})
 
 add_executable(xrPhoton
     src/main.cpp
+    src/third_party_impl.cpp
     src/vulkan_context.cpp
     src/swapchain.cpp
     src/acceleration_structure.cpp
@@ -65,6 +66,9 @@ endif()
 
 add_dependencies(xrPhoton xrPhotonShaders)
 target_include_directories(xrPhoton PRIVATE ${SHADER_HEADER_DIR})
+target_include_directories(xrPhoton SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vma
+)
 
 target_compile_options(xrPhoton PRIVATE -Wall -Wextra)
 

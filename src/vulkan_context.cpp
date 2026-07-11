@@ -2,6 +2,7 @@
 
 #include "acceleration_structure.hpp"
 #include "swapchain.hpp"
+#include "vk_mem_alloc.h"
 
 #include <cstring>
 #include <iostream>
@@ -622,6 +623,23 @@ VkResult createLogicalDevice(
     return vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, device);
 }
 
+VkResult createAllocator(
+    VkInstance instance,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    VmaAllocator* allocator)
+{
+    VmaAllocatorCreateInfo createInfo{};
+    createInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    createInfo.physicalDevice = physicalDevice;
+    createInfo.device = device;
+    createInfo.instance = instance;
+    // VMA otherwise assumes Vulkan 1.0 and silently avoids newer core entry points.
+    createInfo.vulkanApiVersion = RequiredApiVersion;
+
+    return vmaCreateAllocator(&createInfo, allocator);
+}
+
 VkResult createCommandPool(
     VkDevice device,
     const QueueFamilyIndices& queueFamilies,
@@ -698,37 +716,13 @@ VkResult createFrameSyncObjects(
     return VK_SUCCESS;
 }
 
-bool findMemoryType(
-    VkPhysicalDevice physicalDevice,
-    uint32_t typeBits,
-    VkMemoryPropertyFlags properties,
-    uint32_t* memoryTypeIndex)
-{
-    VkPhysicalDeviceMemoryProperties memoryProperties{};
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
-
-    for (uint32_t index = 0; index < memoryProperties.memoryTypeCount; ++index) {
-        const bool typeAllowed = (typeBits & (1u << index)) != 0;
-        const bool propertiesMatch =
-            (memoryProperties.memoryTypes[index].propertyFlags & properties) == properties;
-
-        if (typeAllowed && propertiesMatch) {
-            *memoryTypeIndex = index;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 VkResult createBuffer(
-    VkPhysicalDevice physicalDevice,
-    VkDevice device,
+    VmaAllocator allocator,
     VkDeviceSize size,
     VkBufferUsageFlags usage,
-    VkMemoryPropertyFlags memoryProperties,
+    VmaAllocationCreateFlags allocationFlags,
     VkBuffer* buffer,
-    VkDeviceMemory* memory)
+    VmaAllocation* allocation)
 {
     VkBufferCreateInfo bufferCreateInfo{};
     bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -736,48 +730,26 @@ VkResult createBuffer(
     bufferCreateInfo.usage = usage;
     bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkResult result = vkCreateBuffer(device, &bufferCreateInfo, nullptr, buffer);
+    VmaAllocationCreateInfo allocationCreateInfo{};
+    allocationCreateInfo.flags = allocationFlags;
+    allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
 
-    if (result != VK_SUCCESS) {
-        return result;
+    constexpr VmaAllocationCreateFlags HostAccessFlags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+        | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    if ((allocationFlags & HostAccessFlags) != 0) {
+        allocationCreateInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    } else {
+        allocationCreateInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     }
 
-    VkMemoryRequirements memoryRequirements{};
-    vkGetBufferMemoryRequirements(device, *buffer, &memoryRequirements);
-
-    uint32_t memoryTypeIndex = 0;
-    if (!findMemoryType(
-            physicalDevice,
-            memoryRequirements.memoryTypeBits,
-            memoryProperties,
-            &memoryTypeIndex)) {
-        return VK_ERROR_FEATURE_NOT_PRESENT;
-    }
-
-    // Taking a buffer's device address requires the DEVICE_ADDRESS flag on the backing
-    // allocation, not just the SHADER_DEVICE_ADDRESS usage on the buffer — deriving it
-    // from the usage keeps the two in lockstep so callers cannot request one without
-    // the other.
-    VkMemoryAllocateFlagsInfo allocateFlagsInfo{};
-    allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-    allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-
-    const bool needsDeviceAddress =
-        (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
-
-    VkMemoryAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocateInfo.pNext = needsDeviceAddress ? &allocateFlagsInfo : nullptr;
-    allocateInfo.allocationSize = memoryRequirements.size;
-    allocateInfo.memoryTypeIndex = memoryTypeIndex;
-
-    result = vkAllocateMemory(device, &allocateInfo, nullptr, memory);
-
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    return vkBindBufferMemory(device, *buffer, *memory, 0);
+    return vmaCreateBuffer(
+        allocator,
+        &bufferCreateInfo,
+        &allocationCreateInfo,
+        buffer,
+        allocation,
+        nullptr);
 }
 
 bool loadRayTracingFunctions(VkDevice device, RayTracingFunctions* functions)
@@ -844,6 +816,11 @@ VulkanContext::~VulkanContext()
     if (commandPool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
         vkDestroyCommandPool(device, commandPool, nullptr);
         std::cout << "Destroyed Vulkan command pool.\n";
+    }
+
+    if (allocator != nullptr) {
+        vmaDestroyAllocator(allocator);
+        std::cout << "Destroyed Vulkan memory allocator.\n";
     }
 
     if (device != VK_NULL_HANDLE) {

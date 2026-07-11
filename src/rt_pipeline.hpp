@@ -2,6 +2,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "vma_fwd.hpp"
+
 namespace xrphoton
 {
 struct RayTracingFunctions;
@@ -20,6 +22,7 @@ struct RayTracingFunctions;
 struct RtPipeline
 {
     VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
@@ -38,7 +41,7 @@ struct RtPipeline
     // The shader binding table, host-visible + coherent by design (see the plan's
     // scope decisions: written once at startup, no staging).
     VkBuffer sbtBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory sbtBufferMemory = VK_NULL_HANDLE;
+    VmaAllocation sbtBufferAllocation = nullptr;
 
     // The four regions vkCmdTraceRaysKHR consumes, computed once when the SBT is
     // built. The callable region is empty but still points at the SBT base (the
@@ -97,5 +100,6 @@ VkResult buildShaderBindingTable(
     RtPipeline* rt,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     const RayTracingFunctions& functions);
 }

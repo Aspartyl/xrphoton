@@ -1,6 +1,7 @@
 #include "acceleration_structure.hpp"
 
 #include "vulkan_context.hpp"
+#include "vk_mem_alloc.h"
 
 #include <cstdint>
 #include <cstring>
@@ -85,36 +86,33 @@ bool hasRequiredBuildInputAlignment(
 // so the writes need no explicit flush: the queue submission that consumes the buffer
 // makes them visible to the device.
 VkResult createHostVisibleBuffer(
-    VkPhysicalDevice physicalDevice,
-    VkDevice device,
+    VmaAllocator allocator,
     const void* data,
     VkDeviceSize size,
     VkBufferUsageFlags usage,
     VkBuffer* buffer,
-    VkDeviceMemory* memory)
+    VmaAllocation* allocation)
 {
     VkResult result = createBuffer(
-        physicalDevice,
-        device,
+        allocator,
         size,
         usage,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+            | VMA_ALLOCATION_CREATE_MAPPED_BIT,
         buffer,
-        memory);
+        allocation);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
-    void* mapped = nullptr;
-    result = vkMapMemory(device, *memory, 0, size, 0, &mapped);
-
-    if (result != VK_SUCCESS) {
-        return result;
+    VmaAllocationInfo allocationInfo{};
+    vmaGetAllocationInfo(allocator, *allocation, &allocationInfo);
+    if (allocationInfo.pMappedData == nullptr) {
+        return VK_ERROR_MEMORY_MAP_FAILED;
     }
 
-    std::memcpy(mapped, data, size);
-    vkUnmapMemory(device, *memory);
+    std::memcpy(allocationInfo.pMappedData, data, size);
 
     return VK_SUCCESS;
 }
@@ -126,7 +124,7 @@ VkResult createHostVisibleBuffer(
 // base address carries no such guarantee. The unaligned buffer/memory handles stay in
 // the out-parameters for cleanup; only the aligned address is handed to the build.
 VkResult createAccelerationStructureWithScratch(
-    VkPhysicalDevice physicalDevice,
+    VmaAllocator allocator,
     VkDevice device,
     const RayTracingFunctions& functions,
     VkAccelerationStructureTypeKHR type,
@@ -134,20 +132,19 @@ VkResult createAccelerationStructureWithScratch(
     VkDeviceSize scratchAlignment,
     VkBufferUsageFlags backingBufferUsage,
     VkBuffer* backingBuffer,
-    VkDeviceMemory* backingBufferMemory,
+    VmaAllocation* backingBufferAllocation,
     VkAccelerationStructureKHR* accelerationStructure,
     VkBuffer* scratchBuffer,
-    VkDeviceMemory* scratchBufferMemory,
+    VmaAllocation* scratchBufferAllocation,
     VkDeviceAddress* scratchAddress)
 {
     VkResult result = createBuffer(
-        physicalDevice,
-        device,
+        allocator,
         sizes.accelerationStructureSize,
         backingBufferUsage,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        0,
         backingBuffer,
-        backingBufferMemory);
+        backingBufferAllocation);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -171,13 +168,12 @@ VkResult createAccelerationStructureWithScratch(
     }
 
     result = createBuffer(
-        physicalDevice,
-        device,
+        allocator,
         sizes.buildScratchSize + scratchAlignment - 1,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        0,
         scratchBuffer,
-        scratchBufferMemory);
+        scratchBufferAllocation);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -189,24 +185,15 @@ VkResult createAccelerationStructureWithScratch(
 
     return VK_SUCCESS;
 }
-// Destroy a buffer and free its backing memory, logging once if either existed. Handles
-// the partially created case (buffer without memory, or vice versa) that the bare-return
-// failure paths can leave behind.
-void destroyBufferAndMemory(
-    VkDevice device,
+// Destroy a buffer and its VMA allocation, logging once if either existed.
+void destroyBufferAndAllocation(
+    VmaAllocator allocator,
     VkBuffer buffer,
-    VkDeviceMemory memory,
+    VmaAllocation allocation,
     const char* name)
 {
-    if (buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device, buffer, nullptr);
-    }
-
-    if (memory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, memory, nullptr);
-    }
-
-    if (buffer != VK_NULL_HANDLE || memory != VK_NULL_HANDLE) {
+    if (buffer != VK_NULL_HANDLE || allocation != nullptr) {
+        vmaDestroyBuffer(allocator, buffer, allocation);
         std::cout << "Destroyed Vulkan " << name << ".\n";
     }
 }
@@ -250,19 +237,20 @@ AccelerationStructure::~AccelerationStructure()
         std::cout << "Destroyed Vulkan bottom-level acceleration structure.\n";
     }
 
-    destroyBufferAndMemory(device, tlasScratchBuffer, tlasScratchBufferMemory, "TLAS scratch buffer");
-    destroyBufferAndMemory(device, blasScratchBuffer, blasScratchBufferMemory, "BLAS scratch buffer");
-    destroyBufferAndMemory(device, tlasBuffer, tlasBufferMemory, "TLAS backing buffer");
-    destroyBufferAndMemory(device, blasBuffer, blasBufferMemory, "BLAS backing buffer");
-    destroyBufferAndMemory(device, instanceBuffer, instanceBufferMemory, "instance buffer");
-    destroyBufferAndMemory(device, indexBuffer, indexBufferMemory, "index buffer");
-    destroyBufferAndMemory(device, vertexBuffer, vertexBufferMemory, "vertex buffer");
+    destroyBufferAndAllocation(allocator, tlasScratchBuffer, tlasScratchBufferAllocation, "TLAS scratch buffer");
+    destroyBufferAndAllocation(allocator, blasScratchBuffer, blasScratchBufferAllocation, "BLAS scratch buffer");
+    destroyBufferAndAllocation(allocator, tlasBuffer, tlasBufferAllocation, "TLAS backing buffer");
+    destroyBufferAndAllocation(allocator, blasBuffer, blasBufferAllocation, "BLAS backing buffer");
+    destroyBufferAndAllocation(allocator, instanceBuffer, instanceBufferAllocation, "instance buffer");
+    destroyBufferAndAllocation(allocator, indexBuffer, indexBufferAllocation, "index buffer");
+    destroyBufferAndAllocation(allocator, vertexBuffer, vertexBufferAllocation, "vertex buffer");
 }
 
 VkResult buildAccelerationStructures(
     AccelerationStructure* as,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     const RayTracingFunctions& functions,
     VkCommandBuffer commandBuffer,
     VkQueue traceQueue,
@@ -272,6 +260,7 @@ VkResult buildAccelerationStructures(
     // below — including a partial set on a failure path — is torn down by the
     // destructor (see the header contract on destroyAccelerationStructure).
     as->device = device;
+    as->allocator = allocator;
     as->destroyAccelerationStructure = functions.destroyAccelerationStructure;
 
     VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructureProperties{};
@@ -288,26 +277,24 @@ VkResult buildAccelerationStructures(
         accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment;
 
     VkResult result = createHostVisibleBuffer(
-        physicalDevice,
-        device,
+        allocator,
         TriangleVertices,
         sizeof(TriangleVertices),
         BuildInputBufferUsage,
         &as->vertexBuffer,
-        &as->vertexBufferMemory);
+        &as->vertexBufferAllocation);
 
     if (result != VK_SUCCESS) {
         return result;
     }
 
     result = createHostVisibleBuffer(
-        physicalDevice,
-        device,
+        allocator,
         TriangleIndices,
         sizeof(TriangleIndices),
         BuildInputBufferUsage,
         &as->indexBuffer,
-        &as->indexBufferMemory);
+        &as->indexBufferAllocation);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -370,7 +357,7 @@ VkResult buildAccelerationStructures(
     // querying that address requires the flag on the buffer underneath (VUID 09542).
     VkDeviceAddress blasScratchAddress = 0;
     result = createAccelerationStructureWithScratch(
-        physicalDevice,
+        allocator,
         device,
         functions,
         VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
@@ -379,10 +366,10 @@ VkResult buildAccelerationStructures(
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
             | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         &as->blasBuffer,
-        &as->blasBufferMemory,
+        &as->blasBufferAllocation,
         &as->blas,
         &as->blasScratchBuffer,
-        &as->blasScratchBufferMemory,
+        &as->blasScratchBufferAllocation,
         &blasScratchAddress);
 
     if (result != VK_SUCCESS) {
@@ -414,13 +401,12 @@ VkResult buildAccelerationStructures(
     instance.accelerationStructureReference = blasAddress;
 
     result = createHostVisibleBuffer(
-        physicalDevice,
-        device,
+        allocator,
         &instance,
         sizeof(instance),
         BuildInputBufferUsage,
         &as->instanceBuffer,
-        &as->instanceBufferMemory);
+        &as->instanceBufferAllocation);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -466,7 +452,7 @@ VkResult buildAccelerationStructures(
     // descriptor set binds the TLAS handle, not an address.
     VkDeviceAddress tlasScratchAddress = 0;
     result = createAccelerationStructureWithScratch(
-        physicalDevice,
+        allocator,
         device,
         functions,
         VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
@@ -474,10 +460,10 @@ VkResult buildAccelerationStructures(
         scratchAlignment,
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
         &as->tlasBuffer,
-        &as->tlasBufferMemory,
+        &as->tlasBufferAllocation,
         &as->tlas,
         &as->tlasScratchBuffer,
-        &as->tlasScratchBufferMemory,
+        &as->tlasScratchBufferAllocation,
         &tlasScratchAddress);
 
     if (result != VK_SUCCESS) {
@@ -587,21 +573,21 @@ VkResult buildAccelerationStructures(
     // The build is complete, so the scratch memory is dead weight; release it now
     // instead of holding it for the program's lifetime. The destructor's null guards
     // make the early release safe.
-    destroyBufferAndMemory(
-        device,
+    destroyBufferAndAllocation(
+        allocator,
         as->blasScratchBuffer,
-        as->blasScratchBufferMemory,
+        as->blasScratchBufferAllocation,
         "BLAS scratch buffer (post-build)");
     as->blasScratchBuffer = VK_NULL_HANDLE;
-    as->blasScratchBufferMemory = VK_NULL_HANDLE;
+    as->blasScratchBufferAllocation = nullptr;
 
-    destroyBufferAndMemory(
-        device,
+    destroyBufferAndAllocation(
+        allocator,
         as->tlasScratchBuffer,
-        as->tlasScratchBufferMemory,
+        as->tlasScratchBufferAllocation,
         "TLAS scratch buffer (post-build)");
     as->tlasScratchBuffer = VK_NULL_HANDLE;
-    as->tlasScratchBufferMemory = VK_NULL_HANDLE;
+    as->tlasScratchBufferAllocation = nullptr;
 
     return VK_SUCCESS;
 }

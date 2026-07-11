@@ -1,6 +1,7 @@
 #include "swapchain.hpp"
 
 #include "vulkan_context.hpp"
+#include "vk_mem_alloc.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -488,36 +489,17 @@ VkResult createStorageImage(
     imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    VkResult result = vkCreateImage(device, &imageCreateInfo, nullptr, &swap->storageImage);
+    VmaAllocationCreateInfo allocationCreateInfo{};
+    allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocationCreateInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    VkMemoryRequirements memoryRequirements{};
-    vkGetImageMemoryRequirements(device, swap->storageImage, &memoryRequirements);
-
-    uint32_t memoryTypeIndex = 0;
-    if (!findMemoryType(
-            physicalDevice,
-            memoryRequirements.memoryTypeBits,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &memoryTypeIndex)) {
-        return VK_ERROR_FEATURE_NOT_PRESENT;
-    }
-
-    VkMemoryAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocateInfo.allocationSize = memoryRequirements.size;
-    allocateInfo.memoryTypeIndex = memoryTypeIndex;
-
-    result = vkAllocateMemory(device, &allocateInfo, nullptr, &swap->storageImageMemory);
-
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    result = vkBindImageMemory(device, swap->storageImage, swap->storageImageMemory, 0);
+    VkResult result = vmaCreateImage(
+        swap->allocator,
+        &imageCreateInfo,
+        &allocationCreateInfo,
+        &swap->storageImage,
+        &swap->storageImageAllocation,
+        nullptr);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -550,14 +532,13 @@ void destroyStorageImage(VkDevice device, Swapchain* swap)
         swap->storageImageView = VK_NULL_HANDLE;
     }
 
-    if (swap->storageImage != VK_NULL_HANDLE) {
-        vkDestroyImage(device, swap->storageImage, nullptr);
+    if (swap->storageImage != VK_NULL_HANDLE || swap->storageImageAllocation != nullptr) {
+        vmaDestroyImage(
+            swap->allocator,
+            swap->storageImage,
+            swap->storageImageAllocation);
         swap->storageImage = VK_NULL_HANDLE;
-    }
-
-    if (swap->storageImageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, swap->storageImageMemory, nullptr);
-        swap->storageImageMemory = VK_NULL_HANDLE;
+        swap->storageImageAllocation = nullptr;
     }
 }
 
@@ -636,6 +617,7 @@ VkResult createSwapchainResources(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     VkSurfaceKHR surface,
     GLFWwindow* window,
     const QueueFamilyIndices& queueFamilies)
@@ -643,6 +625,7 @@ VkResult createSwapchainResources(
     // Set the (non-owning) device first, before any child object is created, so a
     // partial failure below still cleans up via destroySwapchainResources / ~Swapchain.
     swap->device = device;
+    swap->allocator = allocator;
 
     VkResult result = createSwapchain(
         physicalDevice,
@@ -687,6 +670,7 @@ VkResult recreateSwapchain(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     VkSurfaceKHR surface,
     GLFWwindow* window,
     const QueueFamilyIndices& queueFamilies)
@@ -707,6 +691,7 @@ VkResult recreateSwapchain(
         swap,
         physicalDevice,
         device,
+        allocator,
         surface,
         window,
         queueFamilies);

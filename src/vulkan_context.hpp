@@ -8,6 +8,8 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
+#include "vma_fwd.hpp"
+
 namespace xrphoton
 {
 // The single Khronos validation layer we request, and the minimum Vulkan API
@@ -34,6 +36,7 @@ struct VulkanContext
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::array<FrameResources, MaxFramesInFlight> frames;
 
@@ -138,6 +141,15 @@ VkResult createLogicalDevice(
     const QueueFamilyIndices& queueFamilies,
     VkDevice* device);
 
+// Create the one program-lifetime VMA allocator after the logical device. Buffer
+// device address support is enabled at the allocator level so addressable buffers
+// automatically receive the matching Vulkan memory-allocation flag.
+VkResult createAllocator(
+    VkInstance instance,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    VmaAllocator* allocator);
+
 // Create the command pool on the trace family (with per-buffer reset enabled) and
 // allocate one primary command buffer per frame slot.
 VkResult createCommandPool(
@@ -156,27 +168,17 @@ VkResult createFrameSyncObjects(
     VkDevice device,
     std::array<FrameResources, MaxFramesInFlight>* frames);
 
-// Find a memory type allowed by a resource's type bits and satisfying all requested
-// properties.
-bool findMemoryType(
-    VkPhysicalDevice physicalDevice,
-    uint32_t typeBits,
-    VkMemoryPropertyFlags properties,
-    uint32_t* memoryTypeIndex);
-
-// Create a buffer, allocate memory for it, and bind the two. When the usage includes
-// SHADER_DEVICE_ADDRESS, the allocation gets VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
-// which vkGetBufferDeviceAddress requires of the backing memory. On failure the handles
-// created so far are left in *buffer / *memory for the caller's owner to destroy, so no
-// unwinding is needed at the call site.
+// Create a buffer and its VMA allocation. Zero allocation flags select device-local
+// memory; CPU-written buffers request sequential host access plus persistent mapping.
+// Host-visible allocations additionally require HOST_COHERENT so callers retain the
+// existing no-explicit-flush write discipline.
 VkResult createBuffer(
-    VkPhysicalDevice physicalDevice,
-    VkDevice device,
+    VmaAllocator allocator,
     VkDeviceSize size,
     VkBufferUsageFlags usage,
-    VkMemoryPropertyFlags memoryProperties,
+    VmaAllocationCreateFlags allocationFlags,
     VkBuffer* buffer,
-    VkDeviceMemory* memory);
+    VmaAllocation* allocation);
 
 // Resolve every ray tracing entry point into *functions. Returns false (leaving any
 // partially resolved pointers in place) if any one of them is unavailable.

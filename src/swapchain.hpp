@@ -5,6 +5,8 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 
+#include "vma_fwd.hpp"
+
 namespace xrphoton
 {
 struct QueueFamilyIndices;
@@ -16,6 +18,7 @@ struct QueueFamilyIndices;
 struct Swapchain
 {
     VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     std::vector<VkImage> images;
     std::vector<VkImageView> imageViews;
@@ -25,7 +28,7 @@ struct Swapchain
     // Resize-bound trace output target. Ray tracing writes this image, then the frame
     // path blits it into the acquired swapchain image for presentation.
     VkImage storageImage = VK_NULL_HANDLE;
-    VkDeviceMemory storageImageMemory = VK_NULL_HANDLE;
+    VmaAllocation storageImageAllocation = nullptr;
     VkImageView storageImageView = VK_NULL_HANDLE;
 
     Swapchain() = default;
@@ -48,6 +51,7 @@ VkResult createSwapchainResources(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     VkSurfaceKHR surface,
     GLFWwindow* window,
     const QueueFamilyIndices& queueFamilies);
@@ -62,6 +66,7 @@ VkResult recreateSwapchain(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     VkSurfaceKHR surface,
     GLFWwindow* window,
     const QueueFamilyIndices& queueFamilies);

@@ -253,6 +253,20 @@ int main()
 
     std::cout << "Created Vulkan logical device with hardware ray tracing prerequisites.\n";
 
+    const VkResult allocatorResult = createAllocator(
+        ctx.instance,
+        physicalDevice,
+        ctx.device,
+        &ctx.allocator);
+
+    if (allocatorResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan memory allocator: "
+                  << formatVkResult(allocatorResult) << ".\n";
+        return 1;
+    }
+
+    std::cout << "Created Vulkan memory allocator.\n";
+
     RayTracingFunctions rayTracingFunctions{};
 
     if (!loadRayTracingFunctions(ctx.device, &rayTracingFunctions)) {
@@ -277,6 +291,7 @@ int main()
         &swap,
         physicalDevice,
         ctx.device,
+        ctx.allocator,
         ctx.surface,
         ctx.window,
         queueFamilies);
@@ -340,6 +355,7 @@ int main()
         &accelerationStructure,
         physicalDevice,
         ctx.device,
+        ctx.allocator,
         rayTracingFunctions,
         ctx.frames[0].commandBuffer,
         traceQueue,
@@ -385,6 +401,7 @@ int main()
         &rtPipeline,
         physicalDevice,
         ctx.device,
+        ctx.allocator,
         rayTracingFunctions);
 
     if (sbtResult != VK_SUCCESS) {
@@ -454,6 +471,7 @@ int main()
                 &swap,
                 physicalDevice,
                 ctx.device,
+                ctx.allocator,
                 ctx.surface,
                 ctx.window,
                 queueFamilies);

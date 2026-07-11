@@ -2,6 +2,7 @@
 
 #include "camera.hpp"
 #include "vulkan_context.hpp"
+#include "vk_mem_alloc.h"
 
 #include <cstdint>
 #include <cstring>
@@ -73,15 +74,8 @@ RtPipeline::~RtPipeline()
         std::cout << "Destroyed Vulkan ray tracing descriptor set layout.\n";
     }
 
-    if (sbtBuffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device, sbtBuffer, nullptr);
-    }
-
-    if (sbtBufferMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, sbtBufferMemory, nullptr);
-    }
-
-    if (sbtBuffer != VK_NULL_HANDLE || sbtBufferMemory != VK_NULL_HANDLE) {
+    if (sbtBuffer != VK_NULL_HANDLE || sbtBufferAllocation != nullptr) {
+        vmaDestroyBuffer(allocator, sbtBuffer, sbtBufferAllocation);
         std::cout << "Destroyed Vulkan shader binding table buffer.\n";
     }
 }
@@ -300,8 +294,13 @@ VkResult buildShaderBindingTable(
     RtPipeline* rt,
     VkPhysicalDevice physicalDevice,
     VkDevice device,
+    VmaAllocator allocator,
     const RayTracingFunctions& functions)
 {
+    // Adopt before the first VMA allocation so a later failure can bare-return and
+    // still release the SBT through ~RtPipeline.
+    rt->allocator = allocator;
+
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProperties{};
     rtProperties.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
@@ -343,14 +342,14 @@ VkResult buildShaderBindingTable(
     // address inside the buffer — the VUIDs constrain the regions' device addresses,
     // not their buffer offsets (the same trick as the AS build scratch).
     result = createBuffer(
-        physicalDevice,
-        device,
+        allocator,
         tableSize + baseAlignment - 1,
         VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR
             | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+            | VMA_ALLOCATION_CREATE_MAPPED_BIT,
         &rt->sbtBuffer,
-        &rt->sbtBufferMemory);
+        &rt->sbtBufferAllocation);
 
     if (result != VK_SUCCESS) {
         return result;
@@ -367,20 +366,18 @@ VkResult buildShaderBindingTable(
     // the aligned ones, and the GPU reads garbage records with no validation error.
     const VkDeviceSize alignmentDelta = tableAddress - bufferAddress;
 
-    void* mapped = nullptr;
-    result = vkMapMemory(device, rt->sbtBufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
-
-    if (result != VK_SUCCESS) {
-        return result;
+    VmaAllocationInfo allocationInfo{};
+    vmaGetAllocationInfo(allocator, rt->sbtBufferAllocation, &allocationInfo);
+    if (allocationInfo.pMappedData == nullptr) {
+        return VK_ERROR_MEMORY_MAP_FAILED;
     }
 
-    uint8_t* table = static_cast<uint8_t*>(mapped) + alignmentDelta;
+    uint8_t* table = static_cast<uint8_t*>(allocationInfo.pMappedData) + alignmentDelta;
     std::memcpy(table + raygenOffset, handles.data(), handleSize);
     std::memcpy(table + missOffset, handles.data() + handleSize, handleSize);
     std::memcpy(table + hitOffset, handles.data() + 2 * handleSize, handleSize);
 
-    // Coherent memory: no flush needed before the unmap.
-    vkUnmapMemory(device, rt->sbtBufferMemory);
+    // Persistent coherent mapping: no explicit flush or unmap is needed.
 
     // The raygen region's size must equal its stride (spec requirement); miss and hit
     // hold one record each, so size = stride falls out naturally for them too.
