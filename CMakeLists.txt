@@ -13,6 +13,17 @@ option(XRPHOTON_ENABLE_VALIDATION "Request the Vulkan validation layer and debug
 
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
+find_package(glm REQUIRED)
+
+# Current GLM packages export glm::glm; older distro packages used glm. Resolve
+# that packaging variance here so the rest of the build has one dependency name.
+if(TARGET glm::glm)
+    set(XRPHOTON_GLM_TARGET glm::glm)
+elseif(TARGET glm)
+    set(XRPHOTON_GLM_TARGET glm)
+else()
+    message(FATAL_ERROR "The GLM package did not export a supported CMake target")
+endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
 find_program(XRPHOTON_SLANGC slangc REQUIRED
@@ -76,4 +87,5 @@ target_link_libraries(xrPhoton
     PRIVATE
         Vulkan::Vulkan
         glfw
+        ${XRPHOTON_GLM_TARGET}
 )

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include <GLFW/glfw3.h>
+#include <glm/geometric.hpp>
 
 namespace xrphoton
 {
@@ -16,65 +17,24 @@ constexpr float SprintMultiplier = 4.0f;
 constexpr float MouseSensitivity = 0.002f;
 constexpr float PitchLimit = Pi * 89.0f / 180.0f;
 constexpr float NormalizeEpsilonSquared = 1.0e-12f;
-constexpr Vec3 WorldUp{0.0f, 1.0f, 0.0f};
+constexpr glm::vec3 WorldUp{0.0f, 1.0f, 0.0f};
 
 struct CameraBasis
 {
-    Vec3 forward;
-    Vec3 right;
-    Vec3 up;
+    glm::vec3 forward;
+    glm::vec3 right;
+    glm::vec3 up;
 };
 
-Vec3 add(Vec3 lhs, Vec3 rhs)
+glm::vec3 normalizeOrZero(glm::vec3 value)
 {
-    return {
-        lhs.x + rhs.x,
-        lhs.y + rhs.y,
-        lhs.z + rhs.z,
-    };
-}
-
-Vec3 subtract(Vec3 lhs, Vec3 rhs)
-{
-    return {
-        lhs.x - rhs.x,
-        lhs.y - rhs.y,
-        lhs.z - rhs.z,
-    };
-}
-
-Vec3 scale(Vec3 value, float scalar)
-{
-    return {
-        value.x * scalar,
-        value.y * scalar,
-        value.z * scalar,
-    };
-}
-
-float lengthSquared(Vec3 value)
-{
-    return value.x * value.x + value.y * value.y + value.z * value.z;
-}
-
-Vec3 cross(Vec3 lhs, Vec3 rhs)
-{
-    return {
-        lhs.y * rhs.z - lhs.z * rhs.y,
-        lhs.z * rhs.x - lhs.x * rhs.z,
-        lhs.x * rhs.y - lhs.y * rhs.x,
-    };
-}
-
-Vec3 normalize(Vec3 value)
-{
-    const float squaredLength = lengthSquared(value);
+    const float squaredLength = glm::dot(value, value);
 
     if (squaredLength <= NormalizeEpsilonSquared) {
         return {};
     }
 
-    return scale(value, 1.0f / std::sqrt(squaredLength));
+    return glm::normalize(value);
 }
 
 float wrapYaw(float yaw)
@@ -95,13 +55,13 @@ CameraBasis makeCameraBasis(float yaw, float pitch)
 
     // Preserve the bring-up shader's screen mapping: at yaw 0, world +X maps
     // screen-right and world +Y maps screen-up while the camera looks down +Z.
-    const Vec3 forward{
+    const glm::vec3 forward{
         cosPitch * std::sin(yaw),
         std::sin(clampedPitch),
         cosPitch * std::cos(yaw),
     };
-    const Vec3 right = normalize(cross(WorldUp, forward));
-    const Vec3 up = cross(forward, right);
+    const glm::vec3 right = normalizeOrZero(glm::cross(WorldUp, forward));
+    const glm::vec3 up = glm::cross(forward, right);
 
     return {forward, right, up};
 }
@@ -185,28 +145,28 @@ void updateCamera(Camera* camera, GLFWwindow* window, float dt)
 
     const CameraBasis basis = makeCameraBasis(camera->yaw, camera->pitch);
 
-    Vec3 movement{};
+    glm::vec3 movement{};
 
     if (keyPressed(window, GLFW_KEY_W)) {
-        movement = add(movement, basis.forward);
+        movement += basis.forward;
     }
     if (keyPressed(window, GLFW_KEY_S)) {
-        movement = subtract(movement, basis.forward);
+        movement -= basis.forward;
     }
     if (keyPressed(window, GLFW_KEY_A)) {
-        movement = subtract(movement, basis.right);
+        movement -= basis.right;
     }
     if (keyPressed(window, GLFW_KEY_D)) {
-        movement = add(movement, basis.right);
+        movement += basis.right;
     }
     if (keyPressed(window, GLFW_KEY_SPACE)) {
-        movement = add(movement, WorldUp);
+        movement += WorldUp;
     }
     if (keyPressed(window, GLFW_KEY_LEFT_CONTROL)) {
-        movement = subtract(movement, WorldUp);
+        movement -= WorldUp;
     }
 
-    if (lengthSquared(movement) <= NormalizeEpsilonSquared) {
+    if (glm::dot(movement, movement) <= NormalizeEpsilonSquared) {
         return;
     }
 
@@ -216,8 +176,7 @@ void updateCamera(Camera* camera, GLFWwindow* window, float dt)
         speed *= SprintMultiplier;
     }
 
-    const Vec3 delta = scale(normalize(movement), speed * std::max(dt, 0.0f));
-    camera->position = add(camera->position, delta);
+    camera->position += normalizeOrZero(movement) * speed * std::max(dt, 0.0f);
 }
 
 CameraPushConstants makeCameraPushConstants(const Camera& camera, float aspect)
@@ -228,8 +187,8 @@ CameraPushConstants makeCameraPushConstants(const Camera& camera, float aspect)
     return {
         .origin = camera.position,
         .forward = basis.forward,
-        .right = scale(basis.right, halfFovScale * aspect),
-        .up = scale(basis.up, halfFovScale),
+        .right = basis.right * halfFovScale * aspect,
+        .up = basis.up * halfFovScale,
     };
 }
 }

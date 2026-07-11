@@ -9,6 +9,9 @@
 #include <iostream>
 #include <limits>
 
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/mat4x4.hpp>
+#include <glm/trigonometric.hpp>
 #include <vulkan/vulkan.h>
 
 namespace xrphoton
@@ -44,6 +47,22 @@ constexpr VkBufferUsageFlags BuildInputBufferUsage =
 constexpr VkDeviceSize VertexInputAddressAlignment = 4;
 constexpr VkDeviceSize IndexInputAddressAlignment = 4;
 constexpr VkDeviceSize InstanceInputAddressAlignment = 16;
+
+// VkTransformMatrixKHR stores the top three rows of a row-major 4x4. GLM
+// indexes its column-major matrices as [column][row], so transpose while
+// copying at the one boundary where scene transforms enter Vulkan.
+VkTransformMatrixKHR toVkTransformMatrix(const glm::mat4& matrix)
+{
+    VkTransformMatrixKHR transform{};
+
+    for (uint32_t row = 0; row < 3; ++row) {
+        for (uint32_t column = 0; column < 4; ++column) {
+            transform.matrix[row][column] = matrix[column][row];
+        }
+    }
+
+    return transform;
+}
 
 // Round a device address up to the next multiple of alignment. Vulkan alignment limits
 // are powers of two, so the mask form is exact.
@@ -391,12 +410,20 @@ VkResult buildAccelerationStructures(
     const VkDeviceAddress blasAddress =
         functions.getAccelerationStructureDeviceAddress(device, &blasAddressInfo);
 
-    // Identity transform (VkTransformMatrixKHR is row-major, three rows of a 3x4
-    // matrix); mask 0xFF so every ray's cull mask hits the instance.
+    // Rotate in object space, then translate in world space. The deliberately
+    // non-identity transform proves the GLM-to-Vulkan layout conversion before
+    // real scene data introduces multiple instances.
+    glm::mat4 instanceTransform = glm::translate(
+        glm::mat4(1.0f),
+        glm::vec3(0.5f, 0.0f, 0.0f));
+    instanceTransform = glm::rotate(
+        instanceTransform,
+        glm::radians(45.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f));
+
     VkAccelerationStructureInstanceKHR instance{};
-    instance.transform.matrix[0][0] = 1.0f;
-    instance.transform.matrix[1][1] = 1.0f;
-    instance.transform.matrix[2][2] = 1.0f;
+    instance.transform = toVkTransformMatrix(instanceTransform);
+    // Let every ray cull mask used by the renderer hit this instance.
     instance.mask = 0xFF;
     instance.accelerationStructureReference = blasAddress;
 

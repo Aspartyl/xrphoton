@@ -22,9 +22,10 @@ handling including the descriptor rewrite the resize obligates), and every piece
 of the RT stack is now exercised each frame. The frame path lives in its own
 `renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only. The tracked
 bring-up roadmap is complete; of the follow-on roadmap, camera + push constants
-has landed, and the geometry + scene representation step is underway: its M1
-foundation replaced all direct device-memory allocation with the vendored Vulkan
-Memory Allocator (VMA) while preserving the triangle renderer.
+has landed, and the geometry + scene representation step is underway: M1
+replaced all direct device-memory allocation with the vendored Vulkan Memory
+Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
+with a rotated and translated triangle.
 
 ## Goals and constraints
 
@@ -81,7 +82,7 @@ stage; the diagram shows the frame-path layering.)
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
-| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | `Vec3`, `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
+| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
@@ -101,8 +102,9 @@ Includes are kept acyclic by a deliberate rule:
   `RtPipeline`, or `Renderer`.
 - Project headers include only `vma_fwd.hpp`; the full vendored
   `vk_mem_alloc.h` is confined to implementation files that call VMA.
-- `camera.hpp` includes **no project or Vulkan header at all** (only `<cstddef>`
-  for its `offsetof` ABI asserts) and forward-declares `GLFWwindow`;
+- `camera.hpp` includes **no project or Vulkan header at all** (only GLM's
+  Vulkan-free vector header and `<cstddef>` for its `offsetof` ABI asserts) and
+  forward-declares `GLFWwindow`;
   `makeCameraPushConstants` takes a plain `float aspect` rather than a
   `VkExtent2D` precisely to keep the unit Vulkan-free.
 
@@ -516,15 +518,20 @@ needs deeper overlap.
 ## Acceleration structures
 
 The ray tracing scene: a **BLAS** built over one hardcoded triangle and a **TLAS**
-whose single identity-transform instance references it. Built once by
-`buildAccelerationStructures` after bring-up, before the render loop; the TLAS handle
-is what the future RT descriptor set binds
+whose single instance references it with a 45° counter-clockwise Z rotation and a
++0.5 world-X translation. Built once by `buildAccelerationStructures` after bring-up,
+before the render loop; the TLAS handle is what the future RT descriptor set binds
 (`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
 acceleration-structure *device address* is only needed where an instance references a
 BLAS). Everything is **swapchain-independent**: resize/recreate never touches it.
 
 Decisions and contracts worth preserving:
 
+- **One transform-layout boundary.** Scene transforms use GLM's column-major
+  `glm::mat4`; `toVkTransformMatrix` in `acceleration_structure.cpp` alone copies
+  them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The visible non-identity
+  M2 transform proves both the transpose and the rotate-then-translate order before
+  real scene loading introduces N instances.
 - **Host-visible inputs, no staging.** The vertex/index/instance buffers are
   host-visible + coherent and written by `memcpy`. Deliberate: a staging pass would
   add an entire copy/submit path to move 60-odd bytes. Staging lands later, alongside
@@ -679,12 +686,13 @@ Decisions and contracts worth preserving:
   matrix is temporal reprojection (roadmap step 5), which can build one from
   this same camera state when it lands. Scaling `right` by the swapchain aspect
   each frame is what fixed the bring-up NDC-square stretch on resize.
-- **No math library (yet).** `Vec3` plus a handful of file-private helpers in
-  `camera.cpp` is everything this step needs; GLM vs. growing the in-house math
-  is a geometry/scene-time decision (instance transforms), to be made with real
-  requirements in hand. The `normalize` helper returns zero for near-zero input,
-  and the movement path additionally skips near-zero sums — `normalize({0,0,0})`
-  is the classic NaN that permanently poisons the position.
+- **GLM is the single math system.** Geometry M2 retired the in-house `Vec3` when
+  instance transforms created the first matrix requirement. Camera vectors are
+  now `glm::vec3`; the guarded normalization helper still returns zero for
+  near-zero input, and the movement path additionally skips near-zero sums —
+  normalizing a zero vector is the classic NaN that permanently poisons the
+  position. The GLM column-major to Vulkan row-major 3x4 conversion has one
+  owner in `acceleration_structure.cpp`.
 - **Payload ABI.** The shader sees four `float3` fields at 16-byte offsets
   (0/16/32/48); the CPU struct pins the same shape with explicit pad floats and
   `static_assert`s on both `sizeof` (64) and the `offsetof` of every field —
@@ -742,7 +750,8 @@ Decisions and contracts worth preserving:
    pre-scaled ray basis) delivered via raygen-only push constants, with GLFW
    fly controls, fixing the bring-up aspect-ratio distortion on resize. See
    [Camera](#camera) for the decisions and contracts.
-2. **Geometry + scene representation.** Pending — **the next step to build**.
+2. **Geometry + scene representation.** **Underway** — VMA adoption and the GLM
+   instance-transform proof have landed; staged geometry uploads are next.
    Real meshes replacing the
    hardcoded triangle: indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple

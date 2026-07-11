@@ -60,6 +60,7 @@ Needs:
 - Linux, GCC or Clang, C++23, CMake 3.24+
 - Vulkan SDK (1.3)
 - GLFW 3
+- GLM (`libglm-dev` on Debian/Ubuntu)
 - `slangc` (use an official release; distro packages are usually too old)
 - A GPU/driver with `VK_KHR_acceleration_structure` and
   `VK_KHR_ray_tracing_pipeline`
