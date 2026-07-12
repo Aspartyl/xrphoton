@@ -1,5 +1,7 @@
 #include "acceleration_structure.hpp"
 
+#include "gpu_scene.hpp"
+#include "scene.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
@@ -9,24 +11,13 @@
 #include <iostream>
 #include <limits>
 
-#include <glm/ext/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
-#include <glm/trigonometric.hpp>
 #include <vulkan/vulkan.h>
 
 namespace xrphoton
 {
 namespace
 {
-// The hardcoded scene: a single triangle in the XY plane, counter-clockwise. Positions
-// only — shading attributes come later, alongside real geometry loading.
-constexpr float TriangleVertices[] = {
-    0.0f, 0.5f, 0.0f,
-    -0.5f, -0.5f, 0.0f,
-    0.5f, -0.5f, 0.0f,
-};
-constexpr uint32_t TriangleIndices[] = {0, 1, 2};
-constexpr uint32_t TrianglePrimitiveCount = 1;
 constexpr uint32_t InstanceCount = 1;
 
 // The vertex format the BLAS build declares. Defined once so the suitability gate
@@ -34,9 +25,8 @@ constexpr uint32_t InstanceCount = 1;
 // swapchain.cpp).
 constexpr VkFormat BlasVertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 
-// Usage shared by every acceleration-structure build input (vertex/index/instance
-// buffers): readable by the build, addressable because the build consumes device
-// addresses rather than descriptors.
+// The TLAS instance buffer is readable by the build and addressable because the build
+// consumes a device address rather than a descriptor.
 constexpr VkBufferUsageFlags BuildInputBufferUsage =
     VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
     | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -261,8 +251,6 @@ AccelerationStructure::~AccelerationStructure()
     destroyBufferAndAllocation(allocator, tlasBuffer, tlasBufferAllocation, "TLAS backing buffer");
     destroyBufferAndAllocation(allocator, blasBuffer, blasBufferAllocation, "BLAS backing buffer");
     destroyBufferAndAllocation(allocator, instanceBuffer, instanceBufferAllocation, "instance buffer");
-    destroyBufferAndAllocation(allocator, indexBuffer, indexBufferAllocation, "index buffer");
-    destroyBufferAndAllocation(allocator, vertexBuffer, vertexBufferAllocation, "vertex buffer");
 }
 
 VkResult buildAccelerationStructures(
@@ -271,6 +259,8 @@ VkResult buildAccelerationStructures(
     VkDevice device,
     VmaAllocator allocator,
     const RayTracingFunctions& functions,
+    const SceneData& scene,
+    const GpuScene& gpuScene,
     VkCommandBuffer commandBuffer,
     VkQueue traceQueue,
     VkFence fence)
@@ -281,6 +271,25 @@ VkResult buildAccelerationStructures(
     as->device = device;
     as->allocator = allocator;
     as->destroyAccelerationStructure = functions.destroyAccelerationStructure;
+
+    if (scene.meshes.size() != 1
+        || scene.instances.size() != 1
+        || scene.meshes[0].geometryCount != 1
+        || scene.instances[0].meshIndex != 0
+        || scene.meshes[0].firstGeometry >= scene.geometries.size()) {
+        std::cerr << "M3b requires exactly one mesh, geometry, and instance.\n";
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    const SceneMesh& mesh = scene.meshes[0];
+    const SceneGeometry& geometry = scene.geometries[mesh.firstGeometry];
+    if (geometry.vertexCount == 0
+        || geometry.indexCount == 0
+        || (geometry.indexCount % 3) != 0) {
+        std::cerr << "M3b geometry must contain indexed triangles and nonempty vertices.\n";
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const uint32_t primitiveCount = geometry.indexCount / 3;
 
     VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationStructureProperties{};
     accelerationStructureProperties.sType =
@@ -295,42 +304,11 @@ VkResult buildAccelerationStructures(
     const VkDeviceSize scratchAlignment =
         accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment;
 
-    VkResult result = uploadDeviceLocalBuffer(
-        allocator,
-        device,
-        commandBuffer,
-        traceQueue,
-        fence,
-        TriangleVertices,
-        sizeof(TriangleVertices),
-        BuildInputBufferUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        &as->vertexBuffer,
-        &as->vertexBufferAllocation);
-
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    result = uploadDeviceLocalBuffer(
-        allocator,
-        device,
-        commandBuffer,
-        traceQueue,
-        fence,
-        TriangleIndices,
-        sizeof(TriangleIndices),
-        BuildInputBufferUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        &as->indexBuffer,
-        &as->indexBufferAllocation);
-
-    if (result != VK_SUCCESS) {
-        return result;
-    }
-
-    const VkDeviceAddress vertexAddress =
-        getBufferAddress(device, functions, as->vertexBuffer);
-    const VkDeviceAddress indexAddress =
-        getBufferAddress(device, functions, as->indexBuffer);
+    VkResult result = VK_SUCCESS;
+    const VkDeviceAddress vertexAddress = gpuScene.positionBufferAddress
+        + static_cast<VkDeviceSize>(geometry.firstVertex) * 3 * sizeof(float);
+    const VkDeviceAddress indexAddress = gpuScene.indexBufferAddress
+        + static_cast<VkDeviceSize>(geometry.firstIndex) * sizeof(uint32_t);
 
     if (!hasRequiredBuildInputAlignment(
             vertexAddress,
@@ -346,8 +324,7 @@ VkResult buildAccelerationStructures(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    // OPAQUE lets the eventual trace skip any-hit shading for this geometry; nothing in
-    // the scene needs transparency.
+    // The procedural material is opaque, so traversal can skip any-hit consideration.
     VkAccelerationStructureGeometryKHR blasGeometry{};
     blasGeometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
     blasGeometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -357,7 +334,7 @@ VkResult buildAccelerationStructures(
     blasGeometry.geometry.triangles.vertexFormat = BlasVertexFormat;
     blasGeometry.geometry.triangles.vertexData.deviceAddress = vertexAddress;
     blasGeometry.geometry.triangles.vertexStride = 3 * sizeof(float);
-    blasGeometry.geometry.triangles.maxVertex = 2;
+    blasGeometry.geometry.triangles.maxVertex = geometry.vertexCount - 1;
     blasGeometry.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
     blasGeometry.geometry.triangles.indexData.deviceAddress = indexAddress;
 
@@ -376,7 +353,7 @@ VkResult buildAccelerationStructures(
         device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &blasBuildInfo,
-        &TrianglePrimitiveCount,
+        &primitiveCount,
         &blasSizes);
 
     // The BLAS backing buffer needs SHADER_DEVICE_ADDRESS because the TLAS instance
@@ -407,7 +384,7 @@ VkResult buildAccelerationStructures(
     blasBuildInfo.scratchData.deviceAddress = blasScratchAddress;
 
     VkAccelerationStructureBuildRangeInfoKHR blasRange{};
-    blasRange.primitiveCount = TrianglePrimitiveCount;
+    blasRange.primitiveCount = primitiveCount;
 
     // The acceleration-structure device address is fixed at creation, so the instance
     // can reference the BLAS before the build commands have executed.
@@ -418,19 +395,9 @@ VkResult buildAccelerationStructures(
     const VkDeviceAddress blasAddress =
         functions.getAccelerationStructureDeviceAddress(device, &blasAddressInfo);
 
-    // Rotate in object space, then translate in world space. The deliberately
-    // non-identity transform proves the GLM-to-Vulkan layout conversion before
-    // real scene data introduces multiple instances.
-    glm::mat4 instanceTransform = glm::translate(
-        glm::mat4(1.0f),
-        glm::vec3(0.5f, 0.0f, 0.0f));
-    instanceTransform = glm::rotate(
-        instanceTransform,
-        glm::radians(45.0f),
-        glm::vec3(0.0f, 0.0f, 1.0f));
-
     VkAccelerationStructureInstanceKHR instance{};
-    instance.transform = toVkTransformMatrix(instanceTransform);
+    instance.transform = toVkTransformMatrix(scene.instances[0].transform);
+    instance.instanceCustomIndex = mesh.firstGeometry;
     // Let every ray cull mask used by the renderer hit this instance.
     instance.mask = 0xFF;
     instance.accelerationStructureReference = blasAddress;
@@ -515,7 +482,7 @@ VkResult buildAccelerationStructures(
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    // The second staged upload left the borrowed command buffer executable. Reset it
+    // The final GpuScene upload left the borrowed command buffer executable. Reset it
     // before reusing it for the acceleration-structure build submission.
     result = vkResetCommandBuffer(commandBuffer, 0);
     if (result != VK_SUCCESS) {

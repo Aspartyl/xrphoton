@@ -1,6 +1,7 @@
 #include "rt_pipeline.hpp"
 
 #include "camera.hpp"
+#include "gpu_scene.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
@@ -86,9 +87,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // ~RtPipeline even when a later step here fails and the caller bare-returns.
     rt->device = device;
 
-    // Both bindings are raygen-only: the miss and closest-hit shaders only read and
-    // write the ray payload, never the scene or the output image directly.
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    VkDescriptorSetLayoutBinding bindings[4]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[0].descriptorCount = 1;
@@ -97,10 +96,20 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    const VkShaderStageFlags hitStageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR
+        | VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = hitStageFlags;
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = hitStageFlags;
 
     VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCreateInfo.bindingCount = 2;
+    layoutCreateInfo.bindingCount = 4;
     layoutCreateInfo.pBindings = bindings;
 
     VkResult result = vkCreateDescriptorSetLayout(
@@ -116,16 +125,18 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // Sized for exactly the one set. No FREE_DESCRIPTOR_SET_BIT: the set is only ever
     // released with the pool, and the resize-time rewrite goes through
     // vkUpdateDescriptorSets, which does not need it.
-    VkDescriptorPoolSize poolSizes[2]{};
+    VkDescriptorPoolSize poolSizes[3]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = 1;
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[2].descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo poolCreateInfo{};
     poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolCreateInfo.maxSets = 1;
-    poolCreateInfo.poolSizeCount = 2;
+    poolCreateInfo.poolSizeCount = 3;
     poolCreateInfo.pPoolSizes = poolSizes;
 
     result = vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &rt->descriptorPool);
@@ -177,6 +188,30 @@ void writeRtDescriptorSet(
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[1].pImageInfo = &storageImageInfo;
+
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+}
+
+void writeSceneDescriptorSet(
+    VkDevice device,
+    VkDescriptorSet descriptorSet,
+    const GpuScene& gpuScene)
+{
+    VkDescriptorBufferInfo bufferInfos[2]{};
+    bufferInfos[0].buffer = gpuScene.geometryRecordBuffer;
+    bufferInfos[0].range = VK_WHOLE_SIZE;
+    bufferInfos[1].buffer = gpuScene.materialBuffer;
+    bufferInfos[1].range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[2]{};
+    for (uint32_t index = 0; index < 2; ++index) {
+        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[index].dstSet = descriptorSet;
+        writes[index].dstBinding = 2 + index;
+        writes[index].descriptorCount = 1;
+        writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[index].pBufferInfo = &bufferInfos[index];
+    }
 
     vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 }

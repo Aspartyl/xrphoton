@@ -7,9 +7,10 @@
 namespace xrphoton
 {
 struct RayTracingFunctions;
+struct GpuScene;
 
-// Owns the ray tracing pipeline machinery: the descriptor set layout binding the TLAS
-// and the storage image, the pipeline layout over it plus the camera push constants,
+// Owns the ray tracing pipeline machinery: the descriptor set layout binding the TLAS,
+// storage image, and scene records; the pipeline layout plus camera push constants;
 // the descriptor pool and the one set allocated from it, the pipeline itself, and the
 // shader binding table buffer.
 // Program-lifetime and swapchain-independent except for one obligation: the storage
@@ -58,7 +59,8 @@ struct RtPipeline
 };
 
 // Create the descriptor set layout (binding 0 the TLAS, binding 1 the storage image,
-// both raygen-only), a pool sized for exactly the one set, and allocate that set.
+// and bindings 2–3 the geometry/material records), a pool sized for exactly one set,
+// and allocate that set.
 // Adopts device into *rt first, so on failure *rt holds whatever was created so far
 // and ~RtPipeline cleans it up; the caller can bare-return.
 VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device);
@@ -73,6 +75,13 @@ void writeRtDescriptorSet(
     VkDescriptorSet descriptorSet,
     VkAccelerationStructureKHR tlas,
     VkImageView storageImageView);
+
+// Write the program-lifetime scene buffers once at startup. Resize only rewrites
+// bindings 0–1 through writeRtDescriptorSet; these buffers never change in M3b.
+void writeSceneDescriptorSet(
+    VkDevice device,
+    VkDescriptorSet descriptorSet,
+    const GpuScene& gpuScene);
 
 // Create the pipeline layout (the one descriptor set plus raygen camera push
 // constants) and the ray tracing pipeline: three stages sharing the single embedded

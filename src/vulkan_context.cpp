@@ -167,6 +167,7 @@ RequiredDeviceExtensionSupport queryRequiredDeviceExtensionSupport(
 struct RayTracingFeatureSupport
 {
     bool wasQueried = false;
+    bool hasShaderInt64 = false;
     bool hasBufferDeviceAddress = false;
     bool hasAccelerationStructure = false;
     bool hasRayTracingPipeline = false;
@@ -174,6 +175,7 @@ struct RayTracingFeatureSupport
     bool isComplete() const
     {
         return wasQueried
+            && hasShaderInt64
             && hasBufferDeviceAddress
             && hasAccelerationStructure
             && hasRayTracingPipeline;
@@ -181,7 +183,7 @@ struct RayTracingFeatureSupport
 };
 
 // Query the ray tracing feature chain and confirm the device actually enables the
-// three capabilities the renderer depends on. The structs are linked through pNext so a
+// capabilities the renderer depends on. The structs are linked through pNext so a
 // single vkGetPhysicalDeviceFeatures2 call fills them all; createLogicalDevice later
 // re-uses the same chain shape to turn the features on.
 RayTracingFeatureSupport queryRequiredRayTracingFeatureSupport(
@@ -207,6 +209,7 @@ RayTracingFeatureSupport queryRequiredRayTracingFeatureSupport(
     vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalDeviceFeatures);
 
     support.wasQueried = true;
+    support.hasShaderInt64 = physicalDeviceFeatures.features.shaderInt64 == VK_TRUE;
     support.hasBufferDeviceAddress = bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE;
     support.hasAccelerationStructure =
         accelerationStructureFeatures.accelerationStructure == VK_TRUE;
@@ -384,6 +387,10 @@ void reportPhysicalDeviceRejection(const PhysicalDeviceSuitability& suitability)
     }
 
     if (suitability.rayTracingFeatures.wasQueried) {
+        if (!suitability.rayTracingFeatures.hasShaderInt64) {
+            std::cerr << "  - missing required feature shaderInt64\n";
+        }
+
         if (!suitability.rayTracingFeatures.hasBufferDeviceAddress) {
             std::cerr << "  - missing required feature bufferDeviceAddress\n";
         }
@@ -634,6 +641,7 @@ VkResult createLogicalDevice(
     VkPhysicalDeviceFeatures2 deviceFeatures{};
     deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     deviceFeatures.pNext = &accelerationStructureFeatures;
+    deviceFeatures.features.shaderInt64 = VK_TRUE;
 
     VkDeviceCreateInfo deviceCreateInfo{};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

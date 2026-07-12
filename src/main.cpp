@@ -1,7 +1,9 @@
 #include "acceleration_structure.hpp"
 #include "camera.hpp"
+#include "gpu_scene.hpp"
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
+#include "scene.hpp"
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
 
@@ -345,6 +347,29 @@ int main()
 
     std::cout << "Created Vulkan frame sync objects.\n";
 
+    // M3b uses a procedural quad to isolate the BDA/layout contract from file loading;
+    // M4 replaces this one construction call with the glTF loader.
+    SceneData sceneData = createProceduralSceneData();
+
+    GpuScene gpuScene;
+    const VkResult gpuSceneResult = createGpuScene(
+        &gpuScene,
+        sceneData,
+        ctx.device,
+        ctx.allocator,
+        rayTracingFunctions,
+        ctx.frames[0].commandBuffer,
+        traceQueue,
+        ctx.frames[0].inFlightFence);
+
+    if (gpuSceneResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan GPU scene: "
+                  << formatVkResult(gpuSceneResult) << ".\n";
+        return 1;
+    }
+
+    std::cout << "Created Vulkan GPU scene (indexed procedural quad).\n";
+
     // Declared after ctx so it destructs before the device it borrows; its destructor
     // waits for device idle itself, so ordering relative to swap is immaterial. The
     // build borrows frame 0's command buffer and in-flight fence before the render loop
@@ -357,6 +382,8 @@ int main()
         ctx.device,
         ctx.allocator,
         rayTracingFunctions,
+        sceneData,
+        gpuScene,
         ctx.frames[0].commandBuffer,
         traceQueue,
         ctx.frames[0].inFlightFence);
@@ -367,7 +394,7 @@ int main()
         return 1;
     }
 
-    std::cout << "Built Vulkan acceleration structures (triangle BLAS, single-instance TLAS).\n";
+    std::cout << "Built Vulkan acceleration structures (quad BLAS, single-instance TLAS).\n";
 
     // Declared after ctx so it destructs before the device it borrows; like the other
     // borrowing owners it waits for device idle itself, so its order relative to swap
@@ -411,6 +438,9 @@ int main()
     }
 
     std::cout << "Built Vulkan shader binding table.\n";
+
+    writeSceneDescriptorSet(ctx.device, rtPipeline.descriptorSet, gpuScene);
+    std::cout << "Wrote Vulkan scene descriptor bindings.\n";
 
     // The renderer's non-owning view over everything the frame path uses, created
     // last — after every handle it borrows exists. The handle members are copies of

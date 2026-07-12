@@ -24,7 +24,8 @@ way of doing each thing.
 
 ## Status
 
-Right now it renders a single triangle you can fly around (WASD + mouse look).
+Right now it renders an indexed quad with a UV gradient that you can fly around
+(WASD + mouse look).
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through a real BLAS/TLAS with `vkCmdTraceRaysKHR` from a
 perspective camera fed to the shader via push constants, writes a storage image

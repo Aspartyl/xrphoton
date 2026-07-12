@@ -7,9 +7,11 @@
 namespace xrphoton
 {
 struct RayTracingFunctions;
+struct SceneData;
+struct GpuScene;
 
-// Owns the ray tracing scene: the triangle geometry buffers, the BLAS built over them,
-// and the TLAS whose single instance references that BLAS. Built once at startup and
+// Owns the acceleration structures built over GpuScene geometry and the host-visible
+// TLAS instance buffer. Built once at startup and
 // swapchain-independent, so resize/recreate never touches it. Its VkDevice is non-owning
 // (borrowed from VulkanContext); the destructor waits for the device to go idle itself,
 // so declaration order relative to other owners does not matter — only that it precedes
@@ -22,12 +24,6 @@ struct AccelerationStructure
     // so the destructor cannot call it statically. Whoever creates an acceleration
     // structure handle below must set this first (alongside device).
     PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
-
-    // Device-local triangle geometry uploaded through transient staging buffers.
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VmaAllocation vertexBufferAllocation = nullptr;
-    VkBuffer indexBuffer = VK_NULL_HANDLE;
-    VmaAllocation indexBufferAllocation = nullptr;
 
     // The one VkAccelerationStructureInstanceKHR the TLAS is built from.
     VkBuffer instanceBuffer = VK_NULL_HANDLE;
@@ -65,10 +61,10 @@ struct AccelerationStructure
 // vulkan_context) so selection and the BLAS build share one format definition.
 bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevice);
 
-// Populate *as: stage the triangle into device-local buffers, then build the BLAS over
-// it and the TLAS over its single instance (recorded back-to-back with a build-to-build
-// barrier). Each submission borrows commandBuffer/traceQueue/fence and blocks until the
-// GPU finishes. The three build-input device addresses are checked against their
+// Populate *as: build one BLAS over the procedural scene's GpuScene buffers, then a
+// TLAS over its single instance (recorded back-to-back with a build-to-build barrier).
+// The submission borrows commandBuffer/traceQueue/fence and blocks until the GPU
+// finishes. The three build-input device addresses are checked against their
 // required 4/4/16-byte alignments; an under-aligned base address fails with
 // VK_ERROR_INITIALIZATION_FAILED. The scratch buffers are released before returning,
 // so on success *as holds only program-lifetime resources and the fence is signaled for
@@ -81,6 +77,8 @@ VkResult buildAccelerationStructures(
     VkDevice device,
     VmaAllocator allocator,
     const RayTracingFunctions& functions,
+    const SceneData& scene,
+    const GpuScene& gpuScene,
     VkCommandBuffer commandBuffer,
     VkQueue traceQueue,
     VkFence fence);

@@ -13,6 +13,37 @@ uniform RaytracingAccelerationStructure topLevelAS;
 [format("rgba8")]
 uniform RWTexture2D<float4> outputImage;
 
+// All-scalar or explicitly aligned records mirror scene.hpp/gpu_scene.hpp exactly.
+struct VertexAttributes
+{
+    float nx, ny, nz;
+    float u, v;
+};
+
+struct GeometryRecord
+{
+    uint64_t indexAddress;
+    uint64_t positionAddress;
+    uint64_t attributeAddress;
+    uint materialIndex;
+    uint pad0;
+};
+
+struct MaterialRecord
+{
+    float4 baseColorFactor;
+    uint baseColorTexture;
+    float alphaCutoff;
+    uint pad0;
+    uint pad1;
+};
+
+[[vk::binding(2, 0)]]
+StructuredBuffer<GeometryRecord> geometryRecords;
+
+[[vk::binding(3, 0)]]
+StructuredBuffer<MaterialRecord> materials;
+
 struct CameraPushConstants
 {
     float3 origin;
@@ -28,6 +59,48 @@ struct Payload
 {
     float3 color;
 };
+
+struct HitAttributes
+{
+    float3 worldNormal;
+    float2 uv;
+    uint materialIndex;
+};
+
+HitAttributes fetchHitAttributes(BuiltInTriangleIntersectionAttributes attribs)
+{
+    GeometryRecord geometry = geometryRecords[InstanceID() + GeometryIndex()];
+    uint* indices = (uint*)geometry.indexAddress;
+    uint baseIndex = 3 * PrimitiveIndex();
+    uint3 triangle = uint3(
+        indices[baseIndex],
+        indices[baseIndex + 1],
+        indices[baseIndex + 2]);
+
+    VertexAttributes* attributes = (VertexAttributes*)geometry.attributeAddress;
+    float3 weights = float3(
+        1.0 - attribs.barycentrics.x - attribs.barycentrics.y,
+        attribs.barycentrics.x,
+        attribs.barycentrics.y);
+
+    VertexAttributes a = attributes[triangle.x];
+    VertexAttributes b = attributes[triangle.y];
+    VertexAttributes c = attributes[triangle.z];
+    float3 objectNormal = float3(a.nx, a.ny, a.nz) * weights.x
+        + float3(b.nx, b.ny, b.nz) * weights.y
+        + float3(c.nx, c.ny, c.nz) * weights.z;
+
+    HitAttributes result;
+    // With HLSL row-vector multiplication, WorldToObject's 3x3 block applies the
+    // required object-to-world inverse-transpose normal transform.
+    result.worldNormal = normalize(
+        mul(objectNormal, (float3x3)WorldToObject3x4()));
+    result.uv = float2(a.u, a.v) * weights.x
+        + float2(b.u, b.v) * weights.y
+        + float2(c.u, c.v) * weights.z;
+    result.materialIndex = geometry.materialIndex;
+    return result;
+}
 
 [shader("raygeneration")]
 void rayGenMain()
@@ -62,17 +135,18 @@ void rayGenMain()
 [shader("miss")]
 void missMain(inout Payload payload)
 {
-    // Dark red keeps miss pixels visually distinct from the barycentric triangle.
+    // Dark red keeps miss pixels visually distinct from the UV-gradient quad.
     payload.color = float3(0.24, 0.02, 0.015);
 }
 
 [shader("closesthit")]
 void closestHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes attribs)
 {
-    // Barycentric-derived color: a gradient across the triangle proves attribute
-    // interpolation works, where a flat color would only prove the hit fired.
-    // The attributes are the weights of vertices 1 and 2; vertex 0's weight is
-    // the remainder.
-    float2 bary = attribs.barycentrics;
-    payload.color = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    HitAttributes hit = fetchHitAttributes(attribs);
+    MaterialRecord material = materials[hit.materialIndex];
+    // A smooth red/green UV gradient is an unambiguous BDA/stride/layout oracle.
+    // The normalized-normal factor stays 1 for valid data while ensuring the normal
+    // fetch and transform remain live in this probe shader.
+    float normalLength = saturate(dot(hit.worldNormal, hit.worldNormal));
+    payload.color = float3(hit.uv, 0.0) * material.baseColorFactor.rgb * normalLength;
 }

@@ -7,15 +7,15 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 xrPhoton renders its first ray traced pixels, and is interactive. It brings up a
 Vulkan instance and device configured for hardware ray tracing, creates a
-swapchain, builds the ray tracing **acceleration structures** (a BLAS over a
-hardcoded triangle and a single-instance TLAS — see
+swapchain, builds the ray tracing **acceleration structures** (a BLAS over an
+indexed procedural quad and a single-instance TLAS — see
 [Acceleration structures](#acceleration-structures)), creates the **ray tracing
 pipeline and shader binding table** (see
 [Ray tracing pipeline](#ray-tracing-pipeline)), and runs a render loop in which
 `vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS from a **perspective
 fly camera** (WASD + mouse look, delivered to the raygen shader via push
 constants — see [Camera](#camera)), writing a device-local **storage image** —
-the triangle in barycentric colors over a dark red miss background — which is
+the quad in a smooth UV gradient over a dark red miss background — which is
 then blitted to the acquired swapchain image and presented. The present path is
 fully wired (swapchain creation, two-frame-in-flight synchronization, resize
 handling including the descriptor rewrite the resize obligates), and every piece
@@ -25,8 +25,9 @@ bring-up roadmap is complete; of the follow-on roadmap, camera + push constants
 has landed, and the geometry + scene representation step is underway: M1
 replaced all direct device-memory allocation with the vendored Vulkan Memory
 Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
-with a rotated and translated triangle. M3a moved the triangle's vertex/index data
-to device-local buffers through the staged upload path that real geometry will reuse.
+with a rotated and translated triangle. M3a established staged device-local uploads;
+M3b replaced the triangle with an indexed, X-rotated quad whose hit shader fetches
+indices, normals, UVs, and materials through buffer device addresses.
 
 ## Goals and constraints
 
@@ -47,7 +48,7 @@ to device-local buffers through the staged upload path that real geometry will r
 
 ## Module map
 
-The code is eight translation units, all in `namespace xrphoton`. The split is along
+The code is ten translation units, all in `namespace xrphoton`. The split is along
 **resource lifetime** (program-lifetime vs. recreated-on-resize) and **orchestration
 vs. mechanism**.
 
@@ -72,7 +73,7 @@ vs. mechanism**.
 └──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
 
-(`main.cpp` also uses the four resource units directly for bring-up, and drives
+(`main.cpp` also uses the resource units directly for bring-up, and drives
 `camera.{hpp,cpp}` — the Vulkan-free input/math unit whose `CameraPushConstants`
 payload main() builds each frame and passes through `drawFrame` into the raygen
 stage; the diagram shows the frame-path layering.)
@@ -82,9 +83,11 @@ stage; the diagram shows the frame-path layering.)
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
-| [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (triangle geometry + instance buffers, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` | Program lifetime — built once at startup |
+| [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; procedural builder replaced by M4's loader |
+| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
+| [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
-| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet` | Program lifetime — created once at startup; the descriptor set is *rewritten* on resize |
+| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
 
@@ -94,7 +97,7 @@ Includes are kept acyclic by a deliberate rule:
 
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
-  `RayTracingFunctions`.
+  the scene/RT types they borrow; `gpu_scene.hpp` forward-declares `SceneData`.
 - `renderer.hpp` only **forward-declares** `CameraPushConstants`,
   `FrameResources`, `RayTracingFunctions`, `RtPipeline`, and `Swapchain`; it
   never mentions `VulkanContext` — the renderer borrows specific handles, not the
@@ -108,6 +111,8 @@ Includes are kept acyclic by a deliberate rule:
   forward-declares `GLFWwindow`;
   `makeCameraPushConstants` takes a plain `float aspect` rather than a
   `VkExtent2D` precisely to keep the unit Vulkan-free.
+- `scene.hpp` is likewise Vulkan-free: CPU scene data depends only on the standard
+  library and GLM, while `gpu_scene.hpp` owns the Vulkan/VMA boundary.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -117,9 +122,9 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    `acceleration_structure.hpp`).
 2. The swapchain functions need the full definition of `QueueFamilyIndices`, which
    they get by including `vulkan_context.hpp` in `swapchain.cpp`.
-3. `buildAccelerationStructures` needs the full `RayTracingFunctions` plus the shared
-   VMA-backed `createBuffer` / staged `uploadDeviceLocalBuffer` helpers, which it gets by including
-   `vulkan_context.hpp` in `acceleration_structure.cpp`.
+3. `gpu_scene.cpp` includes `scene.hpp` and `vulkan_context.hpp` to turn CPU arrays
+   into device-local buffers; `buildAccelerationStructures` includes both scene
+   definitions and borrows their ranges/device addresses.
 4. `rt_pipeline.cpp` likewise includes `vulkan_context.hpp` for the full
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
    build-generated `raytrace_spv.h` (the embedded shader module — see
@@ -136,7 +141,7 @@ cross-file surface is declared in the headers.
 
 ## Ownership model
 
-Four RAII owners — split by resource lifetime:
+Five RAII owners — split by resource lifetime:
 
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
   window, the instance, the debug messenger, the surface, the device, the one
@@ -148,8 +153,12 @@ Four RAII owners — split by resource lifetime:
   `VkImageView`), which is sized to the swapchain extent and so rides the same
   recreate path. Its `VkDevice` and `VmaAllocator` are **non-owning** — borrowed
   from `VulkanContext` and used only to destroy the children above.
+- **`GpuScene`** (program lifetime, created once at startup) owns the device-local
+  position, attribute, index, geometry-record, and material buffers. It borrows the
+  device/allocator and self-idle-waits before reverse-order destruction. `SceneData`
+  is the separate plain CPU value owned by `main()` and remains alive for step 3.
 - **`AccelerationStructure`** (program lifetime, built once at startup) owns: the
-  device-local triangle vertex/index buffers, the host-visible instance buffer, the BLAS and TLAS handles with
+  host-visible instance buffer and the BLAS/TLAS handles with
   their backing buffers, and — transiently, during the build only — the scratch
   buffers and their VMA allocations. Like `Swapchain` it borrows its `VkDevice` and
   `VmaAllocator`; it additionally keeps the
@@ -168,7 +177,7 @@ Four RAII owners — split by resource lifetime:
 Things that are neither created nor destroyed by the program (`physicalDevice`, the
 `VkQueue` handles, the resolved `RayTracingFunctions`) stay as plain `main()` locals.
 
-`Renderer` is deliberately **not** a fifth owner: it is a parameter bundle over
+`Renderer` is deliberately **not** another owner: it is a parameter bundle over
 borrowed handles (in the spirit of `QueueFamilyIndices`), with no destructor and no
 idle wait. Its handle members are copies of program-lifetime objects; `Swapchain` is
 held by pointer because its members are replaced on every recreate, and the
@@ -185,7 +194,7 @@ before the allocator, device, and surface it borrows from. `VulkanContext` destr
 the allocator immediately before the device. This is the single most important
 ordering invariant in the program, and it is what lets every failure path in `main()`
 be a bare `return 1;` with no manual cleanup. Beyond "after `ctx`", the borrowing
-owners (`Swapchain`, `AccelerationStructure`, `RtPipeline`) need no ordering
+owners (`Swapchain`, `GpuScene`, `AccelerationStructure`, `RtPipeline`) need no ordering
 *relative to each other*: each waits for device idle in its own destructor rather
 than relying on a sibling having done so.
 
@@ -225,26 +234,29 @@ returns `1` on failure (RAII handles the unwind):
 4. **Surface.** `glfwCreateWindowSurface`.
 5. **Physical device.** `pickPhysicalDevice` takes the first GPU passing every
    suitability check (see [Device selection](#device-selection)).
-6. **Logical device.** One queue per unique {trace, present} family, with the ray
-   tracing feature chain enabled.
+6. **Logical device + allocator.** One queue per unique {trace, present} family, with
+   the ray tracing feature chain and `shaderInt64` enabled; then create VMA.
 7. **Ray tracing functions.** `loadRayTracingFunctions` resolves the RT entry points
-   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 10,
-   the pipeline subset by step 11, and `vkCmdTraceRaysKHR` by every frame.
+   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 11,
+   the pipeline subset by step 12, and `vkCmdTraceRaysKHR` by every frame.
 8. **Swapchain.** `createSwapchainResources` — swapchain, image views, per-image
    render-finished semaphores, and the storage output image (created last, so it is
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
-10. **Acceleration structures.** `buildAccelerationStructures` — see
+10. **CPU/GPU scene.** Build M3b's `SceneData` quad, then `createGpuScene` uploads its
+    five device-local buffers through the borrowed frame-0 slot.
+11. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
     command buffer and in-flight fence from step 9 and returns them in the state the
     first `drawFrame` expects; the other frame slots remain signaled and untouched.
-11. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
-    `buildShaderBindingTable` — see [Ray tracing pipeline](#ray-tracing-pipeline).
-12. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
+12. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
+    `buildShaderBindingTable` → `writeSceneDescriptorSet` — see
+    [Ray tracing pipeline](#ray-tracing-pipeline).
+13. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
     it borrows exists, including `ctx.frames.data()` — then the initial
     `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
-13. **Render loop.** `drawFrame(renderer, currentFrame)` per iteration, rotating
+14. **Render loop.** `drawFrame(renderer, currentFrame)` per iteration, rotating
     `currentFrame` modulo `MaxFramesInFlight`; recreate on out-of-date/suboptimal,
     followed by `prepareRtForSwapchain` against the fresh storage image.
 
@@ -296,7 +308,7 @@ structure builds. The spec mandates that support wherever the feature exists, so
 this is a conformance backstop in the "check anyway, fail loudly" family (like the
 trace dispatch gate), not a real capability query.
 
-The ray tracing feature chain
+The ray tracing feature chain, plus core `VkPhysicalDeviceFeatures::shaderInt64`,
 (`VkPhysicalDeviceBufferDeviceAddressFeatures` → `RayTracingPipelineFeatures` →
 `AccelerationStructureFeatures` → `VkPhysicalDeviceFeatures2`) is queried during
 selection and re-used, with the same chain shape, to *enable* those features at
@@ -518,9 +530,9 @@ needs deeper overlap.
 
 ## Acceleration structures
 
-The ray tracing scene: a **BLAS** built over one hardcoded triangle and a **TLAS**
-whose single instance references it with a 45° counter-clockwise Z rotation and a
-+0.5 world-X translation. Built once by `buildAccelerationStructures` after bring-up,
+The ray tracing scene: a **BLAS** built over the two indexed triangles of the
+procedural quad and a **TLAS** whose single instance references it with a 45° X
+rotation. Built once by `buildAccelerationStructures` after `GpuScene` upload,
 before the render loop; the TLAS handle is what the future RT descriptor set binds
 (`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
 acceleration-structure *device address* is only needed where an instance references a
@@ -531,12 +543,12 @@ Decisions and contracts worth preserving:
 - **One transform-layout boundary.** Scene transforms use GLM's column-major
   `glm::mat4`; `toVkTransformMatrix` in `acceleration_structure.cpp` alone copies
   them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The visible non-identity
-  M2 transform proves both the transpose and the rotate-then-translate order before
-  real scene loading introduces N instances.
-- **Staged device-local geometry.** Vertex and index data use
-  `uploadDeviceLocalBuffer`: a transient mapped, host-coherent transfer-source buffer
+  M2 transform proved the transpose; M3b's off-normal-axis rotation makes the
+  closest-hit normal transform observable before real scene loading introduces N instances.
+- **Staged device-local geometry.** `GpuScene` uploads vertex, attribute, index, and
+  record data with `uploadDeviceLocalBuffer`: a transient mapped, host-coherent transfer-source buffer
   feeds a `TRANSFER_DST` device-local buffer, then dies after the submission fence.
-  The destination is parked directly in `AccelerationStructure`, preserving the
+  The destination is parked directly in `GpuScene`, preserving the
   null-guarded partial-failure teardown contract. The instance buffer remains mapped
   host-visible memory because dynamic-scene TLAS updates will rewrite it from the CPU.
 - **Upload visibility crosses submissions deliberately.** Every upload ends with a
@@ -553,7 +565,7 @@ Decisions and contracts worth preserving:
   a BLAS's acceleration-structure address for the TLAS instance requires it of the
   buffer underneath (VUID 09542). The **TLAS backing buffer** deliberately does not:
   nothing queries a TLAS address.
-- **Build-input alignment guard.** The triangle vertex and index device addresses must
+- **Build-input alignment guard.** The quad vertex and index device addresses must
   each be 4-byte aligned, and the non-pointer instance array must be 16-byte aligned.
   Correct usage flags do not guarantee those command-specific alignments, so startup
   checks all three dedicated-buffer addresses and fails with a named diagnostic rather
@@ -575,7 +587,7 @@ Decisions and contracts worth preserving:
   pipeline barrier's second scope covers all later commands in submission order on
   the queue, so it makes the TLAS visible to every future `vkCmdTraceRaysKHR`
   without the frame path needing its own barrier.
-- **Borrowed sync.** Both uploads and the AS build reuse `frames[0]`'s command buffer
+- **Borrowed sync.** All five scene uploads and the AS build reuse `frames[0]`'s command buffer
   and in-flight fence. Each reset → submit → wait cycle leaves the fence signaled,
   exactly the state the next startup submission and first `drawFrame` wait depend on,
   without introducing temporary sync objects that could leak on a failure path. The
@@ -585,14 +597,14 @@ Decisions and contracts worth preserving:
   destroyed immediately after the fence wait rather than held for the program's
   lifetime.
 - **Teardown.** `~AccelerationStructure` waits for device idle, destroys the TLAS and
-  BLAS handles first (they are *placed on* their backing buffers), then the buffers
-  and VMA allocations, all null-guarded.
+  BLAS handles first (they are *placed on* their backing buffers), then its backing,
+  scratch, and instance buffers. `GpuScene` independently owns the geometry buffers.
 
 ## Ray tracing pipeline
 
 The machinery that turns the TLAS into pixels: three shaders, the pipeline over
 them, the shader binding table `vkCmdTraceRaysKHR` indexes into, and the descriptor
-set binding the TLAS and the storage image. Owned by `RtPipeline`
+set binding the TLAS, storage image, geometry records, and materials. Owned by `RtPipeline`
 ([src/rt_pipeline.hpp](src/rt_pipeline.hpp)), created once at startup in three
 steps (`createRtDescriptorSet` → `createRtPipeline` → `buildShaderBindingTable`),
 program-lifetime except for one resize obligation described below.
@@ -604,9 +616,8 @@ Decisions and contracts worth preserving:
   (perspective rays from the camera push constants — see [Camera](#camera) for
   the payload contract — storage-image write at binding 1, `[format("rgba8")]`
   because the device's `shaderStorageImageWriteWithoutFormat` is not enabled),
-  `missMain` (the dark red background), `closestHitMain`
-  (barycentric-derived color, proving attribute interpolation and not just a
-  hit). CMake compiles it with `slangc
+  `missMain` (the dark red background), `closestHitMain` (indexed BDA fetch of
+  normals/UVs followed by a red/green UV gradient). CMake compiles it with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
   self-contained C header (`raytrace_spv.h`, includes prepended by the build) that
   `rt_pipeline.cpp` `#include`s — no runtime file paths, keeping the
@@ -643,8 +654,14 @@ Decisions and contracts worth preserving:
   unconditionally requires a valid SBT-buffer address, and reusing the existing
   buffer satisfies the strict reading for free (the common `{0,0,0}` idiom relies
   on validation-layer leniency).
-- **Descriptor set: binding 0 TLAS, binding 1 storage image, both raygen-only**
-  (miss/closest-hit touch only the ray payload). The pool holds exactly the one
+- **BDA/ABI probe.** `GeometryRecord` carries 64-bit device addresses for pre-offset
+  index, position, and all-scalar 20-byte attribute streams. C++ `static_assert`s pin
+  the 32-byte record layouts; emitted SPIR-V confirms identical offsets/strides.
+  Closest-hit indexes the record with `InstanceID() + GeometryIndex()`, fetches three
+  local indices and interpolates UV/normal data, then transforms normals with the
+  inverse-transpose implied by row-vector multiplication with `WorldToObject3x4()`.
+- **Descriptor set:** binding 0 TLAS and binding 1 storage image are raygen-only;
+  bindings 2–3 are geometry/material storage buffers visible to hit stages. The pool holds exactly the one
   set, without `FREE_DESCRIPTOR_SET_BIT` (the set is only released with the pool).
   The TLAS write chains `VkWriteDescriptorSetAccelerationStructureKHR` via `pNext`;
   the image write declares `IMAGE_LAYOUT_GENERAL`, which the frame's first barrier
@@ -759,11 +776,11 @@ Decisions and contracts worth preserving:
    pre-scaled ray basis) delivered via raygen-only push constants, with GLFW
    fly controls, fixing the bring-up aspect-ratio distortion on resize. See
    [Camera](#camera) for the decisions and contracts.
-2. **Geometry + scene representation.** **Underway** — VMA adoption, the GLM
-   instance-transform proof, and staged device-local geometry uploads have landed;
-   the procedural BDA attribute-fetch probe is next.
+2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
+   staged uploads, and the procedural indexed-quad BDA/ABI probe have landed;
+   the glTF loader plus N-BLAS/N-instance generalization is next.
    Real meshes replacing the
-   hardcoded triangle: indexed vertex data with per-vertex attributes (normals,
+   procedural quad: indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple
    BLASes with instance transforms, and material data in storage buffers indexed
    per instance/geometry. Designed from the start around the split between opaque
