@@ -1000,8 +1000,39 @@ The existing GPU/AS/RT path stays unchanged. Exit: the file-backed quad shows
 the predicted red/green UV gradient; plain and GPU-assisted validation are
 clean. This milestone proves the format boundary, not multi-object AS logic.
 
+**M4a — direct legacy-static OGF conversion, offline proof.** Grow the shared
+compiler behind a command-line front end that parses OGF directly — Blender is
+not an intermediate conversion stage — and converts the externally supplied
+SoC `meshes/objects/dynamics/plitka/plitka1.ogf` acceptance input. Pin the OGF
+v4 normal-model, direct chunk, header shader id `0`, FVF `0x112`, `u16`-index,
+and source shader `default` contracts against that corpus input. Map only that
+pinned id/name pair to v1 opaque semantics and reject every other shader id or
+name until its complete mapping exists; do not silently discard an
+untranslated selector. Keep the corpus asset outside the repository and use
+generated synthetic fixtures in committed tests. Validate geometry, bounds,
+material mapping, determinism, and loud rejection offline. Its
+texture-referencing output is not runtime-ready until the texture consumer
+lands, so this step makes no premature visual-equivalence claim.
+
+**Blender opaque export probe — milestone number deferred.** Add the primary
+modern-content adapter from Blender to the same shared compiler and generate a
+texture-free, opaque, genuinely three-dimensional OGFx probe. This is an
+authoring/export path, not part of legacy OGF migration. Its runtime-ready
+output supplies the controlled real-mesh input for the N-BLAS/N-instance
+generalization below.
+
+**Legacy hierarchy / skeletal-rigid OGF proof — milestone number deferred.**
+The external SoC `meshes/objects/dynamics/balon/bochka_fuel.ogf` is the first
+recognizable legacy acceptance target. Its embedded children, bone/bind data,
+and IK/physics chunks make it intentionally separate from M4a. Convert it
+directly through the CLI only after those OGFx contracts are specified; until
+then, reject it rather than producing a geometry-only file that loses meaning.
+Blender import is an independent visual oracle or deliberate editing path, not
+part of canonical batch conversion. The rendered barrel comparison waits for
+the required runtime consumers, including texture resolution.
+
 **Post-M4 N-BLAS / N-instance generalization — milestone number deferred.**
-This rides the first real converted models. The format-independent
+This rides the runtime-ready Blender opaque probe. The format-independent
 engineering recorded here applies when that generalization lands:
 
 - `AccelerationStructure` vectorizes (`blases`); all BLAS builds batch into

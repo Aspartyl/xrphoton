@@ -142,12 +142,19 @@ a real limitation forces that decision.
 
 ## Sequencing
 
-**PROPOSED.** Nothing in this document precedes the runtime's needs: the
+**PROPOSED.** Tooling grows only around a concrete compiler or runtime
+validation need, and no GUI precedes the CLI foundation it fronts. The
 compiler grows with the [FORMATS.md milestones](FORMATS.md#the-revised-first-ogfx-milestone-m4)
-(M4's shared OGFx writer is its seed), the project model and CLI harden
-around legacy conversion, Blender export, and any later optional import
-adapters, and GUI tools follow the CLI
+(M4's shared OGFx writer is its seed), then M4a makes the first legacy path a
+direct CLI conversion of an externally supplied static OGF corpus asset. That
+path does not automate Blender: Blender import is a visual oracle or an
+intentional editing workflow, while batch migration parses OGF directly. The
+project model and CLI harden around that legacy conversion, Blender export,
+and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own
 loader and renderer, with level tooling following the level-representation
-decisions. Committing to a finer schedule now would invent decisions the
-owner has deferred.
+decisions. The first hierarchical/skeletal-rigid legacy acceptance target is
+the external SoC fuel barrel named in FORMATS.md; conversion must fail until
+all of its nested-visual, bone, and IK/physics semantics have mappings rather
+than silently flattening it. Committing to a finer schedule for the remaining
+formats would invent decisions the owner has deferred.

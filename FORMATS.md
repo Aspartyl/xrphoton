@@ -649,7 +649,10 @@ focus, clear vision" convention applied to tooling.
 - **Generate bounds** — per-geometry and model bounds are computed here once,
   so loaders validate them instead of deriving them.
 - **Resolve material information** — legacy texture/shader references become
-  OGFx material records; ambiguities are reported, not guessed.
+  OGFx material records and geometry flags through explicit semantic mappings;
+  a legacy selector string is omitted only when its complete relevant meaning
+  has a pinned OGFx representation. Unknown or ambiguous shaders are rejected,
+  not guessed or silently reduced to a texture name.
 - **Produce deterministic output** — identical complete inputs, effective
   options, schema version, and compiler version yield byte-identical output.
   The compiler/output revision is bumped for every byte- or
@@ -733,11 +736,26 @@ each arrives with its own consumer.
 
 **After M4, in order:**
 
-1. **Legacy static OGF → converter → OGFx, offline proof first.** The compiler
-   grows source-version detection, real-corpus validation, coordinate handling,
-   bounds generation, and faithful logical material references. Geometry,
-   bounds, and reference names can be checked against the source corpus
-   immediately; an output carrying a texture reference is not runtime-ready
+1. **M4a — legacy static OGF → command-line converter → OGFx, offline proof
+   first.** This is a direct binary conversion path; Blender is neither an
+   intermediate format nor a required batch-conversion dependency. The
+   compiler grows source-version detection, real-corpus validation, coordinate
+   handling, bounds generation, faithful logical texture references, and
+   explicit legacy-shader mapping. Its first local-corpus acceptance input is
+   the externally supplied SoC asset
+   `meshes/objects/dynamics/plitka/plitka1.ogf`: OGF v4 `normal`, direct
+   `HEADER`/`TEXTURE`/`VERTICES`/`INDICES` chunks, header shader id `0`, FVF
+   `0x112`, `u16` indices, and the source engine-shader name `default`. M4a
+   accepts only that pinned id/name pair and maps it to the v1 opaque
+   geometry/material semantics; any other header shader id or shader name is
+   rejected until its complete mapping is specified. OGFx v1 therefore does
+   not need fields that merely carry untranslated legacy shader selectors. The
+   path is supplied to the CLI at test time; no GSC asset
+   or machine-specific absolute path enters this repository. Repository tests
+   use generated synthetic OGF fixtures for the same contracts. Geometry,
+   bounds, the texture reference, and the shader mapping can be checked against
+   the external source corpus immediately; an output carrying a texture
+   reference is not runtime-ready
    until the texture milestone. Visual-equivalence claims wait for that
    consumer instead of silently dropping the source material.
 2. **Blender opaque probe → add-on/export → OGFx.** The primary modern-content
@@ -745,6 +763,27 @@ each arrives with its own consumer.
    N-BLAS generalization under the runtime's current capability gates. A
    direct GLB-to-compiler adapter remains an optional later tool, not part of
    this milestone sequence.
+
+**Legacy hierarchy / skeletal-rigid acceptance target — milestone number
+deferred.** The externally supplied SoC asset
+`meshes/objects/dynamics/balon/bochka_fuel.ogf` is the first recognizable
+legacy-object target after the simple M4a proof; its exact placement does not
+displace the ordered Blender probe above. It deliberately is *not*
+relabelled "static" merely because a barrel appears rigid: its root contains
+embedded child visuals plus bone-name and IK/physics chunks. The canonical
+path remains direct CLI conversion:
+
+```
+bochka_fuel.ogf ──► legacy OGF reader ──► shared compiler ──► bochka_fuel.ogfx
+```
+
+Blender import is an independent visual oracle and an optional editing path,
+not a conversion stage. This target lands only with explicit nested-visual,
+bind/bone, and IK/physics contracts. Until those OGFx chunk families are
+specified, the converter rejects the barrel as unsupported; it must not emit a
+canonical geometry-only OGFx that silently discards the source semantics. The
+first rendered comparison also waits for every referenced runtime consumer
+(including texture resolution) instead of weakening M4a's static v1 profile.
 
 The **N-BLAS / N-instance generalization** of the acceleration-structure and
 scene code rides the Blender-authored opaque probe. Until level/scene data has

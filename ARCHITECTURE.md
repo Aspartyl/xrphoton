@@ -789,9 +789,13 @@ Decisions and contracts worth preserving:
    placement). The quad
    builder migrates into that offline front end, so the runtime keeps exactly one
    model-loading path, and the existing GpuScene/AS/RT pipeline renders it
-   unchanged. After that, the legacy static OGF converter begins offline
-   corpus validation, while the opaque Blender export probe supplies the first
-   runtime-ready real meshes; the N-BLAS/N-instance generalization rides that probe;
+   unchanged. After that, M4a adds the direct command-line legacy-static OGF
+   converter and validates it offline against the externally supplied SoC
+   `plitka1.ogf` corpus asset (repository tests generate their own fixture; no
+   GSC asset or local absolute path is committed). Blender is not part of that
+   conversion path. The opaque Blender export probe then supplies the first
+   runtime-ready real meshes; the N-BLAS/N-instance generalization rides that
+   probe;
    a temporary code-owned preview table supplies world transforms until
    scene/level data has its real owner, without putting instances in OGFx:
    indexed vertex data with per-vertex attributes (normals,
@@ -805,7 +809,14 @@ Decisions and contracts worth preserving:
    legacy X-Ray content both arrive as OGFx through the shared offline compiler,
    never through a runtime interchange loader. Direct Blender export is the
    primary modern-content path; a future optional GLB importer may feed the
-   same compiler offline without becoming another OGFx writer.
+   same compiler offline without becoming another OGFx writer. The first
+   recognizable legacy hierarchy/skeletal-rigid acceptance target is the
+   external SoC `bochka_fuel.ogf`; its direct CLI conversion is deferred until
+   nested visuals, bones/bind data, and IK/physics metadata have explicit
+   contracts, while its rendered comparison additionally waits for texture
+   resolution. Unsupported data is rejected rather than hidden by a
+   geometry-only conversion; Blender serves only as a visual oracle or
+   deliberate artist-editing path.
 3. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
    rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
    buffers, one per `FrameResources` slot (the first genuinely per-frame-written
