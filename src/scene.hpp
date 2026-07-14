@@ -26,6 +26,8 @@ struct SceneGeometry
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
     uint32_t materialIndex = 0;
+    // Classification belongs to a geometry because one mesh can mix opaque
+    // surfaces and alpha-tested cards that require different AS/SBT handling.
     bool alphaTested = false;
 };
 
@@ -34,7 +36,6 @@ struct SceneMaterial
     float baseColorFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     uint32_t baseColorImage = 0;
     float alphaCutoff = 0.5f;
-    bool alphaTested = false;
 };
 
 struct SceneMesh
@@ -71,6 +72,8 @@ struct SceneData
 };
 
 // M3b's deliberately trivial probe. M4 replaces this API and implementation with the
-// glTF loader rather than keeping a second hardcoded-geometry path.
+// runtime OGFx loader (see FORMATS.md); the quad builder itself migrates into an
+// offline front end to the shared compiler writer, so the runtime keeps exactly one
+// geometry-loading path.
 SceneData createProceduralSceneData();
 }

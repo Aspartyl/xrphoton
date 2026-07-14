@@ -1,15 +1,27 @@
 # xrPhoton — Roadmap Step 2 Implementation Plan: Geometry + Scene Representation
 
-This is the pre-implementation plan for roadmap step 2 in
-[ARCHITECTURE.md](ARCHITECTURE.md). It is addressed to the implementer: every
-design question below has its single deliberate answer recorded, with the
-rejected alternative, so implementation can start at milestone 1 without
-re-deriving anything.
+> **Historical through M3b; revised from M4 onward.** Milestones M1–M3b
+> landed as described and their decision records remain accurate history. The
+> old M4 runtime-interchange loader and the numbered milestones that followed
+> it are superseded. The runtime now loads **OGFx**, xrPhoton's modernized
+> evolution of X-Ray's OGF. [FORMATS.md](FORMATS.md) is the source of truth
+> for the revised M4 round-trip and asset-pipeline sequence: OGFx is the only
+> runtime model format, while an optional interchange importer may exist only
+> as an offline front end to the shared compiler. The format-independent
+> designs below — the N-BLAS generalization, opaque/alpha-tested hit-group
+> split, `RayTypeCount` SBT scheme, and texture design — remain reference
+> designs whose new milestone numbers are deliberately unassigned. Check
+> FORMATS.md before implementing any post-M3b milestone.
+
+This is the implementation record for roadmap step 2 in
+[ARCHITECTURE.md](ARCHITECTURE.md). M1–M3b describe landed work; later
+format-independent sections remain design references, subject to the revised
+sequence in FORMATS.md.
 
 ## 1. Goal and scope
 
-Replace the hardcoded triangle with real meshes loaded from an interchange
-format: indexed vertex data with per-vertex normals/UVs fetched in the
+Replace the hardcoded triangle with real meshes loaded from asset files:
+indexed vertex data with per-vertex normals/UVs fetched in the
 closest-hit shader via buffer device addresses, multiple BLASes with
 per-instance transforms, material data in storage buffers indexed per geometry,
 and the opaque/alpha-tested geometry split built into the hit-group/SBT layout
@@ -24,31 +36,31 @@ leaves the app building and rendering something verifiable on screen, with
 clean validation. The triangle (later: quad, later: scene) never stops
 rendering for longer than the work inside one milestone. Risk retires
 front-to-back: allocator first, math second, the Slang/BDA/descriptor unknowns
-third, the loader and N-BLAS generalization fourth, SBT restructuring fifth,
-textures last.
+third, the OGFx round-trip fourth, then real-content conversion and N-BLAS
+generalization, SBT restructuring, and textures.
 
 ## 2. Non-goals
 
 Each deferred item names what picks it up, per the trigger-based-engineering
 convention:
 
-- **X-Ray content conversion** — a separate later concern per the roadmap; this
-  step establishes glTF as the interchange target the converter will eventually
-  emit.
+- **X-Ray content conversion** — the offline converter and its OGFx target
+  are specified in [FORMATS.md](FORMATS.md); it follows the revised M4 as
+  the first follow-on.
 - **Dynamic scene** (TLAS refits, skinning) — roadmap step 3. This plan only
   avoids painting it into a corner (see §8).
 - **Lighting / path tracing** — roadmap step 4. Closest-hit shading stays a
   debug visualization (baseColor × a world-space normal term).
-- **Alpha *blending*** — glTF `BLEND` materials are treated as opaque with a
-  load-time warning line; order-independent transparency is a
+- **Alpha *blending*** — blend-mode (translucent) materials are compiled as
+  opaque with a conversion-time warning; order-independent transparency is a
   path-tracing-step (step 4) concern.
 - **Mipmaps / texture LOD** — textures upload a single mip and shaders sample
   `SampleLevel(uv, 0)`. LOD selection needs ray differentials or a cone
   heuristic, which belongs to step 4 where the ray model is decided. No
   mip-generation machinery is built for a consumer that does not exist.
-- **Asset caching, hot reload, multiple scenes** — one `.glb` loaded at
-  startup, path from `argv[1]`. Trigger: real content iteration during the
-  game-systems era, not before.
+- **Asset caching, hot reload, multiple scenes** — revised M4 loads its one
+  OGFx test asset at startup. Arbitrary asset selection and reload trigger on
+  real content iteration during the game-systems era, not before.
 - **Multi-file Slang modules and the slangc dependency-file CMake wiring** —
   deferred exactly as ARCHITECTURE.md specifies; the trigger (a shader
   `import`) does not fire this step (see D10 and §9).
@@ -58,39 +70,28 @@ convention:
 One answer per question, per the "one focus, clear vision" convention; the
 rejected alternative is recorded so the question stays closed.
 
-### D1. Interchange format: glTF 2.0 (.glb), parsed with vendored cgltf
+### D1. Runtime model format: OGFx, written and converted offline
 
-**Decision:** glTF 2.0, binary `.glb` container, parsed by **cgltf** — a
-single-header C library vendored at `third_party/cgltf/cgltf.h`. Image decode
-(glTF mandates PNG/JPEG) via **stb_image**, vendored at
-`third_party/stb/stb_image.h`. Each vendored header is pinned to a named
-upstream release (recorded in a comment at the top of the file) and ships with
-its upstream `LICENSE` file alongside it in `third_party/<lib>/`.
+**Decision (revised — supersedes the original interchange-format choice):**
+the runtime loads **OGFx**. The format, its container and validation rules,
+and the revised milestone sequence live in [FORMATS.md](FORMATS.md). No
+interchange format is part of the runtime. External and test content
+primarily enters through Blender; a future optional interchange importer may
+feed the shared compiler offline, but can never become a runtime loader or a
+second OGFx writer. The original decision recorded here — a third-party
+interchange format parsed by a vendored runtime library — is void, along with
+its vendored-parser plan.
 
-**Rationale:** glTF's `material.alphaMode == MASK` + `alphaCutoff` is a 1:1
-encoding of this step's central design axis — the alpha-tested geometry class;
-it natively carries indexed primitives, per-vertex normals/UVs, a node
-hierarchy with instance transforms, and per-primitive materials — exactly the
-data model this step builds. cgltf is ~7k lines of dependency-free C99, parses
-`.glb` including embedded buffers and images, and vendoring a pinned single
-header is zero build-system risk on Linux.
-
-**Vendoring rule (one answer for the whole project):** single-file C/C++
-headers are vendored under `third_party/<lib>/` with their license, and the
-directory is added as a `SYSTEM` include so `-Wall -Wextra` stays clean.
-Multi-header libraries come from system `find_package` (the existing
-Vulkan/glfw convention). This step adds three vendored headers (cgltf,
-stb_image, vk_mem_alloc) and one system package (glm). All `*_IMPLEMENTATION`
-macros live in one dedicated TU (see D3) so no engine TU pays their compile
-cost.
-
-**Rejected:** *tinygltf* (drags in json.hpp + stb as sub-dependencies and uses
-C++ exceptions in its API — clashes with the no-exceptions convention);
-*fastgltf* (fastest, but a real CMake package needing FetchContent or a distro
-package — heavier acquisition for no benefit at this scale); *OBJ* (no
-alphaMode, no scene graph, no material model — would force sidecar metadata,
-i.e. a custom format in disguise); *a custom format* (a format with no
-authoring tool; the X-Ray converter later needs a standard target anyway).
+**Vendoring rule (one answer for the whole project — unchanged, and landed
+with VMA in M1):** single-file C/C++ headers are vendored under
+`third_party/<lib>/` with their license, each pinned to a named upstream
+release (recorded in a comment at the top of the file) and shipped with its
+upstream `LICENSE` file, and the directory is added as a `SYSTEM` include so
+`-Wall -Wextra` stays clean. Multi-header libraries come from system
+`find_package` (the existing Vulkan/glfw convention). This step vendored one
+header (vk_mem_alloc) and added one system package (glm). All
+`*_IMPLEMENTATION` macros live in one dedicated TU (see D3) so no engine TU
+pays their compile cost.
 
 ### D2. Math library: adopt GLM (system package), retire the in-house Vec3
 
@@ -122,8 +123,9 @@ instance-population code; step 3's refit path lives in the same TU):
 VkTransformMatrixKHR toVkTransformMatrix(const glm::mat4& m);
 ```
 
-**Rationale:** glTF node hierarchies require 4×4 multiplies,
-quaternion→matrix, and TRS composition at load; instance transforms require
+**Rationale:** scene hierarchies require 4×4 multiplies,
+quaternion→matrix, and TRS composition during offline compilation and future
+scene loading; instance transforms require
 the column-major → row-major 3×4 conversion. Growing in-house math to cover
 that is scope with no engine value and a classic source of transpose bugs.
 `camera.hpp`'s own comment says `Vec3` stays minimal "until a broader math
@@ -136,8 +138,8 @@ transpose/handedness bugs, zero differentiation value for a renderer project).
 ### D3. VMA: full adoption as the engine allocator, threaded through VulkanContext
 
 **Decision:** Vendor `third_party/vma/vk_mem_alloc.h` (pinned release + LICENSE
-per D1). `VMA_IMPLEMENTATION` — and, when they land, `CGLTF_IMPLEMENTATION` and
-`STB_IMAGE_IMPLEMENTATION` — are defined in one new dedicated TU,
+per D1's vendoring rule). `VMA_IMPLEMENTATION` — and any later vendored
+implementation macros — are defined in one new dedicated TU,
 `src/third_party_impl.cpp` (wrapped in `#pragma GCC diagnostic` suppressions).
 Rationale for the dedicated TU: `vulkan_context.cpp` is the most-edited file
 this step, and VMA's implementation is a large recompile tax to attach to it;
@@ -228,7 +230,7 @@ geometry buffers, each uploaded once via staging:
 |---|---|---|
 | `positionBuffer` | tightly packed `float3` positions, all geometries concatenated | `AS_BUILD_INPUT_READ_ONLY \| SHADER_DEVICE_ADDRESS \| TRANSFER_DST` |
 | `attributeBuffer` | `VertexAttributes` records (20 B, D8), same order | `SHADER_DEVICE_ADDRESS \| TRANSFER_DST` |
-| `indexBuffer` | `uint32` indices, all geometries concatenated (uint16 sources widened at load) | `AS_BUILD_INPUT_READ_ONLY \| SHADER_DEVICE_ADDRESS \| TRANSFER_DST` |
+| `indexBuffer` | `uint32` indices, all geometries concatenated (legacy 16-bit sources widened offline by the converter — FORMATS.md) | `AS_BUILD_INPUT_READ_ONLY \| SHADER_DEVICE_ADDRESS \| TRANSFER_DST` |
 
 **Aligned suballocation — the deferred item's definitive answer:** geometry
 ranges are packed at **element granularity** — each geometry's range starts at
@@ -304,7 +306,7 @@ skinning writes strided); *an alignment constant with inter-range padding*
 
 **Decision:** one flat array `GeometryRecord[totalGeometryCount]` in a
 device-local storage buffer (descriptor binding 2), one record per
-(BLAS, geometry) pair — i.e. per glTF primitive. Every TLAS instance sets
+(BLAS, geometry) pair — i.e. per `SceneGeometry` range. Every TLAS instance sets
 `instanceCustomIndex = meshes[meshIndex].firstGeometry` (the flat index of its
 BLAS's first geometry). Hit shaders compute:
 
@@ -418,7 +420,7 @@ region keeps its valid-address-with-zero-size shape (VUID 03692).
   `[geo0·radiance, geo0·shadow, geo1·radiance, …]`.
 
 **Opacity flags:** each `VkAccelerationStructureGeometryKHR` sets
-`VK_GEOMETRY_OPAQUE_BIT_KHR` iff its material class is opaque; alpha-tested
+`VK_GEOMETRY_OPAQUE_BIT_KHR` iff its geometry class is opaque; alpha-tested
 geometries set no flags (`NO_DUPLICATE_ANY_HIT_INVOCATION` deliberately
 omitted — the alpha test is idempotent and the flag costs traversal
 performance). `RAY_FLAG_FORCE_OPAQUE` is **removed** from the raygen
@@ -439,19 +441,19 @@ step 4 — parameterizing by `RayTypeCount` now costs nothing).
 ### D7. Alpha testing: structural split first (one-milestone procedural alpha), textures as the final milestone
 
 **Decision:** both land this step, sequenced split-before-textures. The
-hit-group/SBT split lands in M5 with a file-private procedural alpha function
-in the any-hit (a UV checkerboard tested against `alphaCutoff`); the final
-milestone M6 replaces that function's body with real texture alpha and deletes
-the checkerboard.
+hit-group/SBT split lands in its own later milestone with a file-private
+procedural alpha function in the any-hit (a UV checkerboard tested against
+`alphaCutoff`); the following texture milestone replaces that function's body
+with real texture alpha and deletes the checkerboard.
 
 **The ordering is a conscious resolution of a contested point.** The
 checkerboard is scaffolding *inside* the step — alive for exactly one
 milestone, deleted by the next, never a parallel system that survives the
-step. Its benefit is that M5's failure domain — the step's most
+step. Its benefit is that the split milestone's failure domain — the step's most
 regression-prone surface (SBT restructuring, hit-group selection, geometry
 flags) — contains **zero image machinery**: a mis-selected hit group shows as
 a cutout on the wrong object, not as "maybe the texture upload is broken".
-Textures then land in M6 against an already-proven traversal structure. The
+Textures then land against an already-proven traversal structure. The
 alternative (textures before the split, zero throwaway) was rejected because
 it stacks the descriptor-indexing/feature/upload unknowns *under* the SBT
 restructuring, widening the failure domain of the riskiest milestone.
@@ -460,7 +462,7 @@ Real texture-alpha testing is in-scope because the roadmap calls any-hit alpha
 testing "the engine's single biggest traversal cost lever" — a lever is not
 validated until it pulls real content.
 
-**Texture/descriptor design (M6):**
+**Texture/descriptor design (later texture milestone):**
 
 - **Fallback texture, no sentinel branch:** texture array index 0 is always a
   generated 1×1 opaque-white `R8G8B8A8_SRGB` image; materials without a
@@ -501,8 +503,12 @@ validated until it pulls real content.
   `vkCmdCopyBufferToImage` → `TRANSFER_DST → SHADER_READ_ONLY_OPTIMAL` with
   `dstStageMask = RAY_TRACING_SHADER` (the image-barrier equivalent of D4's
   trailing visibility barrier) — recorded on the borrowed frame-0 command
-  buffer like all startup uploads. stb_image decodes from the glb's embedded
-  bufferViews at load time into `SceneData` (D8).
+  buffer like all startup uploads. The texture milestone must first decide how
+  an OGFx logical texture reference resolves to decoded RGBA8 bytes (runtime
+  DDS decode versus a separately compiled texture payload are still open);
+  only then does that data enter `SceneData` (D8). Revised M4 intentionally
+  rejects nonempty texture references rather than choosing this early, and
+  that gate remains through the N-BLAS and alpha-split probes.
 
 **Rejected:** *`PARTIALLY_BOUND` + sentinel* (an extra device feature plus a
 divergent shader branch, to avoid ~1000 startup descriptor writes that cost
@@ -520,57 +526,35 @@ grow per-frame structures in):
 - **[src/scene.hpp](src/scene.hpp) / [src/scene.cpp](src/scene.cpp)** —
   `SceneData`, a plain value struct (no Vulkan, no VMA; GLM only — the header
   includes `<glm/glm.hpp>`, keeping the `camera.hpp` precedent of
-  Vulkan-free), plus `loadSceneData`. cgltf/stb parsing is confined to
-  `scene.cpp`; no third-party type leaks out.
+  Vulkan-free), plus the scene-loading entry point (the OGFx loader per
+  [FORMATS.md](FORMATS.md)). File parsing is confined to `scene.cpp`; no
+  parser type leaks out.
 - **[src/gpu_scene.hpp](src/gpu_scene.hpp) / [src/gpu_scene.cpp](src/gpu_scene.cpp)**
   — `GpuScene`, the RAII owner of every scene GPU resource, plus the GPU
   record ABI structs (`GeometryRecord`, `MaterialRecord`) and
   `createGpuScene`. The header includes Vulkan + `vma_fwd.hpp` (D3's
   forwarding header — never `vk_mem_alloc.h`) and forward-declares
-  `SceneData` (header-acyclicity rule).
+  `SceneData` and `RayTracingFunctions` (header-acyclicity rule).
 
-Struct definitions in §4.1/§4.2. Loading flattens the glTF node hierarchy into
-world-space `SceneInstance`s (mesh → BLAS, node-with-mesh → instance).
-Loader rules, all failing loudly to `std::cerr` (never degrading silently):
+Struct definitions in §4.1/§4.2. The original rule list here was written
+against the superseded interchange format. The shared compiler validates
+source data before writing; the runtime OGFx loader defensively repeats every
+structural and semantic check that can be expressed against the serialized
+file (magic/version gates, chunks, exact-stride arrays, indices, ranges,
+strings, and finite bounds). [FORMATS.md](FORMATS.md) specifies those
+obligations. Device-dependent limits remain startup checks after loading.
+Every failure is loud and names its input; there is no silent degradation.
 
-- The parse is followed by `cgltf_validate` — the library's own consistency
-  pass runs before any engine interpretation of the data.
-- Accessor reads go **exclusively** through `cgltf_accessor_unpack_floats` /
-  `cgltf_accessor_read_index`, so strided and sparse accessors are handled by
-  the library rather than silently misread.
-- Non-`TRIANGLES` primitive topology and **non-indexed primitives** are hard
-  load errors — both legal glTF, both deliberately rejected: one topology, one
-  index path (the same stance for both).
-- Positions and normals are required (Blender always exports them). UVs
-  default to zero **only for untextured materials** — a textured material over
-  a UV-less primitive would silently sample a single texel (degenerate for
-  `MASK` content especially), so that combination is a hard error.
-- Index component types u8/u16/u32 all normalize to `uint32` at load
-  (`cgltf_accessor_read_index` makes the widening free) — one engine-wide
-  index type keeps the alignment story and BLAS setup single-valued. Index
-  values are bounds-checked against the primitive's vertex count; index
-  counts must be nonzero and divisible by 3; position/normal/UV accessor
-  counts must agree; empty primitives and meshes are load errors — all of
-  which guards `maxVertex = vertexCount - 1` and the unchecked BDA reads
-  downstream.
-- A primitive without a material (legal glTF) gets the glTF **default
-  material**: opaque, `baseColorFactor` 1,1,1,1, fallback texture slot 0.
-- Any entry in `extensionsRequired` the loader does not implement is a hard
-  load error (this covers `KHR_texture_transform` and friends);
-  `extensionsUsed`-only extensions are ignored with one warning line.
-- The `.glb` must be self-contained: URI-referenced external buffers or
-  images are hard errors.
-- Texture references must use `TEXCOORD_0` — `texCoord != 0` is a hard error
-  (one UV channel this step). Sampler states other than repeat-wrap +
-  linear filtering degrade to the shared sampler with a warning (a
-  *documented* degradation — see §6).
-- Scene selection: the asset's default scene, else scene 0; a file with no
-  scenes is an error.
-- A zero-determinant instance transform (legal glTF, commonly a hide-object
-  idiom; `WorldToObject` is undefined under it) is **skipped with a warning
-  naming the node**; a scene left with no renderable instances is an error.
-- `alphaMode`: `OPAQUE` → opaque; `MASK` → alpha-tested with `alphaCutoff`
-  (default 0.5); `BLEND` → opaque plus one warning line.
+- One topology (triangles) and indexed geometry only; hard errors over
+  guessed repairs.
+- Index values bounds-checked against their range's vertex count; index
+  counts nonzero and divisible by 3; empty geometries and meshes are load
+  errors — all of which guards `maxVertex = vertexCount - 1` and the
+  unchecked BDA reads downstream.
+- OGFx stores models, not world-instance placement. When a future scene/level
+  producer supplies transforms, it rejects or explicitly skips a
+  zero-determinant transform (`WorldToObject` is undefined) with a diagnostic
+  naming the instance; a scene left with no renderable instances is an error.
 - Geometry counts are element-indexed `uint32_t` (`firstVertex`/`firstIndex`
   etc.), so no byte-offset field exists to silently cap a buffer at 4 GiB;
   byte offsets are derived in `VkDeviceSize` math at upload/build time.
@@ -585,38 +569,39 @@ Loader rules, all failing loudly to `std::cerr` (never degrading silently):
   `maxInstanceCount`, and each BLAS's summed triangle count against
   `maxPrimitiveCount`.
 
-**Test scene:** one committed asset `assets/test_scene.glb`, authored in
-Blender **once**, at the loader milestone (M4), already containing every
-validation probe the later milestones consume: a checker-textured ground
-plane; two boxes with distinct baseColor textures at translated/rotated
-transforms; one mesh instanced twice (rotated + translated — proves shared
-BLASes and the transform path); one mesh containing both an opaque and an
-alpha-MASK primitive (proves mixed-BLAS `GeometryIndex()` selection); and an
-alpha-cutout card with a leaf-style RGBA texture in front of a box.
-Additionally: every material carries a **distinct `baseColorFactor`** — M4
-shades from factors alone (textures are not sampled until M6), so distinct
-factors are what make M4's per-object-color oracle able to see at all; one
-box is **parented under a rotated + translated empty** (proves node-hierarchy
-*flattening*, not just per-node TRS); and a **sphere instance under a non-uniform scale composed with a
-rotation** — the inverse-transpose probe, and the geometry choice is
-load-bearing: for axis-aligned normals under a purely diagonal scale the
-plain inverse, the inverse-transpose, and even *no* transform all agree (a
-diagonal matrix is symmetric, and normalization eats the magnitude), so a
-scaled box probes nothing; the sphere's smoothly varying normals catch a
-missing transform, and the composed rotation is what separates inverse from
-inverse-transpose. M4
-consumes its geometry/materials, M5 its MASK classes, M6 its textures — no
-repeated DCC round-trips. Scene path comes from `argv[1]`, defaulting to
-`"assets/test_scene.glb"` — orchestration-only parsing in `main.cpp`, no flag
-system.
+**Probe model and placement fixture (deferred until multi-mesh content arrives
+via the FORMATS.md follow-ons):** one Blender project feeds deterministic,
+milestone-specific OGFx probe outputs through the same add-on/compiler writer;
+none contains world instances. The N-BLAS generalization adds a small
+file-private preview table mapping mesh indices to deterministic transforms.
+That table is temporary bring-up scene ownership, not another geometry path or
+file format, and is retired when level/scene data gets its real owner.
+
+The first output is opaque-only and carries no texture references: a ground
+plane, two box meshes with distinct material factors, one shared mesh, and a
+sphere. The placement table references the shared mesh twice (rotated and
+translated), and applies non-uniform scale composed with rotation to the sphere
+for the inverse-transpose oracle. Every material has a distinct
+`baseColorFactor` so identity errors remain visible before textures. One source
+mesh is parented under a rotated + translated empty and compiled into
+model-local geometry, proving offline hierarchy flattening. The sphere is
+load-bearing: axis-aligned normals under a diagonal scale cannot distinguish
+the plain inverse from the inverse-transpose after normalization, while its
+varying normals plus rotation can.
+
+The split-milestone output adds a mesh containing both opaque and alpha-tested
+geometry plus an alpha-cutout card, but still no texture references. The
+texture-milestone output adds the checker ground and leaf-style RGBA references
+only after their carrier/resolver is decided. Regeneration is automated from
+one authoring project; no immutable output is asked to cross a capability gate.
 
 **Rejected:** *one merged `Scene` owner holding CPU vectors + GPU handles*
 (puts Vulkan/VMA into the loader's header, blurs the CPU-static vs.
 GPU-dynamic boundary step 3 depends on, and breaks the Vulkan-free-data-unit
 precedent for no gain); *keeping any hardcoded-geometry path alongside the
 loader* (parallel systems — the procedural quad builder used mid-step is
-deleted the milestone the loader lands); *a scene directory format* (one file
-is one scene; directories add convention with no content to justify it).
+deleted the milestone the loader lands); *putting the preview transform table
+inside OGFx* (world placement is scene/level ownership, not model data).
 
 ### D9. Ownership, lifetime, and bring-up order
 
@@ -721,8 +706,8 @@ float3 w = float3(1.0 - attribs.barycentrics.x - attribs.barycentrics.y,
 
 **Normals are transformed object → world with the inverse-transpose** —
 non-negotiable, because rotated instances arrive in the very milestone whose
-visual oracle depends on shading looking right, and glTF permits non-uniform
-scale. `WorldToObject3x4()`'s 3×3 block is the plain inverse of the
+visual oracle depends on shading looking right, and content transforms may
+carry non-uniform scale. `WorldToObject3x4()`'s 3×3 block is the plain inverse of the
 object-to-world 3×3, and HLSL's row-vector `mul(n, M)` applies the matrix's
 transpose — so the pair below yields exactly the inverse-transpose. (The
 tempting `4x3` variant is the transpose of the `3x4` one, so it would silently
@@ -733,8 +718,8 @@ the formula NVIDIA's DXR references use.)
 float3 worldNormal = normalize(mul(objectNormal, (float3x3)WorldToObject3x4()));
 ```
 
-Any-hit (M6 form; M5's checkerboard placeholder replaces only the alpha
-source):
+Any-hit (texture-milestone form; the preceding split milestone's checkerboard
+placeholder replaces only the alpha source):
 
 ```slang
 [shader("anyhit")]
@@ -748,13 +733,14 @@ void anyHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes att
 }
 ```
 
-Raygen changes, milestone-pinned: `TMax` rises to `1.0e4` when the real scene
-lands (M4), and *only* `TMax` changes at M4. The `RAY_FLAG_FORCE_OPAQUE` →
-`RAY_FLAG_NONE` flip and the geometry-multiplier argument → `RayTypeCount`
-land atomically at M5 together with the per-geometry hit records and instance
-sbtOffsets: the three are one indivisible SBT-selection change, and applying
-the multiplier against M4's still-one-record hit region would index hit
-records outside the region entirely. Closest-hit shading this step:
+Raygen changes, milestone-pinned: `TMax` rises to `1.0e4` when real converted
+scene extents first require it; the revised M4 quad does not need that change.
+The `RAY_FLAG_FORCE_OPAQUE` → `RAY_FLAG_NONE` flip and the geometry-multiplier
+argument → `RayTypeCount` land atomically in the opaque/alpha split milestone
+together with the per-geometry hit records and instance SBT offsets: the three
+are one indivisible SBT-selection change. Applying the multiplier against the
+generalization milestone's still-one-record hit region would index outside
+that region entirely. Closest-hit shading this step:
 `payload.color = baseColor.rgb * (0.2 + 0.8 * abs(dot(worldNormal, -WorldRayDirection())))`
 — a debug visualization replaced wholesale by step 4. The payload stays
 `{ float3 color; }`; the `[format("rgba8")]` storage-image attribute and the
@@ -780,7 +766,7 @@ struct VertexAttributes {
 };
 static_assert(sizeof(VertexAttributes) == 20);
 
-struct SceneGeometry {            // one glTF primitive == one BLAS geometry == RayTypeCount SBT hit records
+struct SceneGeometry {            // one geometry range == one BLAS geometry == RayTypeCount SBT hit records
     uint32_t firstVertex;         // element index into positions/attributes
     uint32_t vertexCount;         // feeds triangles.maxVertex = vertexCount - 1
     uint32_t firstIndex;          // element index into indices (mesh-local values stored)
@@ -792,7 +778,6 @@ struct SceneMaterial {
     float baseColorFactor[4];
     uint32_t baseColorImage;      // index into images; 0 == generated 1x1 white fallback
     float alphaCutoff;
-    bool alphaTested;
 };
 struct SceneMesh     { uint32_t firstGeometry; uint32_t geometryCount; };  // one BLAS
 struct SceneInstance { uint32_t meshIndex; glm::mat4 transform; };         // one TLAS instance, world-space
@@ -870,6 +855,7 @@ struct GpuScene {                                  // RAII owner
 
 VkResult createGpuScene(GpuScene* gpu, const SceneData& scene,
     VkDevice device, VmaAllocator allocator,
+    const RayTracingFunctions& functions,
     VkCommandBuffer commandBuffer, VkQueue traceQueue, VkFence fence);
 ```
 
@@ -894,8 +880,8 @@ first need it:
   Carrying buffer device addresses as `uint64_t` in shader code makes the
   SPIR-V module declare the `Int64` capability, and using 64-bit integer types
   in shaders without the feature enabled is invalid API usage — the feature is
-  owed to the *first BDA fetch*, not to M6's consolidation.
-- **M6:** `VkPhysicalDeviceVulkan12Features` enters both chains carrying
+  owed to the *first BDA fetch*, not to the later feature-chain consolidation.
+- **Texture milestone:** `VkPhysicalDeviceVulkan12Features` enters both chains carrying
   `bufferDeviceAddress = VK_TRUE` and
   `shaderSampledImageArrayNonUniformIndexing = VK_TRUE`. **The standalone
   `VkPhysicalDeviceBufferDeviceAddressFeatures` struct is removed in the same
@@ -978,7 +964,8 @@ broken staging path is isolated here, against a known-good shader side.
 The triangle becomes an indexed **quad** (4 vertices, 6 indices — proves
 shared-vertex indexing) with normals/UVs, built by a file-private procedural
 `SceneData` builder (one mesh, one instance, one material — scaffolding
-deleted in M4). New TUs `src/scene.*` and `src/gpu_scene.*` per D8
+migrated into the revised M4 front end to the shared writer). New TUs `src/scene.*` and
+`src/gpu_scene.*` per D8
 (§4.1/§4.2, no textures yet); unified position/attribute/index buffers +
 GeometryRecord/Material buffers; AS build consumes `sceneData`/`gpuScene`
 (still 1 BLAS); `shaderInt64` enters the feature query/enable chains and the
@@ -1003,49 +990,53 @@ cannot see BDA out-of-bounds reads, this half's dominant silent-failure class.
 This retires the step's biggest unknowns — Slang pointers, layout ABI,
 hit-stage descriptors — on trivial content.
 
-**M4 — glTF loader + N BLASes / N instances; the procedural builder dies.**
-The loader is pure CPU (low risk), so it lands *together with* the N-BLAS
-generalization rather than after a throwaway procedural multi-mesh scene:
-multi-mesh content comes from the committed `.glb` from its first appearance.
-Vendor cgltf + stb_image (+ LICENSEs, implementations into
-`third_party_impl.cpp`); implement `loadSceneData` per D8 (flattening,
-widening, material parsing incl. alphaMode → class; images decoded but not yet
-consumed); delete the procedural quad builder; author and commit
-`assets/test_scene.glb` **once, with all probes embedded** (D8); `argv[1]`
-scene path; `TMax = 1.0e4`. `AccelerationStructure` vectorizes (`blases`); all
-BLAS builds batch into **one** `cmdBuildAccelerationStructures` call with
-per-BLAS ranges and one shared scratch arena sized
-`max(Σ aligned per-BLAS scratch, aligned TLAS scratch)`: the BLAS regions are
-concurrent (batched builds are unordered) so they *sum*, disjoint and each
-address-`alignUp`ed; the TLAS build then reuses the arena from its base —
-safe because existing barrier #1 orders the reuse. So: batched BLAS builds →
-barrier #1 → TLAS(`primitiveCount = N`) → barrier #2, contracts unchanged. Instances get
-`instanceCustomIndex = firstGeometry`, real transforms via
-`toVkTransformMatrix`, mask 0xFF. **Interim SBT contract — load-bearing for
-M4's runnability:** instances set
-`instanceShaderBindingTableRecordOffset = 0` and the raygen `TraceRay` keeps
-its geometry multiplier at `0` (today's values) until M5 restructures the hit
-region — every instance routes to the single existing hit record; only
-`instanceCustomIndex` is populated here, so a mis-render at M4 is a
-loader/transform bug, never SBT routing. Closest-hit shading becomes
-baseColor × world-normal term.
-Files: `third_party/cgltf/`, `third_party/stb/` (new), `src/scene.cpp`,
-`src/third_party_impl.cpp`, `src/acceleration_structure.{hpp,cpp}`,
-`src/main.cpp`, `assets/test_scene.glb` (new), `CMakeLists.txt`,
-`shaders/raytrace.slang`.
-Exit: the authored scene renders — distinctly colored, distinctly placed
-objects at predicted positions; per-object color proves the
-`instanceCustomIndex + GeometryIndex()` identity; the twice-instanced rotated
-mesh shades correctly (proves the world-space normal transform under
-rotation). A deliberate edit to the `.glb` (move one box) shows up on screen
-(proves data flows from the file); the nested-empty box and the
-scaled-and-rotated sphere shade at their predicted places (proves hierarchy
-flattening and the inverse-transpose under real transforms).
-Validation clean **including a synchronization-validation run** (batched
-builds + TLAS scratch reuse); release preset built and run for a perf sanity
-check.
+**Revised M4 — OGFx round-trip.** [FORMATS.md](FORMATS.md) is authoritative
+for its exact scope: move the procedural quad into an offline writer front end, produce
+`test_quad.ogfx` through the first shared-compiler serializer, load and
+validate that file at runtime, reconstruct the
+model portions of `SceneData`, then have the M4 caller append one identity
+preview instance (the reusable decoder returns no world placement).
+The existing GPU/AS/RT path stays unchanged. Exit: the file-backed quad shows
+the predicted red/green UV gradient; plain and GPU-assisted validation are
+clean. This milestone proves the format boundary, not multi-object AS logic.
 
-**M5 — Opaque/alpha-tested split: hit groups, per-geometry SBT, any-hit (procedural alpha).**
+**Post-M4 N-BLAS / N-instance generalization — milestone number deferred.**
+This rides the first real converted models. The format-independent
+engineering recorded here applies when that generalization lands:
+
+- `AccelerationStructure` vectorizes (`blases`); all BLAS builds batch into
+  **one** `cmdBuildAccelerationStructures` call with per-BLAS ranges and one
+  shared scratch arena sized
+  `max(Σ aligned per-BLAS scratch, aligned TLAS scratch)`: the BLAS regions
+  are concurrent (batched builds are unordered) so they *sum*, disjoint and
+  each address-`alignUp`ed; the TLAS build then reuses the arena from its
+  base — safe because existing barrier #1 orders the reuse. So: batched BLAS
+  builds → barrier #1 → TLAS(`primitiveCount = N`) → barrier #2, contracts
+  unchanged.
+- Instances get `instanceCustomIndex = firstGeometry`, real transforms via
+  `toVkTransformMatrix`, mask 0xFF. **Interim SBT contract — load-bearing
+  for the generalization milestone's runnability:** instances set
+  `instanceShaderBindingTableRecordOffset = 0` and the raygen `TraceRay`
+  keeps its geometry multiplier at `0` until the opaque/alpha split milestone
+  restructures the hit region — every instance routes to the single existing
+  hit record; only `instanceCustomIndex` is populated here, so a mis-render
+  is a loader/transform bug, never SBT routing. Closest-hit shading becomes
+  baseColor × world-normal term; `TMax` rises to `1.0e4` when real probe
+  extents arrive.
+- Exit oracles: distinctly colored, distinctly placed objects at predicted
+  positions; per-object color proves the
+  `instanceCustomIndex + GeometryIndex()` identity; the twice-instanced
+  rotated mesh shades correctly (proves the world-space normal transform
+  under rotation). A deliberate edit to the source asset (move one box)
+  shows up on screen (proves data flows from the file); the empty-parented box
+  and the scaled-and-rotated sphere shade at their predicted places (proves
+  hierarchy flattening and the inverse-transpose under real transforms).
+  Validation clean **including a synchronization-validation run** (batched
+  builds + TLAS scratch reuse); release preset built and run for a perf
+  sanity check.
+
+**Later — opaque/alpha-tested split: hit groups, per-geometry SBT, any-hit
+(procedural alpha); milestone number deferred.**
 Pipeline grows to 4 groups; the SBT hit region becomes per-geometry records
 selected by class, all math via `RayTypeCount` (D6, including the
 parameterized miss region); instances set
@@ -1053,19 +1044,22 @@ parameterized miss region); instances set
 TraceRay multiplier = `RayTypeCount`; `RAY_FLAG_FORCE_OPAQUE` removed;
 per-geometry `VK_GEOMETRY_OPAQUE_BIT_KHR` only for the opaque class; the
 24-bit assert per D5. `anyHitMain` tests a UV-checkerboard alpha against
-`alphaCutoff` — the one-milestone placeholder D7 justifies, deleted in M6.
+`alphaCutoff` — the one-milestone placeholder D7 justifies, deleted by the
+following texture milestone.
 Files: `src/rt_pipeline.{hpp,cpp}`, `src/acceleration_structure.cpp`,
 `src/scene.cpp`, `shaders/raytrace.slang`, `CMakeLists.txt` (the
 `XRPHOTON_RAY_TYPE_COUNT` definition feeding both compilers — D6).
 Exit: checkerboard cutout — the box and miss background visible *through* the
 card's rejected texels; the mixed mesh's opaque primitive unaffected (proves
 `GeometryIndex()`-based SBT selection — the case per-instance schemes get
-wrong); the opaque-only parts of the frame unchanged vs. M4. Validation clean
+wrong); the opaque-only parts of the frame unchanged vs. the preceding
+generalization milestone. Validation clean
 **including a GPU-assisted validation run** (SBT record contents and
 misrouting are invisible to plain layers). **Grep gate:**
 `grep -rn FORCE_OPAQUE shaders/ src/` returns nothing.
 
-**M6 — Textures + descriptor indexing; real alpha testing. Step complete.**
+**Later — textures + descriptor indexing and real alpha testing; milestone
+number deferred.**
 `VkPhysicalDeviceVulkan12Features` consolidation per §4.3 (standalone BDA
 struct removed in the same commit) + rejection-report and
 `maxPerStageDescriptorSampledImages` gating; binding 4 fixed-size array with
@@ -1085,7 +1079,8 @@ landed step (§10).
 ## 6. Validation strategy
 
 - **Always-on:** the debug preset (validation layers) must be silent at every
-  milestone exit; the release preset is built and run at M4 and M6.
+  milestone exit; the release preset is built and run at the N-BLAS
+  generalization and texture milestones.
   Destructor logging verifies teardown order for the new vectors and owners.
   **"Silent" only counts if the layer actually loaded:** bring-up deliberately
   warns-and-continues when the layer is missing (`main.cpp`'s best-effort
@@ -1093,11 +1088,13 @@ landed step (§10).
   the "validation layer is not available" startup warning before its silence
   means anything.
 - **Synchronization validation** (the Khronos layer's sync-validation
-  feature) runs at **M3a and M4** — the two milestones that add
-  submission-crossing transfer/build hazards (staged uploads; batched builds
-  + TLAS scratch reuse). It runs as a **separate pass** from GPU-assisted
+  feature) runs at **M3a and the N-BLAS generalization milestone** — the two
+  milestones that add submission-crossing transfer/build hazards (staged
+  uploads; batched builds + TLAS scratch reuse). It runs as a **separate
+  pass** from GPU-assisted
   validation; the two features are not co-enabled.
-- **GPU-assisted validation** runs at M3b, M5, and M6 (enable the
+- **GPU-assisted validation** runs at M3b, revised M4, the opaque/alpha split,
+  and the texture milestone (enable the
   `VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT` feature of the Khronos layer
   via vkconfig or layer settings). It is the only tool that catches
   buffer-device-address out-of-bounds reads and descriptor-array
@@ -1108,17 +1105,19 @@ landed step (§10).
   staging-upload visibility; M3b's UV-gradient quad catches BDA/layout/stride
   bugs (they render as noise, never subtly) and its X-rotated instance +
   normal-visualization check catches a missing *or inverse-only* normal
-  transform; M4's per-object colors,
-  positions, and twice-instanced rotated mesh catch custom-index, transform,
-  and normal-transform plumbing, and the move-a-box edit proves file → screen
-  data flow; M5's cutout-in-front-of-a-box plus the mixed opaque+MASK single
-  mesh specifically exercise `GeometryIndex()`-based SBT selection; M6's
-  two-textures-on-two-boxes exercises `NonUniformResourceIndex`.
+  transform; revised M4's file-backed identity quad proves OGFx → `SceneData`
+  → screen data flow; the later generalization's per-object colors, positions,
+  and twice-instanced rotated mesh catch custom-index, transform, and
+  normal-transform plumbing; the opaque/alpha split's cutout-in-front-of-a-box
+  plus the mixed opaque+MASK mesh exercise `GeometryIndex()`-based SBT
+  selection; the texture milestone's two textures on two boxes exercise
+  `NonUniformResourceIndex`.
 - **Layout-dispute tiebreaker:** on any suspected Slang pointee-layout
   mismatch, compile with `slangc -target spirv-asm` and diff the member
   `Offset` decorations against the C++ `static_assert`s — decides the dispute
   mechanically instead of by staring at noise.
-- **Grep gates:** no `vkAllocateMemory` after M1; no `FORCE_OPAQUE` after M5.
+- **Grep gates:** no `vkAllocateMemory` after M1; no `FORCE_OPAQUE` after the
+  opaque/alpha split.
 - **Guard rails preserved:** build-input base-address checks, scratch
   `alignUp` + slack, the SBT `alignmentDelta` CPU shift, division-form
   `roundUpToMultiple`, the `VK_SHADER_UNUSED_KHR` pre-fill for the new group,
@@ -1126,14 +1125,15 @@ landed step (§10).
   new upload work is pre-loop, on the borrowed slot), and the pinned
   `HOST_COHERENT` requirement on every VMA host-access allocation (D3 — no
   flush call sites exist to forget).
-- **Loud failures:** loader errors (D8's full list — validation, topology,
-  indexing, bounds, extensions, texture semantics), the 24-bit cap (including
+- **Loud failures:** compiler input errors and runtime loader errors (D8's
+  engine-side list plus the FORMATS.md file-validation rules), the 24-bit cap (including
   the `RayTypeCount` multiplier), the scene-vs-device limit checks, and
   `MaxSceneTextures` overflow all report to `std::cerr` and abort startup —
-  never silently degrade. The **documented degradations** — this list is
-  exhaustive, each warns: glTF `BLEND` → opaque; non-repeat/non-linear
-  sampler states → the shared sampler; zero-determinant instances → skipped
-  (error if nothing renderable remains).
+  never silently degrade. The **documented degradations** are exhaustive:
+  the offline compiler warns when mapping blend-mode materials to opaque or
+  non-repeat/non-linear sampler states to the shared sampler; a future scene
+  loader warns when skipping a zero-determinant instance (and errors if no
+  renderable instance remains).
 
 ## 7. Risks and open questions
 
@@ -1147,27 +1147,30 @@ landed step (§10).
    usage→flag pairing comment moved there.
 3. **SBT restructuring regressions** — the `alignmentDelta` shift and the
    division-form rounding are the two silent-garbage traps; both preserved by
-   editing `buildShaderBindingTable` in place, with M5's oracle scene making
+   editing `buildShaderBindingTable` in place, with the split milestone's
+   oracle scene making
    mis-selection visible and GPU-AV covering what it cannot.
 4. **Batched BLAS scratch aliasing** — batched builds are unordered; the
    shared arena allocates disjoint per-BLAS regions, each address-`alignUp`ed,
    sized with per-region slack. The TLAS reuses the arena only *after*
-   barrier #1 orders it (M4's sizing rule:
+   barrier #1 orders it (the N-BLAS generalization's sizing rule:
    `max(Σ aligned per-BLAS scratch, aligned TLAS scratch)`).
 5. **GLM packaging variance** — `glm::glm` vs. legacy target names across
    distro versions; handled once in CMake, requirement documented (D2). Open
    question: none once `libglm-dev`'s exported target is confirmed at M2
    configure time.
 6. **Asset-pipeline friction** — Blender export quirks (tangent-less normals,
-   texture embedding, node scale) and embedded-image decoding; isolated to
-   M4/M6, and the loader validates and reports rather than assumes. Open
-   question: the exact Blender export settings for the probe asset — resolved
-   empirically at M4 and recorded next to the asset.
-7. **glTF BLEND content** — deliberately degraded to opaque with a warning; no
-   silent alpha-testing of blend materials.
+   node scale, texture handling) move offline into the FORMATS.md
+   add-on/compiler path, which validates and reports at convert time rather
+   than at engine load. Open question: the exact export settings for the
+   probe asset — resolved empirically when it is authored and recorded next
+   to the asset.
+7. **Blend-mode (translucent) content** — deliberately compiled as opaque
+   with a conversion-time warning; no silent alpha-testing of blend materials.
 8. **Scratch arena sizing — decided** (formerly an open question):
    `max(Σ aligned per-BLAS scratch, aligned TLAS scratch)`, the BLAS regions
-   disjoint and aligned, the TLAS reusing the arena after barrier #1 (M4).
+   disjoint and aligned, the TLAS reusing the arena after barrier #1 (the
+   N-BLAS generalization milestone).
    Driver-friendly chunking of very large batches has no consumer at this
    scene scale; step 3's refit sizing revisits if real content changes that.
 
@@ -1208,7 +1211,7 @@ landed step (§10).
 ## 9. Deferred-work ledger (from ARCHITECTURE.md)
 
 **Resolved by this step:** VMA adoption (M1); staging uploads for device-local
-geometry (M3a); explicit aligned suballocation for AS build inputs (M3b/M4 —
+geometry (M3a); explicit aligned suballocation for AS build inputs (M3b —
 by element-granular construction, D4). The build-input residency question gets
 its answer too: positions/indices stay resident for good — hit shaders read
 them every frame and step 3's refits will consume them.
@@ -1232,5 +1235,6 @@ groups, the `RayTypeCount` contract, bindings 2–4), and the roadmap/trigger
 ledger (§9's resolutions) — and mirror the summary changes into
 [CLAUDE.md](CLAUDE.md) (layout list, build prerequisites including
 `libglm-dev`, and the Next-step pointer moving to roadmap step 3).
-ARCHITECTURE.md remains the source of truth; M6 does the final pass that marks
-step 2 landed.
+ARCHITECTURE.md remains the source of truth for landed runtime architecture
+and status; FORMATS.md owns format contracts and asset-pipeline sequencing.
+The texture milestone does the final pass that marks step 2 landed.

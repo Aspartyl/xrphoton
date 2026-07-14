@@ -348,7 +348,7 @@ int main()
     std::cout << "Created Vulkan frame sync objects.\n";
 
     // M3b uses a procedural quad to isolate the BDA/layout contract from file loading;
-    // M4 replaces this one construction call with the glTF loader.
+    // M4 replaces this one construction call with the OGFx loader (see FORMATS.md).
     SceneData sceneData = createProceduralSceneData();
 
     GpuScene gpuScene;

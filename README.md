@@ -1,7 +1,8 @@
 # xrPhoton
 
 X-Ray Photon Engine. A rebuild of the X-Ray engine from the S.T.A.L.K.E.R.
-series in modern C++ on Vulkan, with a path tracing renderer and nothing else.
+series in modern C++ on Vulkan, with a hardware ray-tracing renderer being
+built specifically for path tracing and no raster fallback.
 The plan is to eventually build a standalone game on it, similar to the old
 STALKER games but with overhauled systems.
 
@@ -31,12 +32,13 @@ a ray per pixel through a real BLAS/TLAS with `vkCmdTraceRaysKHR` from a
 perspective camera fed to the shader via push constants, writes a storage image
 and blits it to the swapchain, with two frames in flight and proper resize
 handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
-into the binary at build time, so it's a single executable with no runtime
-shader files.
+into the runtime binary at build time, so the renderer is self-contained and
+needs no runtime shader files.
 
-Next up: real geometry and materials, then dynamic scenes (TLAS refits,
-skinning), actual path tracing with lights, and finally temporal accumulation
-and denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+Next up: the OGFx writer/loader round-trip, then converted real geometry and
+materials, dynamic scenes (TLAS refits, skinning), actual path tracing with
+lights, and finally temporal accumulation and denoising. Details in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 
@@ -70,3 +72,8 @@ Needs:
 
 [ARCHITECTURE.md](ARCHITECTURE.md) — module map, ownership and lifetime model,
 per-frame flow, synchronization, roadmap.
+
+[FORMATS.md](FORMATS.md) — asset-format plan: OGFx, OMFx, and the shared
+offline asset compiler.
+
+[SDK.md](SDK.md) — plan for the modern SDK successor.

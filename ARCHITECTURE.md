@@ -27,12 +27,14 @@ replaced all direct device-memory allocation with the vendored Vulkan Memory
 Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
 with a rotated and translated triangle. M3a established staged device-local uploads;
 M3b replaced the triangle with an indexed, X-rotated quad whose hit shader fetches
-indices, normals, UVs, and materials through buffer device addresses.
+indices, normals, and UVs through buffer device addresses, then reads materials
+from the descriptor-bound storage buffer.
 
 ## Goals and constraints
 
-- **Single executable.** No engine/runtime split, no plugin system. One process that
-  opens a window and draws.
+- **Single runtime executable.** No runtime engine/game split and no plugin system;
+  one process opens a window and draws. Offline asset compiler, converter, and SDK
+  tools are separate build products and never become alternate runtime paths.
 - **Hardware ray tracing as a hard requirement.** Device selection rejects any GPU
   that does not expose `VK_KHR_acceleration_structure` and
   `VK_KHR_ray_tracing_pipeline` (and their prerequisites). There is no raster
@@ -83,7 +85,7 @@ stage; the diagram shows the frame-path layering.)
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
-| [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; procedural builder replaced by M4's loader |
+| [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; procedural builder migrates into M4's offline front end to the shared OGFx writer ([FORMATS.md](FORMATS.md)) |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
@@ -565,12 +567,12 @@ Decisions and contracts worth preserving:
   a BLAS's acceleration-structure address for the TLAS instance requires it of the
   buffer underneath (VUID 09542). The **TLAS backing buffer** deliberately does not:
   nothing queries a TLAS address.
-- **Build-input alignment guard.** The quad vertex and index device addresses must
-  each be 4-byte aligned, and the non-pointer instance array must be 16-byte aligned.
-  Correct usage flags do not guarantee those command-specific alignments, so startup
-  checks all three dedicated-buffer addresses and fails with a named diagnostic rather
-  than recording undefined work. Real-geometry suballocation will align its offsets;
-  this guard covers the dedicated bring-up buffers until then.
+- **Build-input alignment by construction and guard.** Position and `uint32` index
+  buffer base addresses are checked for 4-byte alignment, and the non-pointer instance
+  array for 16-byte alignment. Geometry range offsets are element-granular
+  (`firstVertex × 12` and `firstIndex × 4`), so every derived build-input address keeps
+  the required 4-byte alignment without byte padding. Startup still fails with a named
+  diagnostic if a base-address premise is ever violated.
 - **Scratch alignment.** The spec requires the scratch **device address** — not the
   buffer size or offset — to be a multiple of
   `minAccelerationStructureScratchOffsetAlignment`, and a buffer's base address
@@ -778,17 +780,32 @@ Decisions and contracts worth preserving:
    [Camera](#camera) for the decisions and contracts.
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
    staged uploads, and the procedural indexed-quad BDA/ABI probe have landed;
-   the glTF loader plus N-BLAS/N-instance generalization is next.
-   Real meshes replacing the
-   procedural quad: indexed vertex data with per-vertex attributes (normals,
+   next is M4, the **OGFx round-trip** ([FORMATS.md](FORMATS.md) is the
+   source of truth for the asset-format plan): an offline quad tool feeds the
+   first shared-compiler writer to produce `test_quad.ogfx`, a runtime OGFx
+   decoder replaces `createProceduralSceneData` and reconstructs the model
+   data; the M4 caller supplies one identity instance for this standalone
+   preview (OGFx stays a model format; eventual scene/level data owns world
+   placement). The quad
+   builder migrates into that offline front end, so the runtime keeps exactly one
+   model-loading path, and the existing GpuScene/AS/RT pipeline renders it
+   unchanged. After that, the legacy static OGF converter begins offline
+   corpus validation, while the opaque Blender export probe supplies the first
+   runtime-ready real meshes; the N-BLAS/N-instance generalization rides that probe;
+   a temporary code-owned preview table supplies world transforms until
+   scene/level data has its real owner, without putting instances in OGFx:
+   indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple
    BLASes with instance transforms, and material data in storage buffers indexed
    per instance/geometry. Designed from the start around the split between opaque
    and alpha-tested geometry classes (separate hit groups and SBT entries):
    foliage-heavy STALKER scenes make any-hit alpha testing the engine's single
    biggest traversal cost lever, and the current `FORCE_OPAQUE` trace flag is
-   temporary. Implies the first asset-loading path (a simple interchange format
-   first; the X-Ray-content conversion pipeline is a separate later concern).
+   temporary. The runtime loads exactly one model format — modern assets and
+   legacy X-Ray content both arrive as OGFx through the shared offline compiler,
+   never through a runtime interchange loader. Direct Blender export is the
+   primary modern-content path; a future optional GLB importer may feed the
+   same compiler offline without becoming another OGFx writer.
 3. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
    rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
    buffers, one per `FrameResources` slot (the first genuinely per-frame-written
@@ -817,14 +834,6 @@ Decisions and contracts worth preserving:
 These changes are deliberately deferred until the design input that determines their
 final shape exists:
 
-- **Real-geometry allocation and lifetime (items 2–3).** VMA adoption and replacement
-  of direct one-`vkAllocateMemory`-per-resource allocation landed in geometry M1.
-  M3a established the staged device-local upload path; explicit aligned buffer
-  suballocation remains for the unified real-geometry buffers.
-  Decide whether vertex, index, and instance inputs remain resident only once TLAS
-  refits, BLAS updates, and shader geometry access establish their real lifetimes. Keep
-  the tiny bring-up build-input buffers until then; freeing them now saves effectively
-  nothing and creates churn.
 - **Presentation completion.** Do not add swapchain present fences unless
   `VK_KHR_swapchain_maintenance1` becomes part of the required baseline. At that point,
   replace the [documented teardown assumption](#presentation-teardown) with
