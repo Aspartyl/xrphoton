@@ -284,13 +284,17 @@ suggestions):
 10. Bounds are finite, each AABB minimum is no greater than its maximum, and
     each sphere radius is nonnegative. Every geometry AABB encloses every
     position in its vertex range; the model AABB and sphere enclose every
-    model position. Enclosure tests use `f64`. For the sphere, the writer first
-    stores the center as `f32`, recomputes the maximum `f64` distance from that
-    stored center to every stored `f32` position, then rounds the radius upward
-    to the next enclosing `f32`. AABBs likewise round outward. No tolerance or
-    platform-dependent equality rule is needed.
-11. Failures report to `std::cerr` naming the file, chunk id, field, and the
-    expected-versus-found values, per the engine's loud-failure convention.
+    model position. Enclosure tests use `f64`. The canonical writer chooses
+    the sphere center component-wise with `std::midpoint` from the stored `f32`
+    model-AABB minimum and maximum. It then computes the maximum squared distance
+    in `f64` from that stored `f32` center to every stored `f32` position, uses its
+    square root as the initial radius candidate, and advances to the next `f32`
+    until the stored radius squared encloses that maximum in `f64`. AABBs likewise
+    round outward. No tolerance or platform-dependent equality rule is needed.
+11. Failures produce one diagnostic naming the file, chunk id, field, and the
+    expected-versus-found values. Dependency-free library entry points return
+    that diagnostic to their caller; the CLI or runtime boundary reports it to
+    `std::cerr` once, per the engine's loud-failure convention.
 
 ### Geometry payload
 
@@ -438,6 +442,17 @@ The design directly mirrors the engine's data model:
   vertex 0 — matching the pre-offset device addresses `GeometryRecord`
   carries, so the loader computes `firstVertex`/`firstIndex` offsets exactly
   the way `createGpuScene` already consumes them.
+- **Triangle winding is counter-clockwise from the front.** For each nondegenerate
+  stored triangle `(v0, v1, v2)`, the right-handed cross product
+  `cross(v1 - v0, v2 - v0)` points toward the geometric front/outward side and
+  therefore agrees with outward vertex normals. This is the convention already
+  exercised by M3b's `0,1,2 / 0,2,3` +Z-normal quad; offline adapters own any
+  source winding conversion. The generic writer preserves this as an input
+  convention rather than trying to infer "outward": hard-edge normals, shared
+  vertices, and intentional degenerate triangles do not admit one reliable
+  format-level agreement test (a degenerate triangle has no orientation). Each
+  source adapter validates or tests its known source convention before feeding
+  the writer.
 - **Geometry ranges map 1:1 to `SceneGeometry`.** Each record carries
   `firstVertex`, `vertexCount`, `firstIndex`, `indexCount`, `materialIndex`
   (all `u32`), a `u32` flags word whose bit 0 is the **alpha-tested class**,
@@ -631,6 +646,12 @@ validation, coordinate conversion, and bounds generation. A second writer is
 how formats fork in practice: two writers disagree in some corner, both
 outputs load, and the disagreement becomes load-bearing. This is the "one
 focus, clear vision" convention applied to tooling.
+
+The first landed compiler slice is the standard-library-only model and canonical
+writer in [`src/ogfx.hpp`](src/ogfx.hpp) / [`src/ogfx.cpp`](src/ogfx.cpp). It
+returns validated bytes in memory and deliberately owns neither Vulkan nor file
+I/O; offline front ends decide where outputs live, while every front end still
+uses the same serializer.
 
 **DECISION — what the compiler does**, each with its reason:
 

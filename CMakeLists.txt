@@ -5,6 +5,33 @@ project(xrPhoton LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+include(CTest)
+
+# Source adapters and future SDK tools share this one canonical writer. Keeping it
+# in its own dependency-free target prevents the offline asset path from inheriting
+# Vulkan, window-system, or renderer ABI concerns.
+add_library(xrPhotonOgfx STATIC
+    src/ogfx.cpp
+)
+target_include_directories(xrPhotonOgfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_options(xrPhotonOgfx PRIVATE -Wall -Wextra)
+
+if(BUILD_TESTING)
+    add_executable(xrPhotonOgfxTests
+        tests/ogfx_tests.cpp
+    )
+    target_link_libraries(xrPhotonOgfxTests PRIVATE xrPhotonOgfx)
+    target_compile_options(xrPhotonOgfxTests PRIVATE -Wall -Wextra)
+    add_test(NAME ogfx_core COMMAND xrPhotonOgfxTests)
+endif()
+
+option(XRPHOTON_BUILD_ENGINE "Build the Vulkan renderer executable" ON)
+if(NOT XRPHOTON_BUILD_ENGINE)
+    # Offline compiler work must remain buildable on machines with no graphics SDK.
+    return()
+endif()
 
 # Whether to request the Khronos validation layer and debug messenger. Even when ON,
 # validation is best-effort at runtime: if the layer is not installed (machines without

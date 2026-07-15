@@ -25,6 +25,17 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "XRPHOTON_ENABLE_VALIDATION": "OFF"
       }
+    },
+    {
+      "name": "ogfx-core",
+      "displayName": "OGFx Core Only",
+      "description": "Build and test the offline OGFx core without graphics dependencies",
+      "binaryDir": "${sourceDir}/build/ogfx-core",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON",
+        "XRPHOTON_BUILD_ENGINE": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -39,6 +50,22 @@
       "displayName": "Build Optimized",
       "configurePreset": "release",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "ogfx-core",
+      "displayName": "Build OGFx Core Only",
+      "configurePreset": "ogfx-core",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "ogfx-core",
+      "displayName": "Test OGFx Core",
+      "configurePreset": "ogfx-core",
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

@@ -35,10 +35,11 @@ handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
 into the runtime binary at build time, so the renderer is self-contained and
 needs no runtime shader files.
 
-Next up: the OGFx writer/loader round-trip, then converted real geometry and
-materials, dynamic scenes (TLAS refits, skinning), actual path tracing with
-lights, and finally temporal accumulation and denoising. Details in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+The Vulkan-free OGFx compiler model, validator, bounds generator, and canonical
+version-1 writer have landed. Next up: finish the file-backed OGFx round-trip,
+then converted real geometry and materials, dynamic scenes (TLAS refits,
+skinning), actual path tracing with lights, and finally temporal accumulation
+and denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 
@@ -58,9 +59,21 @@ cmake --build --preset release
 ./build/release/xrPhoton
 ```
 
-Needs:
+The offline OGFx core and its tests can be configured without Vulkan, GLFW,
+GLM, Slang, or a GPU SDK:
 
-- Linux, GCC or Clang, C++23, CMake 3.24+
+```sh
+cmake --preset ogfx-core
+cmake --build --preset ogfx-core
+ctest --preset ogfx-core
+```
+
+The current build and development environment is Linux with GCC or Clang.
+Windows support is planned, but its build and platform integration have not landed yet.
+
+Needs currently:
+
+- C++23 and CMake 3.24+
 - Vulkan SDK (1.3)
 - GLFW 3
 - GLM (`libglm-dev` on Debian/Ubuntu)

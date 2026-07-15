@@ -47,12 +47,18 @@ from the descriptor-bound storage buffer.
   reported to `std::cerr`; Vulkan failures include the symbolic result name and numeric
   value, with a numeric fallback for results unknown to the current formatter.
 - **C++23, no compiler extensions** (`CMAKE_CXX_EXTENSIONS OFF`).
+- **Linux development now, Windows target later.** Linux is the current build,
+  development, and validation environment; it is not a permanent platform
+  restriction. Portable subsystems must avoid unnecessary Linux assumptions so
+  Windows support can be added and validated when the project reaches that work.
 
 ## Module map
 
-The code is ten translation units, all in `namespace xrphoton`. The split is along
-**resource lifetime** (program-lifetime vs. recreated-on-resize) and **orchestration
-vs. mechanism**.
+The engine executable is ten translation units, all in `namespace xrphoton`; the
+separate Vulkan-free OGFx compiler core adds one production translation unit in
+`namespace xrphoton::ogfx`. The split is along **resource lifetime**
+(program-lifetime vs. recreated-on-resize), **orchestration vs. mechanism**, and
+the offline-compiler/runtime boundary.
 
 ```
         ┌───────────────────────────────────────────────────────────────────┐
@@ -86,6 +92,7 @@ stage; the diagram shows the frame-path layering.)
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; procedural builder migrates into M4's offline front end to the shared OGFx writer ([FORMATS.md](FORMATS.md)) |
+| [src/ogfx.hpp](src/ogfx.hpp) / [.cpp](src/ogfx.cpp) | Standard-library-only compiler model, pinned OGFx constants/records, checked validation and bounds generation, and the canonical explicit-little-endian version-1 writer | Offline/compiler value data; isolated in `xrPhotonOgfx` and not yet wired into the runtime |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
@@ -115,6 +122,9 @@ Includes are kept acyclic by a deliberate rule:
   `VkExtent2D` precisely to keep the unit Vulkan-free.
 - `scene.hpp` is likewise Vulkan-free: CPU scene data depends only on the standard
   library and GLM, while `gpu_scene.hpp` owns the Vulkan/VMA boundary.
+- `ogfx.hpp` is a stricter offline boundary: it depends only on the standard
+  library and shares no renderer-native structs. Source adapters populate its
+  compiler model, and only the canonical writer owns the serialized schema.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -780,9 +790,11 @@ Decisions and contracts worth preserving:
    [Camera](#camera) for the decisions and contracts.
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
    staged uploads, and the procedural indexed-quad BDA/ABI probe have landed;
-   next is M4, the **OGFx round-trip** ([FORMATS.md](FORMATS.md) is the
-   source of truth for the asset-format plan): an offline quad tool feeds the
-   first shared-compiler writer to produce `test_quad.ogfx`, a runtime OGFx
+   M4's first slice — the Vulkan-free compiler model, validation/bounds core,
+   and canonical version-1 writer — has landed. Next, the **OGFx round-trip**
+   continues ([FORMATS.md](FORMATS.md) is the source of truth for the
+   asset-format plan): an offline quad tool feeds that shared-compiler writer
+   to produce `test_quad.ogfx`, and a runtime OGFx
    decoder replaces `createProceduralSceneData` and reconstructs the model
    data; the M4 caller supplies one identity instance for this standalone
    preview (OGFx stays a model format; eventual scene/level data owns world
