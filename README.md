@@ -35,11 +35,13 @@ handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
 into the runtime binary at build time, so the renderer is self-contained and
 needs no runtime shader files.
 
-The Vulkan-free OGFx compiler model, validator, bounds generator, and canonical
-version-1 writer have landed. Next up: finish the file-backed OGFx round-trip,
-then converted real geometry and materials, dynamic scenes (TLAS refits,
-skinning), actual path tracing with lights, and finally temporal accumulation
-and denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+The Vulkan-free OGFx compiler core and offline quad front end have landed. Every
+normal engine build now generates `build/<preset>/assets/test_quad.ogfx` through
+the canonical writer. Next up: add the strict runtime decoder and switch the
+renderer to that file-backed quad, then converted real geometry and materials,
+dynamic scenes (TLAS refits, skinning), actual path tracing with lights, and
+finally temporal accumulation and denoising. Details in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 
@@ -66,6 +68,12 @@ GLM, Slang, or a GPU SDK:
 cmake --preset ogfx-core
 cmake --build --preset ogfx-core
 ctest --preset ogfx-core
+```
+
+That graphics-free configuration can also generate the probe asset explicitly:
+
+```sh
+cmake --build --preset ogfx-core --target xrPhotonAssets
 ```
 
 The current build and development environment is Linux with GCC or Clang.

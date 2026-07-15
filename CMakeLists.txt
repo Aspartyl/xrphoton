@@ -18,6 +18,26 @@ add_library(xrPhotonOgfx STATIC
 target_include_directories(xrPhotonOgfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfx PRIVATE -Wall -Wextra)
 
+add_executable(xrPhotonTestQuadCompiler EXCLUDE_FROM_ALL
+    tools/compile_test_quad.cpp
+)
+target_link_libraries(xrPhotonTestQuadCompiler PRIVATE xrPhotonOgfx)
+target_compile_options(xrPhotonTestQuadCompiler PRIVATE -Wall -Wextra)
+
+set(XRPHOTON_ASSET_DIR ${CMAKE_CURRENT_BINARY_DIR}/assets)
+set(XRPHOTON_TEST_QUAD_ASSET ${XRPHOTON_ASSET_DIR}/test_quad.ogfx)
+add_custom_command(
+    OUTPUT ${XRPHOTON_TEST_QUAD_ASSET}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_ASSET_DIR}
+    COMMAND $<TARGET_FILE:xrPhotonTestQuadCompiler> ${XRPHOTON_TEST_QUAD_ASSET}
+    DEPENDS xrPhotonTestQuadCompiler
+    COMMENT "Compiling the procedural test quad to OGFx"
+    VERBATIM
+)
+# Asset generation is explicit for compiler-only builds; the engine dependency below
+# makes it automatic for normal builds without broadening the core-only default target.
+add_custom_target(xrPhotonAssets DEPENDS ${XRPHOTON_TEST_QUAD_ASSET})
+
 if(BUILD_TESTING)
     add_executable(xrPhotonOgfxTests
         tests/ogfx_tests.cpp
@@ -104,7 +124,7 @@ if(XRPHOTON_ENABLE_VALIDATION)
     target_compile_definitions(xrPhoton PRIVATE XRPHOTON_ENABLE_VALIDATION)
 endif()
 
-add_dependencies(xrPhoton xrPhotonShaders)
+add_dependencies(xrPhoton xrPhotonShaders xrPhotonAssets)
 target_include_directories(xrPhoton PRIVATE ${SHADER_HEADER_DIR})
 target_include_directories(xrPhoton SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vma

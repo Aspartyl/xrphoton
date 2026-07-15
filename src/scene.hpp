@@ -71,9 +71,8 @@ struct SceneData
     std::vector<SceneImage> images;
 };
 
-// M3b's deliberately trivial probe. M4 replaces this API and implementation with the
-// runtime OGFx loader (see FORMATS.md); the quad builder itself migrates into an
-// offline front end to the shared compiler writer, so the runtime keeps exactly one
-// geometry-loading path.
+// M3b's deliberately trivial probe. M4's offline front end now compiles the same
+// geometry to OGFx; this temporary runtime copy remains only until the strict decoder
+// replaces this API, keeping the renderer operational between those checkpoints.
 SceneData createProceduralSceneData();
 }

@@ -741,6 +741,12 @@ pipeline — renders the assembled scene unchanged. A file-backed red/green UV
 gradient on the predicted identity-placed quad is the visual oracle; M3b
 already proved the deliberately X-rotated inverse-transpose normal path.
 
+**Implementation checkpoint:** the shared writer, offline quad front end, and
+CMake generation of `build/<preset>/assets/test_quad.ogfx` have landed. The
+byte-identical `scene.cpp` runtime copy remains temporarily so the renderer works
+until the strict decoder and switchover land together; that switchover removes the
+copy rather than preserving a second runtime geometry path.
+
 **M4 proves:**
 
 - OGFx writing
