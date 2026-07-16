@@ -14,6 +14,8 @@ include(CTest)
 # Vulkan, window-system, or renderer ABI concerns.
 add_library(xrPhotonOgfx STATIC
     src/ogfx.cpp
+    src/ogfx_decoder.cpp
+    src/ogfx_detail.hpp
 )
 target_include_directories(xrPhotonOgfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfx PRIVATE -Wall -Wextra)
@@ -45,6 +47,13 @@ if(BUILD_TESTING)
     target_link_libraries(xrPhotonOgfxTests PRIVATE xrPhotonOgfx)
     target_compile_options(xrPhotonOgfxTests PRIVATE -Wall -Wextra)
     add_test(NAME ogfx_core COMMAND xrPhotonOgfxTests)
+
+    add_executable(xrPhotonOgfxDecoderTests
+        tests/ogfx_decoder_tests.cpp
+    )
+    target_link_libraries(xrPhotonOgfxDecoderTests PRIVATE xrPhotonOgfx)
+    target_compile_options(xrPhotonOgfxDecoderTests PRIVATE -Wall -Wextra)
+    add_test(NAME ogfx_decoder COMMAND xrPhotonOgfxDecoderTests)
 endif()
 
 option(XRPHOTON_BUILD_ENGINE "Build the Vulkan renderer executable" ON)
@@ -70,6 +79,25 @@ elseif(TARGET glm)
     set(XRPHOTON_GLM_TARGET glm)
 else()
     message(FATAL_ERROR "The GLM package did not export a supported CMake target")
+endif()
+
+# Runtime adaptation stays Vulkan-free but maps the dependency-free decoded model
+# into SceneData, whose instance type uses GLM. Keeping this as a second layer lets
+# the byte decoder and malformed-file tests remain available in ogfx-core builds.
+add_library(xrPhotonOgfxRuntime STATIC
+    src/ogfx_loader.cpp
+)
+target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonOgfxRuntime PUBLIC xrPhotonOgfx ${XRPHOTON_GLM_TARGET})
+
+if(BUILD_TESTING)
+    add_executable(xrPhotonOgfxLoaderTests
+        tests/ogfx_loader_tests.cpp
+    )
+    target_link_libraries(xrPhotonOgfxLoaderTests PRIVATE xrPhotonOgfxRuntime)
+    target_compile_options(xrPhotonOgfxLoaderTests PRIVATE -Wall -Wextra)
+    add_test(NAME ogfx_runtime_loader COMMAND xrPhotonOgfxLoaderTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -134,6 +162,7 @@ target_compile_options(xrPhoton PRIVATE -Wall -Wextra)
 
 target_link_libraries(xrPhoton
     PRIVATE
+        xrPhotonOgfxRuntime
         Vulkan::Vulkan
         glfw
         ${XRPHOTON_GLM_TARGET}

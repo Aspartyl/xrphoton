@@ -1,10 +1,11 @@
 #include "ogfx.hpp"
 
+#include "ogfx_detail.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstddef>
-#include <iomanip>
 #include <limits>
 #include <numeric>
 #include <sstream>
@@ -14,17 +15,9 @@ namespace xrphoton::ogfx
 {
 namespace
 {
-static_assert(sizeof(float) == sizeof(std::uint32_t));
-static_assert(std::numeric_limits<float>::is_iec559);
-static_assert(
-    std::numeric_limits<std::size_t>::max() >= MaximumFileBytes,
-    "the 1 GiB writer cap must fit vector::size_type");
-
-struct Bounds
-{
-    Position minimum{};
-    Position maximum{};
-};
+using detail::Bounds;
+using detail::indexedField;
+using detail::positionIsFinite;
 
 struct PreparedModel
 {
@@ -34,30 +27,6 @@ struct PreparedModel
     std::vector<Bounds> geometryBounds;
 };
 
-constexpr std::string_view chunkName(ChunkId id)
-{
-    switch (id) {
-    case ChunkId::Model:
-        return "OGFX_MODEL";
-    case ChunkId::Geometries:
-        return "OGFX_GEOMETRIES";
-    case ChunkId::Meshes:
-        return "OGFX_MESHES";
-    case ChunkId::Materials:
-        return "OGFX_MATERIALS";
-    case ChunkId::Positions:
-        return "OGFX_POSITIONS";
-    case ChunkId::Attributes:
-        return "OGFX_ATTRIBUTES";
-    case ChunkId::Indices:
-        return "OGFX_INDICES";
-    case ChunkId::Description:
-        return "OGFX_DESC";
-    }
-
-    return "unknown chunk";
-}
-
 SerializeResult failure(
     std::string_view diagnosticName,
     ChunkId chunk,
@@ -65,22 +34,16 @@ SerializeResult failure(
     std::string_view expected,
     std::string_view found)
 {
-    std::ostringstream message;
-    message << diagnosticName << ": OGFx writer: chunk " << chunkName(chunk)
-            << " (0x" << std::hex << std::setw(4) << std::setfill('0')
-            << static_cast<std::uint32_t>(chunk) << std::dec << "), field " << field
-            << ": expected " << expected << ", found " << found;
     return {
         .bytes = {},
-        .error = message.str(),
+        .error = detail::makeChunkDiagnostic(
+            diagnosticName,
+            "writer",
+            static_cast<std::uint32_t>(chunk),
+            field,
+            expected,
+            found),
     };
-}
-
-std::string indexedField(std::string_view collection, std::size_t index, std::string_view field)
-{
-    std::ostringstream name;
-    name << collection << '[' << index << "]." << field;
-    return name.str();
 }
 
 std::string quoteText(std::string_view value)
@@ -90,47 +53,9 @@ std::string quoteText(std::string_view value)
     return text.str();
 }
 
-bool checkedAdd(std::uint64_t left, std::uint64_t right, std::uint64_t* result)
-{
-    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
-        return false;
-    }
-
-    *result = left + right;
-    return true;
-}
-
-bool checkedMultiply(std::uint64_t left, std::uint64_t right, std::uint64_t* result)
-{
-    if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left) {
-        return false;
-    }
-
-    *result = left * right;
-    return true;
-}
-
-bool checkedAlignUp(std::uint64_t value, std::uint64_t alignment, std::uint64_t* result)
-{
-    const std::uint64_t remainder = value % alignment;
-    if (remainder == 0) {
-        *result = value;
-        return true;
-    }
-
-    return checkedAdd(value, alignment - remainder, result);
-}
-
 bool fitsU32(std::size_t value)
 {
     return value <= std::numeric_limits<std::uint32_t>::max();
-}
-
-bool positionIsFinite(const Position& position)
-{
-    return std::isfinite(position.x)
-        && std::isfinite(position.y)
-        && std::isfinite(position.z);
 }
 
 Bounds boundsForRange(const Model& model, std::uint32_t firstVertex, std::uint32_t vertexCount)
@@ -502,18 +427,13 @@ SerializeResult prepareModel(
     return {};
 }
 
-bool payloadSize(std::size_t count, std::uint32_t stride, std::uint64_t* size)
+void addChunkToFileSize(std::uint64_t payloadBytes, std::uint64_t* fileBytes)
 {
-    return checkedMultiply(static_cast<std::uint64_t>(count), stride, size);
-}
-
-bool addChunkToFileSize(std::uint64_t payloadBytes, std::uint64_t* fileBytes)
-{
-    std::uint64_t aligned = 0;
-    std::uint64_t withHeader = 0;
-    return checkedAlignUp(*fileBytes, ChunkAlignment, &aligned)
-        && checkedAdd(aligned, ChunkHeaderSize, &withHeader)
-        && checkedAdd(withHeader, payloadBytes, fileBytes);
+    const std::uint64_t remainder = *fileBytes % ChunkAlignment;
+    if (remainder != 0) {
+        *fileBytes += ChunkAlignment - remainder;
+    }
+    *fileBytes += ChunkHeaderSize + payloadBytes;
 }
 
 void appendU32(std::vector<std::uint8_t>* bytes, std::uint32_t value)
@@ -579,43 +499,31 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         return validation;
     }
 
-    std::uint64_t geometryBytes = 0;
-    std::uint64_t meshBytes = 0;
-    std::uint64_t materialRecordBytes = 0;
-    std::uint64_t materialBytes = 0;
-    std::uint64_t positionBytes = 0;
-    std::uint64_t attributeBytes = 0;
-    std::uint64_t indexBytes = 0;
-    if (!payloadSize(model.geometries.size(), GeometryRecordSize, &geometryBytes)
-        || !payloadSize(model.meshes.size(), MeshRecordSize, &meshBytes)
-        || !payloadSize(model.materials.size(), MaterialRecordSize, &materialRecordBytes)
-        || !checkedAdd(MaterialHeaderSize, materialRecordBytes, &materialBytes)
-        || !payloadSize(model.positions.size(), PositionRecordSize, &positionBytes)
-        || !payloadSize(model.attributes.size(), AttributeRecordSize, &attributeBytes)
-        || !payloadSize(model.indices.size(), IndexRecordSize, &indexBytes)) {
-        return failure(
-            diagnosticName,
-            ChunkId::Model,
-            "serialized byte count",
-            "checked u64 arithmetic",
-            "overflow");
-    }
+    // prepareModel has bounded every collection count to u32. Widening before
+    // applying the pinned v1 strides keeps each payload and their sum below 2^40,
+    // so these formulas cannot overflow u64.
+    const std::uint64_t geometryBytes =
+        static_cast<std::uint64_t>(model.geometries.size()) * GeometryRecordSize;
+    const std::uint64_t meshBytes =
+        static_cast<std::uint64_t>(model.meshes.size()) * MeshRecordSize;
+    const std::uint64_t materialRecordBytes =
+        static_cast<std::uint64_t>(model.materials.size()) * MaterialRecordSize;
+    const std::uint64_t materialBytes = MaterialHeaderSize + materialRecordBytes;
+    const std::uint64_t positionBytes =
+        static_cast<std::uint64_t>(model.positions.size()) * PositionRecordSize;
+    const std::uint64_t attributeBytes =
+        static_cast<std::uint64_t>(model.attributes.size()) * AttributeRecordSize;
+    const std::uint64_t indexBytes =
+        static_cast<std::uint64_t>(model.indices.size()) * IndexRecordSize;
 
     std::uint64_t fileBytes = FileHeaderSize;
-    if (!addChunkToFileSize(ModelRecordSize, &fileBytes)
-        || !addChunkToFileSize(geometryBytes, &fileBytes)
-        || !addChunkToFileSize(meshBytes, &fileBytes)
-        || !addChunkToFileSize(materialBytes, &fileBytes)
-        || !addChunkToFileSize(positionBytes, &fileBytes)
-        || !addChunkToFileSize(attributeBytes, &fileBytes)
-        || !addChunkToFileSize(indexBytes, &fileBytes)) {
-        return failure(
-            diagnosticName,
-            ChunkId::Model,
-            "file byte size",
-            "checked u64 arithmetic",
-            "overflow");
-    }
+    addChunkToFileSize(ModelRecordSize, &fileBytes);
+    addChunkToFileSize(geometryBytes, &fileBytes);
+    addChunkToFileSize(meshBytes, &fileBytes);
+    addChunkToFileSize(materialBytes, &fileBytes);
+    addChunkToFileSize(positionBytes, &fileBytes);
+    addChunkToFileSize(attributeBytes, &fileBytes);
+    addChunkToFileSize(indexBytes, &fileBytes);
     if (fileBytes > MaximumFileBytes) {
         return failure(
             diagnosticName,

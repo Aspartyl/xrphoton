@@ -35,12 +35,12 @@ handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
 into the runtime binary at build time, so the renderer is self-contained and
 needs no runtime shader files.
 
-The Vulkan-free OGFx compiler core and offline quad front end have landed. Every
-normal engine build now generates `build/<preset>/assets/test_quad.ogfx` through
-the canonical writer. Next up: add the strict runtime decoder and switch the
-renderer to that file-backed quad, then converted real geometry and materials,
-dynamic scenes (TLAS refits, skinning), actual path tracing with lights, and
-finally temporal accumulation and denoising. Details in
+The Vulkan-free OGFx compiler core, offline quad front end, strict byte decoder,
+and `SceneData` runtime adapter have landed. Every normal engine build generates
+`build/<preset>/assets/test_quad.ogfx` through the canonical writer. Next up:
+switch the renderer to that file-backed quad, then converted real geometry and
+materials, dynamic scenes (TLAS refits, skinning), actual path tracing with
+lights, and finally temporal accumulation and denoising. Details in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
@@ -61,8 +61,8 @@ cmake --build --preset release
 ./build/release/xrPhoton
 ```
 
-The offline OGFx core and its tests can be configured without Vulkan, GLFW,
-GLM, Slang, or a GPU SDK:
+The offline OGFx writer, decoder, and their tests can be configured without
+Vulkan, GLFW, GLM, Slang, or a GPU SDK:
 
 ```sh
 cmake --preset ogfx-core

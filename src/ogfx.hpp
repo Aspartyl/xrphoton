@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,7 @@ inline constexpr std::uint32_t GeometryFlagAlphaTested = 1;
 inline constexpr std::uint32_t NoTextureReference =
     std::numeric_limits<std::uint32_t>::max();
 inline constexpr std::uint32_t MaximumStringBytes = 4096;
+inline constexpr std::uint32_t MaximumChunkCount = 4096;
 inline constexpr std::uint64_t MaximumFileBytes = 1ull << 30;
 
 inline constexpr std::uint32_t ModelRecordSize = 48;
@@ -110,9 +112,27 @@ struct SerializeResult
     }
 };
 
+struct DecodeResult
+{
+    Model model;
+    std::string error;
+
+    [[nodiscard]] explicit operator bool() const noexcept
+    {
+        return error.empty();
+    }
+};
+
 // Produces the canonical version-1 byte stream. diagnosticName is carried only into
 // errors; it is never serialized, so identical models always produce identical bytes.
 [[nodiscard]] SerializeResult serializeModel(
     const Model& model,
+    std::string_view diagnosticName = "<memory>");
+
+// Decodes the strict M4 runtime profile transactionally: failure returns one
+// diagnostic and no partially populated model. The returned model deliberately has
+// no instance concept because OGFx stores reusable model data, not world placement.
+[[nodiscard]] DecodeResult decodeModel(
+    std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");
 }

@@ -55,8 +55,8 @@ from the descriptor-bound storage buffer.
 ## Module map
 
 The engine executable is ten translation units, all in `namespace xrphoton`; the
-separate Vulkan-free OGFx compiler core and offline quad front end add two
-production translation units. The split is along **resource lifetime**
+separate OGFx libraries and offline quad front end add four production translation
+units. The split is along **resource lifetime**
 (program-lifetime vs. recreated-on-resize), **orchestration vs. mechanism**, and
 the offline-compiler/runtime boundary.
 
@@ -91,8 +91,9 @@ stage; the diagram shows the frame-path layering.)
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
-| [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; the runtime builder remains temporarily until the OGFx decoder checkpoint replaces it |
-| [src/ogfx.hpp](src/ogfx.hpp) / [.cpp](src/ogfx.cpp) | Standard-library-only compiler model, pinned OGFx constants/records, checked validation and bounds generation, and the canonical explicit-little-endian version-1 writer | Offline/compiler value data; consumed by `xrPhotonTestQuadCompiler`, not yet by the runtime |
+| [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; the runtime builder remains temporarily until the caller switches to the implemented OGFx loader |
+| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict M4 byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
+| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter; implemented but not called by `main()` until the next switchover checkpoint |
 | [tools/compile_test_quad.cpp](tools/compile_test_quad.cpp) | Offline M3b-equivalent quad front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
@@ -791,16 +792,16 @@ Decisions and contracts worth preserving:
    [Camera](#camera) for the decisions and contracts.
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
    staged uploads, and the procedural indexed-quad BDA/ABI probe have landed;
-   M4's Vulkan-free compiler core and its offline quad front end have landed;
+   M4's Vulkan-free compiler core, offline quad front end, strict decoder, and
+   `SceneData` runtime adapter have landed;
    CMake now generates `build/<preset>/assets/test_quad.ogfx` through the shared
    writer and makes the engine depend on it. Next, the **OGFx round-trip**
    continues ([FORMATS.md](FORMATS.md) is the source of truth for the
-   asset-format plan): a runtime OGFx decoder replaces
-   `createProceduralSceneData` and reconstructs the model
-   data; the M4 caller supplies one identity instance for this standalone
-   preview (OGFx stays a model format; eventual scene/level data owns world
+   asset-format plan): `main()` switches from `createProceduralSceneData` to
+   the implemented file loader, then supplies one identity instance for this
+   standalone preview (OGFx stays a model format; eventual scene/level data owns world
    placement). The byte-identical procedural runtime copy remains only between
-   these build-generation and decoder checkpoints; the switchover removes it so
+   the decoder and caller-switchover checkpoints; the switchover removes it so
    the runtime keeps exactly one model-loading path, and the existing
    GpuScene/AS/RT pipeline renders it unchanged. After that, M4a adds the direct
    command-line legacy-static OGF

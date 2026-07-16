@@ -71,8 +71,8 @@ struct SceneData
     std::vector<SceneImage> images;
 };
 
-// M3b's deliberately trivial probe. M4's offline front end now compiles the same
-// geometry to OGFx; this temporary runtime copy remains only until the strict decoder
-// replaces this API, keeping the renderer operational between those checkpoints.
+// M3b's deliberately trivial probe. The offline front end now compiles the same
+// geometry and the strict OGFx loader is ready; this temporary runtime copy remains
+// only until the next checkpoint switches the caller and removes this API.
 SceneData createProceduralSceneData();
 }
