@@ -91,10 +91,9 @@ int main(int argumentCount, char** arguments)
         return 1;
     }
 
-    // Publish only a complete file. Because the temporary file is beside the final
-    // path, rename is an atomic replacement on the current POSIX build platforms;
-    // an interrupted write can leave only an ignored .tmp file, never a truncated
-    // asset that the build system mistakes for a successful output.
+    // Publish only a complete file. std::filesystem::rename has POSIX-style
+    // replace-existing semantics; keeping the temporary file beside the destination
+    // makes the replacement atomic on supported filesystems.
     std::error_code renameError;
     std::filesystem::rename(temporaryPath, outputPath, renameError);
     if (renameError) {

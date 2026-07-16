@@ -32,16 +32,16 @@ a ray per pixel through a real BLAS/TLAS with `vkCmdTraceRaysKHR` from a
 perspective camera fed to the shader via push constants, writes a storage image
 and blits it to the swapchain, with two frames in flight and proper resize
 handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
-into the runtime binary at build time, so the renderer is self-contained and
-needs no runtime shader files.
+into the runtime binary at build time, so shader deployment is self-contained
+and needs no runtime shader files.
 
-The Vulkan-free OGFx compiler core, offline quad front end, strict byte decoder,
-and `SceneData` runtime adapter have landed. Every normal engine build generates
-`build/<preset>/assets/test_quad.ogfx` through the canonical writer. Next up:
-switch the renderer to that file-backed quad, then converted real geometry and
-materials, dynamic scenes (TLAS refits, skinning), actual path tracing with
-lights, and finally temporal accumulation and denoising. Details in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+The first complete OGFx round trip has landed. Every normal engine build generates
+`build/<preset>/assets/test_quad.ogfx` through the canonical writer; the runtime
+strictly decodes that file into `SceneData` and renders the file-backed quad through
+the existing GPU/BLAS/TLAS path. Next up is direct legacy-static OGF conversion,
+followed by real geometry and materials, dynamic scenes (TLAS refits, skinning),
+actual path tracing with lights, and finally temporal accumulation and denoising.
+Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 

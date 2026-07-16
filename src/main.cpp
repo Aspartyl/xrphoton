@@ -1,6 +1,7 @@
 #include "acceleration_structure.hpp"
 #include "camera.hpp"
 #include "gpu_scene.hpp"
+#include "ogfx_loader.hpp"
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
 #include "scene.hpp"
@@ -9,8 +10,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -347,9 +350,21 @@ int main()
 
     std::cout << "Created Vulkan frame sync objects.\n";
 
-    // M3b uses a procedural quad to isolate the BDA/layout contract from file loading;
-    // M4 replaces this one construction call with the OGFx loader (see FORMATS.md).
-    SceneData sceneData = createProceduralSceneData();
+    // OGFx owns model data, not world placement. Load the build-generated model,
+    // then give this standalone preview its temporary identity world instance.
+    const std::filesystem::path previewModelPath{XRPHOTON_TEST_QUAD_ASSET_PATH};
+    OgfxLoadResult loadedScene = loadOgfxModel(previewModelPath);
+    if (!loadedScene) {
+        std::cerr << "Failed to load OGFx preview model: "
+                  << loadedScene.error << '\n';
+        return 1;
+    }
+
+    SceneData sceneData = std::move(loadedScene.scene);
+    sceneData.instances.emplace_back();
+    // Keep native filesystem encoding out of narrow output streams; the loader's
+    // UTF-8 diagnostic conversion owns path rendering on failure.
+    std::cout << "Loaded build-generated OGFx preview model.\n";
 
     GpuScene gpuScene;
     const VkResult gpuSceneResult = createGpuScene(
@@ -368,7 +383,7 @@ int main()
         return 1;
     }
 
-    std::cout << "Created Vulkan GPU scene (indexed procedural quad).\n";
+    std::cout << "Created Vulkan GPU scene (file-backed indexed quad).\n";
 
     // Declared after ctx so it destructs before the device it borrows; its destructor
     // waits for device idle itself, so ordering relative to swap is immaterial. The

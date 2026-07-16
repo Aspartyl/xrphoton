@@ -4,11 +4,13 @@ This document is the source of truth for xrPhoton's asset-format direction —
 the role [ARCHITECTURE.md](ARCHITECTURE.md) plays for engine architecture. It
 records the settled decisions about how content reaches the runtime (OGFx,
 OMFx, the shared offline asset compiler) and the proposed elaboration of those
-decisions into concrete mechanism. Everything here is plan, not description:
-none of the formats or tools below exist yet. Implementation starts at the
+decisions into concrete mechanism. OGFx v1's static core, canonical writer,
+strict runtime decoder/adapter, and offline quad front end now exist; later
+format families, source adapters, and SDK tools remain planned. The first landed
+slice is recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
 
-**How to read the labels.** Two kinds of statement appear below, and the
+**How to read the labels.** Three kinds of statement appear below, and the
 distinction is load-bearing:
 
 - **DECISION** — settled by the project owner. Not up for re-litigation;
@@ -16,6 +18,8 @@ distinction is load-bearing:
 - **PROPOSED** — this document's elaboration of a decision into concrete
   mechanism (exact header fields, chunk numbering, hash choice, …). Refine
   freely at implementation time as long as the parent decision holds.
+- **IMPLEMENTED** — a concrete mechanism that has landed and is pinned by code
+  and tests. Change it deliberately as a versioned contract, not as draft prose.
 
 Legacy-format archaeology below was checked against the
 [OpenXRay](https://github.com/OpenXRay/xray-16) engine sources and the
@@ -175,12 +179,12 @@ And its concrete limitations — what OGFx **modernizes** (**DECISION**):
 - Modern material and RT metadata
 - Better support for large, detailed models
 
-### Proposed container layout
+### Implemented version-1 container layout
 
-**PROPOSED** — the concrete version-1 contract M4 implements. Field widths,
-chunk ids, offsets, and validation rules below are pinned together: any
-pre-implementation refinement updates this document and its test vectors
-first, never one side of the writer/loader pair in isolation.
+**IMPLEMENTED** — this is the concrete version-1 contract used by M4. Field
+widths, chunk ids, offsets, and validation rules below are pinned together: a
+change updates this document and its test vectors with both sides of the
+writer/loader pair.
 
 Every field in the container is **little-endian and fixed-width**. There are
 no variable-width integers and no host-dependent types anywhere in the format;
@@ -258,25 +262,28 @@ suggestions):
    skipped. Duplicates are rejected unless a chunk is documented repeatable.
 5. Every `count × stride` computation runs in checked 64-bit arithmetic and
    matches the chunk's `byteSize` exactly; framed chunks use their documented
-   size formula instead. Before allocation, the M4 loader also enforces its
-   initial 1 GiB per-file and 4096-chunk sanity caps, verifies every element
-   count fits `u32`, and verifies every byte count fits `size_t`. These are
+   size formula instead. Before allocation, the M4 loader enforces its initial
+   1 GiB per-file and 4096-chunk sanity caps. That file cap plus the minimum
+   record strides guarantees decoded element counts fit `u32` and, on supported
+   hosts, the full file fits `size_t`; compile-time assertions pin the host
+   invariant instead of retaining unreachable runtime branches. These are
    loader resource limits, not a reason to reinterpret a valid larger file.
 6. Position, attribute, and material arrays are nonempty; position and
    attribute counts match. Every stored position, attribute, and material
    scalar is finite. Each normal's squared length, computed in `f64`, is
    finite and at least `1.0e-12`.
 7. Every geometry range is checked: nonzero counts, `indexCount` divisible
-   by 3, checked `firstVertex + vertexCount` and `firstIndex + indexCount`
-   within their streams, every index less than the range's `vertexCount`, and
+   by 3, `firstVertex + vertexCount` and `firstIndex + indexCount` widened from
+   their `u32` fields to `u64` before comparison with their streams, every index
+   less than the range's `vertexCount`, and
    every `materialIndex` less than the material count. In geometry-array
    order, vertex ranges partition positions/attributes exactly once and index
    ranges partition indices exactly once: each first offset equals the prior
    end, beginning at zero, and the final end equals the stream count.
-8. Every mesh has a nonzero checked geometry range, and the mesh ranges
-   partition the geometry array exactly once: no orphaned or multiply owned
-   geometry. A loader rejects unsupported model types before reading
-   type-specific data.
+8. Every mesh has a nonzero geometry range widened to `u64` for its end check,
+   and the mesh ranges partition the geometry array exactly once: no orphaned
+   or multiply owned geometry. A loader rejects unsupported model types before
+   reading type-specific data.
 9. String lengths are bounded, valid UTF-8, and lie wholly within their
    enclosing chunks. A string arena is parsed from offset zero as checked
    `u16 length + length bytes` entries until exactly `stringByteSize`; a
@@ -298,10 +305,11 @@ suggestions):
 
 ### Geometry payload
 
-**PROPOSED**, designed around the engine that exists. OGFx is a stable
-serialized schema decoded field-by-field; it never dumps native C++ structs
-or inherits compiler padding. Its raw stream records are deliberately
-byte-compatible with the corresponding [`SceneData`](src/scene.hpp) arrays,
+**IMPLEMENTED** for the M4 static profile, designed around the engine that
+exists. OGFx is a stable serialized schema decoded field-by-field; it never
+dumps native C++ structs or inherits compiler padding. Its raw stream records
+are deliberately byte-compatible with the corresponding
+[`SceneData`](src/scene.hpp) arrays,
 while range and material fields are decoded into engine-owned structures
 before the existing [`GpuScene`](src/gpu_scene.hpp) BDA records are built.
 The current CPU scene has no bounds/model-metadata owner; M4 validates those
@@ -483,10 +491,10 @@ it. The reusable decoder itself returns no instances. This is runtime
 bring-up policy, not serialized model data, and it disappears once a real
 scene owner supplies instances.
 
-The M4 runtime profile loudly requires exactly one mesh and one geometry,
-matching the current GPU path it feeds. The container can already represent
-multiple records; lifting this temporary capability gate during the N-BLAS
-generalization does not require a format-version change.
+The M4 runtime profile loudly requires exactly one mesh, one geometry, and one
+material, matching the current GPU path it feeds. The container and writer can
+already represent multiple records; lifting this temporary capability gate during
+the N-BLAS generalization does not require a format-version change.
 
 M4 and the later opaque-only N-BLAS probe reject geometry flag bit 0. The current trace uses
 `RAY_FLAG_FORCE_OPAQUE` and has no any-hit/SBT class split, so accepting an
@@ -732,21 +740,23 @@ procedural quad ──► shared compiler writer ──► test_quad.ogfx ──
 The procedural quad builder **moves into an offline quad tool**, but that tool
 is only an input/front end: M4's serializer is the first implementation
 of the shared compiler writer, not a throwaway second writer. The runtime keeps
-exactly one model-loading path, so `createProceduralSceneData` leaves
-[src/scene.cpp](src/scene.cpp). The reusable OGFx decoder reconstructs only
-model-owned `SceneData` fields and returns no instances. After requiring one
-mesh, the M4 preview caller appends `SceneInstance{meshIndex = 0, identity}`.
+exactly one model-loading path, so `createProceduralSceneData` and its
+`scene.cpp` implementation leave the runtime. The reusable OGFx decoder
+reconstructs only model-owned `SceneData` fields and returns no instances. After
+requiring one mesh, one geometry, and one material, the M4 preview caller appends
+`SceneInstance{meshIndex = 0, identity}`.
 The GPU side — `createGpuScene`, the acceleration-structure build, and the RT
 pipeline — renders the assembled scene unchanged. A file-backed red/green UV
 gradient on the predicted identity-placed quad is the visual oracle; M3b
 already proved the deliberately X-rotated inverse-transpose normal path.
 
-**Implementation checkpoint:** the shared writer, offline quad front end, CMake
-generation of `build/<preset>/assets/test_quad.ogfx`, strict transactional byte
-decoder, checked filesystem boundary, and field-by-field `SceneData` adapter have
-landed. The byte-identical `scene.cpp` runtime copy remains temporarily so the
-renderer works until the caller switchover; that switchover removes the copy rather
-than preserving a second runtime geometry path.
+**Landed:** the shared writer and offline quad front end generate
+`build/<preset>/assets/test_quad.ogfx`; the runtime opens that generated file through
+the strict transactional decoder and field-by-field `SceneData` adapter, then the
+caller appends one identity preview instance. The old `scene.cpp` procedural builder
+is gone, leaving exactly one runtime model-loading path. Deterministic serialization,
+writer/decoder round trips, malformed-input rejection, and the unchanged GPU path are
+the milestone's verification boundary.
 
 **M4 proves:**
 

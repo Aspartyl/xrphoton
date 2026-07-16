@@ -61,8 +61,8 @@ struct AccelerationStructure
 // vulkan_context) so selection and the BLAS build share one format definition.
 bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevice);
 
-// Populate *as: build one BLAS over the procedural scene's GpuScene buffers, then a
-// TLAS over its single instance (recorded back-to-back with a build-to-build barrier).
+// Populate *as: build one BLAS over the loaded scene's GpuScene buffers, then a TLAS
+// over its single preview instance (recorded back-to-back with a build-to-build barrier).
 // The submission borrows commandBuffer/traceQueue/fence and blocks until the GPU
 // finishes. The three build-input device addresses are checked against their
 // required 4/4/16-byte alignments; an under-aligned base address fails with

@@ -1066,6 +1066,13 @@ private:
                 "exactly 1",
                 std::to_string(model_.geometries.size()));
         }
+        if (model_.materials.size() != 1) {
+            return reject(
+                static_cast<std::uint32_t>(ChunkId::Materials),
+                "M4 runtime record count",
+                "exactly 1",
+                std::to_string(model_.materials.size()));
+        }
         if (model_.geometries[0].alphaTested) {
             return reject(
                 static_cast<std::uint32_t>(ChunkId::Geometries),

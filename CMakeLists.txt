@@ -141,7 +141,6 @@ add_executable(xrPhoton
     src/vulkan_context.cpp
     src/swapchain.cpp
     src/acceleration_structure.cpp
-    src/scene.cpp
     src/gpu_scene.cpp
     src/camera.cpp
     src/rt_pipeline.cpp
@@ -151,6 +150,13 @@ add_executable(xrPhoton
 if(XRPHOTON_ENABLE_VALIDATION)
     target_compile_definitions(xrPhoton PRIVATE XRPHOTON_ENABLE_VALIDATION)
 endif()
+
+# The M4 preview asset is a build-tree probe, not packaged game content. Embed its
+# absolute UTF-8 path so launching the executable from any working directory still
+# exercises the generated OGFx file; later asset-root policy will replace this.
+target_compile_definitions(xrPhoton PRIVATE
+    XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
+)
 
 add_dependencies(xrPhoton xrPhotonShaders xrPhotonAssets)
 target_include_directories(xrPhoton PRIVATE ${SHADER_HEADER_DIR})

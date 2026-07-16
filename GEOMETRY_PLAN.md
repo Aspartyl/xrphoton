@@ -515,20 +515,20 @@ divergent shader branch, to avoid ~1000 startup descriptor writes that cost
 nothing); *variable-count descriptors* (more feature bits and plumbing to save
 descriptors that cost nothing); *textures-first ordering* (rejected above).
 
-### D8. CPU/GPU scene split: a Vulkan-free `SceneData` value plus a `GpuScene` RAII owner, in two new TUs
+### D8. CPU/GPU scene split: a Vulkan-free `SceneData` value plus a `GpuScene` RAII owner
 
-**Decision:** the scene lands as **two** units, split along the same line the
+**Decision:** the scene lands as **three layers**, split along the same line the
 codebase already draws for the camera (Vulkan-free data/policy vs. Vulkan
 resource ownership) — and along exactly the cut step 3 needs (CPU scene state
 stays alive and mutable in `main()`; GPU state is an owner that step 3 can
 grow per-frame structures in):
 
-- **[src/scene.hpp](src/scene.hpp) / [src/scene.cpp](src/scene.cpp)** —
-  `SceneData`, a plain value struct (no Vulkan, no VMA; GLM only — the header
-  includes `<glm/glm.hpp>`, keeping the `camera.hpp` precedent of
-  Vulkan-free), plus the scene-loading entry point (the OGFx loader per
-  [FORMATS.md](FORMATS.md)). File parsing is confined to `scene.cpp`; no
-  parser type leaks out.
+- **[src/scene.hpp](src/scene.hpp)** — `SceneData`, a plain value struct (no
+  Vulkan, no VMA; GLM only), shared by the runtime adapter and GPU boundary.
+- **[src/ogfx_loader.hpp](src/ogfx_loader.hpp) /
+  [src/ogfx_loader.cpp](src/ogfx_loader.cpp)** — the OGFx filesystem boundary
+  and field-by-field conversion into `SceneData`; no parser type leaks into the
+  renderer-facing scene types.
 - **[src/gpu_scene.hpp](src/gpu_scene.hpp) / [src/gpu_scene.cpp](src/gpu_scene.cpp)**
   — `GpuScene`, the RAII owner of every scene GPU resource, plus the GPU
   record ABI structs (`GeometryRecord`, `MaterialRecord`) and
@@ -611,7 +611,7 @@ inside OGFx* (world placement is scene/level ownership, not model data).
   frame-sync creation. It **stays alive for the program's lifetime** — step 3
   reads its instance transforms every frame.
 - **`GpuScene`** (new owner): declared after `ctx`, created between
-  `loadSceneData` and the AS build (the build consumes its device addresses).
+  `loadOgfxModel` and the AS build (the build consumes its device addresses).
   Own `vkDeviceWaitIdle` in the destructor (null-guarded, reverse creation
   order, per-resource teardown log lines), so ordering relative to sibling
   owners is immaterial; failure paths stay bare `return 1;`. All startup
@@ -653,7 +653,8 @@ inside OGFx* (world placement is scene/level ownership, not model data).
 - **`main()` order:** … createLogicalDevice → loadRayTracingFunctions →
   queues → **createAllocator** (before `Swapchain`, whose storage image now
   allocates through VMA) → `Swapchain` → command pool → frame sync →
-  `SceneData sceneData; loadSceneData(...)` →
+  `OgfxLoadResult loadedScene = loadOgfxModel(...); SceneData sceneData =
+  std::move(loadedScene.scene); sceneData.instances.emplace_back()` →
   `GpuScene gpuScene; createGpuScene(...)` →
   `buildAccelerationStructures(..., sceneData, gpuScene, ...)` →
   `createRtDescriptorSet` → `createRtPipeline` →
@@ -794,7 +795,9 @@ struct SceneData {                // plain value, owned by main() — alive all 
     std::vector<SceneImage> images;            // [0] is the generated fallback
 };
 
-bool loadSceneData(SceneData* scene, const char* path);
+// Declared in ogfx_loader.hpp. OGFx owns model data, not world placement;
+// main() adds the temporary identity preview instance after a successful load.
+OgfxLoadResult loadOgfxModel(const std::filesystem::path& path);
 ```
 
 ### 4.2 GPU scene — [src/gpu_scene.hpp](src/gpu_scene.hpp)
@@ -990,7 +993,7 @@ cannot see BDA out-of-bounds reads, this half's dominant silent-failure class.
 This retires the step's biggest unknowns — Slang pointers, layout ABI,
 hit-stage descriptors — on trivial content.
 
-**Revised M4 — OGFx round-trip.** [FORMATS.md](FORMATS.md) is authoritative
+**Revised M4 — OGFx round-trip. Landed.** [FORMATS.md](FORMATS.md) is authoritative
 for its exact scope: move the procedural quad into an offline writer front end, produce
 `test_quad.ogfx` through the first shared-compiler serializer, load and
 validate that file at runtime, reconstruct the
@@ -1078,7 +1081,7 @@ per-geometry `VK_GEOMETRY_OPAQUE_BIT_KHR` only for the opaque class; the
 `alphaCutoff` — the one-milestone placeholder D7 justifies, deleted by the
 following texture milestone.
 Files: `src/rt_pipeline.{hpp,cpp}`, `src/acceleration_structure.cpp`,
-`src/scene.cpp`, `shaders/raytrace.slang`, `CMakeLists.txt` (the
+`src/scene.hpp`, `shaders/raytrace.slang`, `CMakeLists.txt` (the
 `XRPHOTON_RAY_TYPE_COUNT` definition feeding both compilers — D6).
 Exit: checkerboard cutout — the box and miss background visible *through* the
 card's rejected texels; the mixed mesh's opaque primitive unaffected (proves
@@ -1099,7 +1102,8 @@ image staging uploads with layout transitions ending at
 `SHADER_READ_ONLY_OPTIMAL` / `RAY_TRACING_SHADER`; closest-hit samples
 baseColor, any-hit samples texture alpha (checkerboard deleted).
 Files: `src/vulkan_context.cpp`, `src/rt_pipeline.{hpp,cpp}`,
-`src/scene.{hpp,cpp}`, `src/gpu_scene.{hpp,cpp}`, `shaders/raytrace.slang`.
+`src/scene.hpp`, `src/ogfx_loader.{hpp,cpp}`, `src/gpu_scene.{hpp,cpp}`,
+`shaders/raytrace.slang`.
 Exit: textured scene; the card's cutout silhouette follows its texture's alpha
 channel exactly; the two boxes show different textures (proves
 `NonUniformResourceIndex` indexing). Validation clean **including GPU-assisted

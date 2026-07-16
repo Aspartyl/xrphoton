@@ -4,5 +4,10 @@ build/
 # Machine-local CMake preset overrides
 CMakeUserPresets.json
 
+# Keep the portable VS Code project configuration, but ignore local additions.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
 # Local AI assistant context
 CLAUDE.md

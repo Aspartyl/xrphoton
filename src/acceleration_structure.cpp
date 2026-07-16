@@ -277,7 +277,8 @@ VkResult buildAccelerationStructures(
         || scene.meshes[0].geometryCount != 1
         || scene.instances[0].meshIndex != 0
         || scene.meshes[0].firstGeometry >= scene.geometries.size()) {
-        std::cerr << "M3b requires exactly one mesh, geometry, and instance.\n";
+        std::cerr
+            << "The current AS path requires exactly one mesh, geometry, and instance.\n";
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
@@ -286,7 +287,8 @@ VkResult buildAccelerationStructures(
     if (geometry.vertexCount == 0
         || geometry.indexCount == 0
         || (geometry.indexCount % 3) != 0) {
-        std::cerr << "M3b geometry must contain indexed triangles and nonempty vertices.\n";
+        std::cerr
+            << "The current AS path requires indexed triangles and nonempty vertices.\n";
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     const uint32_t primitiveCount = geometry.indexCount / 3;
@@ -324,7 +326,7 @@ VkResult buildAccelerationStructures(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    // The procedural material is opaque, so traversal can skip any-hit consideration.
+    // M4 accepts only opaque geometry, so traversal can skip any-hit consideration.
     VkAccelerationStructureGeometryKHR blasGeometry{};
     blasGeometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
     blasGeometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;

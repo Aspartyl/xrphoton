@@ -395,12 +395,10 @@ void testRoundTripAndExtensions()
 
     Model multipleMaterials = makeQuad();
     multipleMaterials.materials.emplace_back();
-    const DecodeResult materialResult = xrphoton::ogfx::decodeModel(
-        serialize(multipleMaterials), "multiple-materials.ogfx");
-    expect(static_cast<bool>(materialResult),
-        "the M4 runtime accepts multiple texture-free materials");
-    expect(materialResult && materialResult.model.materials.size() == 2,
-        "all decoded materials remain model-owned");
+    expectRejected(
+        serialize(multipleMaterials),
+        "OGFX_MATERIALS",
+        "M4 runtime record count");
 }
 
 void testFileAndChunkFraming()

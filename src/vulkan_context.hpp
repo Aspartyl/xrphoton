@@ -66,8 +66,8 @@ struct QueueFamilyIndices
 
 // The ray tracing / acceleration structure entry points, which are extension
 // functions that must be resolved at runtime via vkGetDeviceProcAddr rather than
-// linked directly. Populated by loadRayTracingFunctions. Loaded but not yet used:
-// they exist so the eventual renderer can build acceleration structures and trace.
+// linked directly. Populated by loadRayTracingFunctions and shared by the current
+// acceleration-structure, device-address, pipeline, and trace paths.
 struct RayTracingFunctions
 {
     PFN_vkGetBufferDeviceAddressKHR getBufferDeviceAddress = nullptr;

@@ -7,8 +7,9 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 xrPhoton renders its first ray traced pixels, and is interactive. It brings up a
 Vulkan instance and device configured for hardware ray tracing, creates a
-swapchain, builds the ray tracing **acceleration structures** (a BLAS over an
-indexed procedural quad and a single-instance TLAS — see
+swapchain, loads a generated OGFx model, and builds the ray tracing
+**acceleration structures** (a BLAS over its indexed quad and a single-instance
+TLAS — see
 [Acceleration structures](#acceleration-structures)), creates the **ray tracing
 pipeline and shader binding table** (see
 [Ray tracing pipeline](#ray-tracing-pipeline)), and runs a render loop in which
@@ -28,7 +29,9 @@ Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
 with a rotated and translated triangle. M3a established staged device-local uploads;
 M3b replaced the triangle with an indexed, X-rotated quad whose hit shader fetches
 indices, normals, and UVs through buffer device addresses, then reads materials
-from the descriptor-bound storage buffer.
+from the descriptor-bound storage buffer. M4 moved that model construction offline:
+the build now writes `test_quad.ogfx`, the runtime strictly decodes it into
+`SceneData`, and the caller supplies the preview's identity instance.
 
 ## Goals and constraints
 
@@ -43,9 +46,11 @@ from the descriptor-bound storage buffer.
   instance and the selected physical device must meet it.
 - **RAII over manual cleanup.** Resource teardown lives in destructors, never in
   hand-unwound failure paths. See [Ownership model](#ownership-model).
-- **No exceptions.** Errors propagate as `VkResult` / `bool` return values and are
-  reported to `std::cerr`; Vulkan failures include the symbolic result name and numeric
-  value, with a numeric fallback for results unknown to the current formatter.
+- **Explicit error boundaries.** Errors reach subsystem boundaries as explicit
+  result objects, `VkResult`, or `bool`; standard-library exceptions are caught
+  internally and do not cross subsystem APIs. Failures are reported to `std::cerr`;
+  Vulkan failures include the symbolic result name and numeric value, with a
+  numeric fallback for results unknown to the current formatter.
 - **C++23, no compiler extensions** (`CMAKE_CXX_EXTENSIONS OFF`).
 - **Linux development now, Windows target later.** Linux is the current build,
   development, and validation environment; it is not a permanent platform
@@ -54,7 +59,7 @@ from the descriptor-bound storage buffer.
 
 ## Module map
 
-The engine executable is ten translation units, all in `namespace xrphoton`; the
+The engine executable target is nine translation units, all in `namespace xrphoton`; the
 separate OGFx libraries and offline quad front end add four production translation
 units. The split is along **resource lifetime**
 (program-lifetime vs. recreated-on-resize), **orchestration vs. mechanism**, and
@@ -91,9 +96,9 @@ stage; the diagram shows the frame-path layering.)
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
-| [src/scene.hpp](src/scene.hpp) / [.cpp](src/scene.cpp) | Vulkan-free `SceneData`, its CPU record types, and M3b's procedural indexed-quad builder | Plain value state owned by `main()`; the runtime builder remains temporarily until the caller switches to the implemented OGFx loader |
+| [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU record types | Plain value state loaded from OGFx and owned by `main()` |
 | [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict M4 byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
-| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter; implemented but not called by `main()` until the next switchover checkpoint |
+| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter called by `main()`; the caller owns preview/world placement |
 | [tools/compile_test_quad.cpp](tools/compile_test_quad.cpp) | Offline M3b-equivalent quad front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
@@ -146,7 +151,9 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
 5. `renderer.cpp` includes `camera.hpp`, `rt_pipeline.hpp`, `swapchain.hpp`, and
    `vulkan_context.hpp` to resolve the borrowed structs its header only
    forward-declares.
-6. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
+6. `ogfx_loader.cpp` includes `scene.hpp` through its public header and adapts the
+   standard-library-only decoded model into renderer-native `SceneData`.
+7. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
    the pipeline layout's push-constant range; `camera.cpp` includes
    `GLFW/glfw3.h` for the real input API its header only forward-declared.
 
@@ -258,8 +265,9 @@ returns `1` on failure (RAII handles the unwind):
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
-10. **CPU/GPU scene.** Build M3b's `SceneData` quad, then `createGpuScene` uploads its
-    five device-local buffers through the borrowed frame-0 slot.
+10. **CPU/GPU scene.** Load the build-generated `test_quad.ogfx` into model-owned
+    `SceneData`, append one identity preview instance, then `createGpuScene` uploads
+    its five device-local buffers through the borrowed frame-0 slot.
 11. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
     command buffer and in-flight fence from step 9 and returns them in the state the
@@ -544,10 +552,10 @@ needs deeper overlap.
 
 ## Acceleration structures
 
-The ray tracing scene: a **BLAS** built over the two indexed triangles of the
-procedural quad and a **TLAS** whose single instance references it with a 45° X
-rotation. Built once by `buildAccelerationStructures` after `GpuScene` upload,
-before the render loop; the TLAS handle is what the future RT descriptor set binds
+The ray tracing scene: a **BLAS** built over the two indexed triangles loaded from
+`test_quad.ogfx` and a **TLAS** whose single preview instance references it with an
+identity transform. Built once by `buildAccelerationStructures` after `GpuScene` upload,
+before the render loop; the TLAS handle is what the RT descriptor set binds
 (`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
 acceleration-structure *device address* is only needed where an instance references a
 BLAS). Everything is **swapchain-independent**: resize/recreate never touches it.
@@ -557,8 +565,9 @@ Decisions and contracts worth preserving:
 - **One transform-layout boundary.** Scene transforms use GLM's column-major
   `glm::mat4`; `toVkTransformMatrix` in `acceleration_structure.cpp` alone copies
   them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The visible non-identity
-  M2 transform proved the transpose; M3b's off-normal-axis rotation makes the
-  closest-hit normal transform observable before real scene loading introduces N instances.
+  M2 transform proved the transpose, and M3b's historical off-normal-axis rotation
+  proved the closest-hit normal transform. M4 deliberately uses identity placement
+  so the file boundary is the only changed variable.
 - **Staged device-local geometry.** `GpuScene` uploads vertex, attribute, index, and
   record data with `uploadDeviceLocalBuffer`: a transient mapped, host-coherent transfer-source buffer
   feeds a `TRANSFER_DST` device-local buffer, then dies after the submission fence.
@@ -634,7 +643,7 @@ Decisions and contracts worth preserving:
   normals/UVs followed by a red/green UV gradient). CMake compiles it with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
   self-contained C header (`raytrace_spv.h`, includes prepended by the build) that
-  `rt_pipeline.cpp` `#include`s — no runtime file paths, keeping the
+  `rt_pipeline.cpp` `#include`s — no runtime shader file paths, keeping the
   single-executable ethos. slangc is located via `find_program` (it is not a
   FindVulkan component).
 - **One module, three stages.** Slang compiles every `[shader(...)]` entry point
@@ -778,7 +787,8 @@ Decisions and contracts worth preserving:
 - Free functions, `camelCase` names; `PascalCase` for constants and types.
 - Cross-file functions are declared in the headers; file-private helpers live in an
   anonymous namespace inside each `.cpp`.
-- Errors go to `std::cerr` and surface as `VkResult` / `bool`, never exceptions.
+- Errors reach boundaries as explicit result objects, `VkResult`, or `bool` and
+  are reported to `std::cerr`; exceptions do not cross subsystem APIs.
 - Cleanup is RAII via the `VulkanContext` / `Swapchain` destructors, not manual
   unwinding in `main()`. Every `main()` failure path is a bare `return 1;`.
 - Comments explain *why*, not *what*: decisions, contracts, and non-obvious Vulkan
@@ -791,19 +801,12 @@ Decisions and contracts worth preserving:
    fly controls, fixing the bring-up aspect-ratio distortion on resize. See
    [Camera](#camera) for the decisions and contracts.
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
-   staged uploads, and the procedural indexed-quad BDA/ABI probe have landed;
-   M4's Vulkan-free compiler core, offline quad front end, strict decoder, and
-   `SceneData` runtime adapter have landed;
-   CMake now generates `build/<preset>/assets/test_quad.ogfx` through the shared
-   writer and makes the engine depend on it. Next, the **OGFx round-trip**
-   continues ([FORMATS.md](FORMATS.md) is the source of truth for the
-   asset-format plan): `main()` switches from `createProceduralSceneData` to
-   the implemented file loader, then supplies one identity instance for this
-   standalone preview (OGFx stays a model format; eventual scene/level data owns world
-   placement). The byte-identical procedural runtime copy remains only between
-   the decoder and caller-switchover checkpoints; the switchover removes it so
-   the runtime keeps exactly one model-loading path, and the existing
-   GpuScene/AS/RT pipeline renders it unchanged. After that, M4a adds the direct
+   staged uploads, the indexed-quad BDA/ABI probe, and the complete M4 OGFx
+   round trip have landed. CMake generates
+   `build/<preset>/assets/test_quad.ogfx` through the shared writer; `main()` loads
+   that file, appends the identity preview instance, and sends the resulting
+   `SceneData` through the unchanged GpuScene/AS/RT path. The procedural runtime
+   builder is gone, so there is exactly one model-loading path. Next, M4a adds the direct
    command-line legacy-static OGF
    converter and validates it offline against the externally supplied SoC
    `plitka1.ogf` corpus asset (repository tests generate their own fixture; no
