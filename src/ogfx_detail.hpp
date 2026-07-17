@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <limits>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -142,5 +143,63 @@ inline bool positionIsFinite(const Position& position)
     return std::isfinite(position.x)
         && std::isfinite(position.y)
         && std::isfinite(position.z);
+}
+
+inline bool validUtf8(std::span<const std::uint8_t> bytes)
+{
+    std::size_t offset = 0;
+    while (offset < bytes.size()) {
+        const std::uint8_t first = bytes[offset];
+        if (first <= 0x7f) {
+            ++offset;
+            continue;
+        }
+
+        std::size_t length = 0;
+        std::uint8_t secondMinimum = 0x80;
+        std::uint8_t secondMaximum = 0xbf;
+        if (first >= 0xc2 && first <= 0xdf) {
+            length = 2;
+        } else if (first >= 0xe0 && first <= 0xef) {
+            length = 3;
+            if (first == 0xe0) {
+                secondMinimum = 0xa0;
+            } else if (first == 0xed) {
+                secondMaximum = 0x9f;
+            }
+        } else if (first >= 0xf0 && first <= 0xf4) {
+            length = 4;
+            if (first == 0xf0) {
+                secondMinimum = 0x90;
+            } else if (first == 0xf4) {
+                secondMaximum = 0x8f;
+            }
+        } else {
+            return false;
+        }
+
+        if (length > bytes.size() - offset) {
+            return false;
+        }
+        if (bytes[offset + 1] < secondMinimum || bytes[offset + 1] > secondMaximum) {
+            return false;
+        }
+        for (std::size_t index = 2; index < length; ++index) {
+            if (bytes[offset + index] < 0x80 || bytes[offset + index] > 0xbf) {
+                return false;
+            }
+        }
+        offset += length;
+    }
+
+    return true;
+}
+
+inline bool validUtf8(std::string_view text)
+{
+    return validUtf8(std::span{
+        reinterpret_cast<const std::uint8_t*>(text.data()),
+        text.size(),
+    });
 }
 }

@@ -7,8 +7,8 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <map>
 #include <numeric>
-#include <sstream>
 #include <utility>
 
 namespace xrphoton::ogfx
@@ -18,6 +18,13 @@ namespace
 using detail::Bounds;
 using detail::indexedField;
 using detail::positionIsFinite;
+using detail::validUtf8;
+
+// A unique arena entry has at least one referenced text byte, so its two-byte
+// prefix can at most triple the decoded-text budget. This pins every arena offset
+// to u32 without a redundant file-cap check in the material loop.
+static_assert(
+    MaximumDecodedTextureBytes <= std::numeric_limits<std::uint32_t>::max() / 3);
 
 struct PreparedModel
 {
@@ -25,6 +32,8 @@ struct PreparedModel
     Position sphereCenter{};
     float sphereRadius = 0.0f;
     std::vector<Bounds> geometryBounds;
+    std::vector<std::uint32_t> materialTextureOffsets;
+    std::vector<std::uint8_t> materialStringArena;
 };
 
 SerializeResult failure(
@@ -46,16 +55,15 @@ SerializeResult failure(
     };
 }
 
-std::string quoteText(std::string_view value)
-{
-    std::ostringstream text;
-    text << '"' << value << '"';
-    return text.str();
-}
-
 bool fitsU32(std::size_t value)
 {
     return value <= std::numeric_limits<std::uint32_t>::max();
+}
+
+void appendU16(std::vector<std::uint8_t>* bytes, std::uint16_t value)
+{
+    bytes->push_back(static_cast<std::uint8_t>(value));
+    bytes->push_back(static_cast<std::uint8_t>(value >> 8));
 }
 
 Bounds boundsForRange(const Model& model, std::uint32_t firstVertex, std::uint32_t vertexCount)
@@ -191,6 +199,11 @@ SerializeResult prepareModel(
         }
     }
 
+    prepared->materialTextureOffsets.clear();
+    prepared->materialTextureOffsets.reserve(model.materials.size());
+    prepared->materialStringArena.clear();
+    std::map<std::string_view, std::uint32_t, std::less<>> textureOffsets;
+    std::uint64_t decodedTextureBytes = 0;
     for (std::size_t index = 0; index < model.materials.size(); ++index) {
         const Material& material = model.materials[index];
         for (std::size_t component = 0; component < material.baseColorFactor.size(); ++component) {
@@ -212,14 +225,54 @@ SerializeResult prepareModel(
                 "a finite f32",
                 "a non-finite value");
         }
-        if (!material.baseColorTexture.empty()) {
+        if (material.baseColorTexture.empty()) {
+            prepared->materialTextureOffsets.push_back(NoTextureReference);
+            continue;
+        }
+        if (material.baseColorTexture.size() > MaximumStringBytes) {
             return failure(
                 diagnosticName,
                 ChunkId::Materials,
                 indexedField("materials", index, "baseColorTexture"),
-                "no texture reference in the M4 writer profile",
-                quoteText(material.baseColorTexture));
+                "at most " + std::to_string(MaximumStringBytes) + " UTF-8 bytes",
+                std::to_string(material.baseColorTexture.size()) + " bytes");
         }
+        if (!validUtf8(material.baseColorTexture)) {
+            return failure(
+                diagnosticName,
+                ChunkId::Materials,
+                indexedField("materials", index, "baseColorTexture"),
+                "valid UTF-8",
+                "an invalid sequence");
+        }
+        const std::uint64_t textureBytes = material.baseColorTexture.size();
+        if (textureBytes > MaximumDecodedTextureBytes - decodedTextureBytes) {
+            return failure(
+                diagnosticName,
+                ChunkId::Materials,
+                "decoded texture reference bytes",
+                "at most " + std::to_string(MaximumDecodedTextureBytes),
+                "more than " + std::to_string(MaximumDecodedTextureBytes));
+        }
+        decodedTextureBytes += textureBytes;
+
+        const auto existing = textureOffsets.find(material.baseColorTexture);
+        if (existing != textureOffsets.end()) {
+            prepared->materialTextureOffsets.push_back(existing->second);
+            continue;
+        }
+
+        const std::uint32_t offset =
+            static_cast<std::uint32_t>(prepared->materialStringArena.size());
+        appendU16(
+            &prepared->materialStringArena,
+            static_cast<std::uint16_t>(material.baseColorTexture.size()));
+        prepared->materialStringArena.insert(
+            prepared->materialStringArena.end(),
+            material.baseColorTexture.begin(),
+            material.baseColorTexture.end());
+        textureOffsets.emplace(material.baseColorTexture, offset);
+        prepared->materialTextureOffsets.push_back(offset);
     }
 
     prepared->geometryBounds.clear();
@@ -508,7 +561,9 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         static_cast<std::uint64_t>(model.meshes.size()) * MeshRecordSize;
     const std::uint64_t materialRecordBytes =
         static_cast<std::uint64_t>(model.materials.size()) * MaterialRecordSize;
-    const std::uint64_t materialBytes = MaterialHeaderSize + materialRecordBytes;
+    const std::uint64_t materialBytes = MaterialHeaderSize
+        + materialRecordBytes
+        + prepared.materialStringArena.size();
     const std::uint64_t positionBytes =
         static_cast<std::uint64_t>(model.positions.size()) * PositionRecordSize;
     const std::uint64_t attributeBytes =
@@ -566,18 +621,25 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
 
     appendChunkHeader(&result.bytes, ChunkId::Materials, materialBytes);
     appendU32(&result.bytes, static_cast<std::uint32_t>(model.materials.size()));
+    appendU32(
+        &result.bytes,
+        static_cast<std::uint32_t>(prepared.materialStringArena.size()));
     appendU32(&result.bytes, 0);
     appendU32(&result.bytes, 0);
-    appendU32(&result.bytes, 0);
-    for (const Material& material : model.materials) {
+    for (std::size_t index = 0; index < model.materials.size(); ++index) {
+        const Material& material = model.materials[index];
         for (float component : material.baseColorFactor) {
             appendF32(&result.bytes, component);
         }
         appendF32(&result.bytes, material.alphaCutoff);
-        appendU32(&result.bytes, NoTextureReference);
+        appendU32(&result.bytes, prepared.materialTextureOffsets[index]);
         appendU32(&result.bytes, 0);
         appendU32(&result.bytes, 0);
     }
+    result.bytes.insert(
+        result.bytes.end(),
+        prepared.materialStringArena.begin(),
+        prepared.materialStringArena.end());
 
     appendChunkHeader(&result.bytes, ChunkId::Positions, positionBytes);
     for (const Position& position : model.positions) {

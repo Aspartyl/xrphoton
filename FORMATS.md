@@ -407,9 +407,19 @@ Its exact size is `16 + materialCount × 32 + stringByteSize`, computed with
 checked 64-bit arithmetic. The arena is a sequence of the length-prefixed
 UTF-8 strings defined above. A texture offset must point to the `u16` prefix
 of a known entry; empty entries and offsets into the middle of entries are
-invalid because `UINT32_MAX` is the only no-texture representation. Until the
-texture milestone lands, every **runtime-loaded** OGFx requires all texture
-offsets to be `UINT32_MAX` and `stringByteSize` to be zero.
+invalid because `UINT32_MAX` is the only no-texture representation. The
+canonical writer validates every nonempty logical reference as at most 4096
+UTF-8 bytes and interns byte-identical references. Distinct strings enter the
+arena in first material-use order, so map/hash iteration order cannot affect
+the output. The offline `decodeModelSchema` entry point validates this complete
+static schema and reconstructs logical references; reserializing a model it
+decoded produces the canonical arena form. To bound expansion from many
+materials sharing one arena entry, both the writer and schema decoder cap the
+sum of reconstructed texture-reference byte lengths at 64 MiB, counting each
+material reference; every canonical writer output is therefore accepted by
+that decoder resource check. Until the texture milestone lands, the strict
+runtime `decodeModel` entry point still requires all texture offsets to be
+`UINT32_MAX` and `stringByteSize` to be zero.
 `SceneMaterial::baseColorImage` remains an inert zero until that milestone
 supplies the guaranteed fallback image; a runtime file reference is rejected
 as unsupported, never silently discarded. The legacy converter may produce

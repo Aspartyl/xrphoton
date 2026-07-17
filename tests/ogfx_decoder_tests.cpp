@@ -123,7 +123,7 @@ Model makeTwoGeometryModel()
     model.indices = {0, 1, 2, 0, 1, 2};
     model.geometries = {
         Geometry{0, 3, 0, 3, 0, false},
-        Geometry{3, 3, 3, 3, 0, false},
+        Geometry{3, 3, 3, 3, 0, true},
     };
     model.meshes = {Mesh{0, 1}, Mesh{1, 1}};
     model.materials.emplace_back();
@@ -297,6 +297,26 @@ void expectRejected(
         "decoder diagnostic states expected and found values");
 }
 
+void expectSchemaRejected(
+    const std::vector<std::uint8_t>& bytes,
+    std::string_view expectedChunk,
+    std::string_view expectedField)
+{
+    const DecodeResult result =
+        xrphoton::ogfx::decodeModelSchema(bytes, "invalid-schema.ogfx");
+    expect(!result, "malformed OGFx is rejected by the schema decoder");
+    expect(modelIsEmpty(result.model),
+        "schema rejection exposes no partial decoded model");
+    expect(result.error.find("invalid-schema.ogfx") != std::string::npos,
+        "schema decoder diagnostic names its input");
+    expect(result.error.find(expectedChunk) != std::string::npos,
+        std::string("schema decoder diagnostic names chunk: ")
+            + std::string(expectedChunk));
+    expect(result.error.find(expectedField) != std::string::npos,
+        std::string("schema decoder diagnostic names field: ")
+            + std::string(expectedField));
+}
+
 bool modelsEqual(const Model& left, const Model& right)
 {
     if (left.positions.size() != right.positions.size()
@@ -399,6 +419,53 @@ void testRoundTripAndExtensions()
         serialize(multipleMaterials),
         "OGFX_MATERIALS",
         "M4 runtime record count");
+}
+
+void testSchemaProfile()
+{
+    Model broad = makeTwoGeometryModel();
+    broad.materials[0].baseColorTexture = "textures/shared";
+    broad.materials.emplace_back();
+    broad.materials.emplace_back();
+    broad.materials.back().baseColorTexture = "textures/shared";
+    const std::vector<std::uint8_t> broadBytes = serialize(broad);
+
+    const DecodeResult broadDecoded =
+        xrphoton::ogfx::decodeModelSchema(broadBytes, "broad-schema.ogfx");
+    expect(static_cast<bool>(broadDecoded),
+        "schema decoding accepts multiple records, alpha geometry, and textures");
+    if (broadDecoded) {
+        expect(modelsEqual(broadDecoded.model, broad),
+            "schema decoding reconstructs the complete compiler model");
+        const SerializeResult reserialized =
+            xrphoton::ogfx::serializeModel(broadDecoded.model, "broad-round-trip.ogfx");
+        expect(static_cast<bool>(reserialized),
+            "the schema-decoded broad model serializes again");
+        expect(reserialized.bytes == broadBytes,
+            "textured writer-schema-writer round trip is byte exact");
+    } else {
+        std::cerr << broadDecoded.error << '\n';
+    }
+    expectRejected(broadBytes, "OGFX_MESHES", "M4 runtime record count");
+
+    Model texturedQuad = makeQuad();
+    texturedQuad.materials[0].baseColorTexture = "textures/plitka";
+    const std::vector<std::uint8_t> texturedBytes = serialize(texturedQuad);
+    const DecodeResult texturedDecoded =
+        xrphoton::ogfx::decodeModelSchema(texturedBytes, "textured-schema.ogfx");
+    expect(static_cast<bool>(texturedDecoded),
+        "schema decoding accepts a logical texture reference");
+    if (texturedDecoded) {
+        expect(modelsEqual(texturedDecoded.model, texturedQuad),
+            "schema decoding reconstructs a logical texture reference");
+    } else {
+        std::cerr << texturedDecoded.error << '\n';
+    }
+    expectRejected(texturedBytes, "OGFX_MATERIALS", "textureRefOffset");
+    expect(
+        xrphoton::ogfx::decodeModel(texturedBytes, "textured-runtime.ogfx")
+                .error.find("UINT32_MAX in the M4 runtime") != std::string::npos,
+        "runtime rejection remains the explicit M4 texture capability gate");
 }
 
 void testFileAndChunkFraming()
@@ -732,6 +799,29 @@ void setMaterialArena(
     materials->payload.insert(materials->payload.end(), arena.begin(), arena.end());
 }
 
+void setOverBudgetSharedTextureArena(RawChunk* materials)
+{
+    constexpr std::uint32_t materialCount = static_cast<std::uint32_t>(
+        xrphoton::ogfx::MaximumDecodedTextureBytes
+            / xrphoton::ogfx::MaximumStringBytes
+        + 1);
+    std::vector<std::uint8_t> arena;
+    appendU16(
+        &arena,
+        static_cast<std::uint16_t>(xrphoton::ogfx::MaximumStringBytes));
+    arena.resize(2 + xrphoton::ogfx::MaximumStringBytes, 'a');
+
+    materials->payload.assign(
+        xrphoton::ogfx::MaterialHeaderSize
+            + static_cast<std::size_t>(materialCount)
+                * xrphoton::ogfx::MaterialRecordSize,
+        0);
+    writeU32(&materials->payload, 0, materialCount);
+    writeU32(&materials->payload, 4, static_cast<std::uint32_t>(arena.size()));
+    // Zero-filled textureRefOffset fields make every material share arena entry 0.
+    materials->payload.insert(materials->payload.end(), arena.begin(), arena.end());
+}
+
 void testStringValidationAndTextureGate()
 {
     const std::vector<std::uint8_t> canonical = serialize(makeQuad());
@@ -758,7 +848,9 @@ void testStringValidationAndTextureGate()
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "string arena");
     chunks = splitChunks(canonical);
     setMaterialArena(&chunkById(&chunks, ChunkId::Materials), {2, 0, 0xc0, 0xaf});
-    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "string UTF-8");
+    const std::vector<std::uint8_t> invalidUtf8 = assembleFile(chunks);
+    expectRejected(invalidUtf8, "OGFX_MATERIALS", "string UTF-8");
+    expectSchemaRejected(invalidUtf8, "OGFX_MATERIALS", "string UTF-8");
     chunks = splitChunks(canonical);
     setMaterialArena(
         &chunkById(&chunks, ChunkId::Materials),
@@ -778,7 +870,16 @@ void testStringValidationAndTextureGate()
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "textureRefOffset");
     chunks = splitChunks(canonical);
     setMaterialArena(&chunkById(&chunks, ChunkId::Materials), {1, 0, 'a'});
-    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "stringByteSize");
+    const std::vector<std::uint8_t> unreferencedString = assembleFile(chunks);
+    expectRejected(unreferencedString, "OGFX_MATERIALS", "stringByteSize");
+    const DecodeResult unreferencedSchema =
+        xrphoton::ogfx::decodeModelSchema(unreferencedString, "unreferenced.ogfx");
+    expect(static_cast<bool>(unreferencedSchema),
+        "schema decoding permits a valid unreferenced string arena entry");
+    if (unreferencedSchema) {
+        expect(unreferencedSchema.model.materials[0].baseColorTexture.empty(),
+            "an unreferenced arena entry does not become a material reference");
+    }
     chunks = splitChunks(canonical);
     setMaterialArena(&chunkById(&chunks, ChunkId::Materials), {1, 0, 'a'}, 0);
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "textureRefOffset");
@@ -799,6 +900,14 @@ void testStringValidationAndTextureGate()
         xrphoton::ogfx::decodeModel(validLastReference, "strings.ogfx")
                 .error.find("UINT32_MAX in the M4 runtime") != std::string::npos,
         "a valid last-entry offset reaches the runtime texture capability gate");
+    const DecodeResult lastReferenceSchema =
+        xrphoton::ogfx::decodeModelSchema(validLastReference, "strings-schema.ogfx");
+    expect(static_cast<bool>(lastReferenceSchema),
+        "schema decoding accepts a reference to the final arena entry");
+    if (lastReferenceSchema) {
+        expect(lastReferenceSchema.model.materials[0].baseColorTexture == "d",
+            "schema decoding reconstructs the final referenced string");
+    }
     chunks = splitChunks(canonical);
     setMaterialArena(
         &chunkById(&chunks, ChunkId::Materials),
@@ -806,16 +915,29 @@ void testStringValidationAndTextureGate()
         4);
     const std::vector<std::uint8_t> middleReference = assembleFile(chunks);
     expectRejected(middleReference, "OGFX_MATERIALS", "textureRefOffset");
+    expectSchemaRejected(middleReference, "OGFX_MATERIALS", "textureRefOffset");
     expect(
         xrphoton::ogfx::decodeModel(middleReference, "strings.ogfx")
                 .error.find("start of a string entry") != std::string::npos,
         "an offset into a string body fails schema validation before the runtime gate");
+
+    chunks = splitChunks(canonical);
+    setOverBudgetSharedTextureArena(
+        &chunkById(&chunks, ChunkId::Materials));
+    const std::vector<std::uint8_t> overBudgetReferences = assembleFile(chunks);
+    expect(overBudgetReferences.size() < (1u << 20),
+        "the decoded-text amplification fixture stays below one file MiB");
+    expectSchemaRejected(
+        overBudgetReferences,
+        "OGFX_MATERIALS",
+        "decoded texture reference bytes");
 }
 }
 
 int main()
 {
     testRoundTripAndExtensions();
+    testSchemaProfile();
     testFileAndChunkFraming();
     testRequiredChunkRules();
     testPayloadFramingAndScalars();

@@ -1017,6 +1017,14 @@ material mapping, determinism, and loud rejection offline. Its
 texture-referencing output is not runtime-ready until the texture consumer
 lands, so this step makes no premature visual-equivalence claim.
 
+The OGFx-core prerequisite is landed ahead of the source adapter: the canonical
+writer now emits deterministic, first-use-interned logical-texture string arenas,
+and the offline schema decoder reconstructs them for byte-exact canonical
+writer/decoder/writer checks. The existing M4 runtime decoder remains the strict
+capability boundary and rejects textures, alpha-tested geometry, or expanded
+record counts. M4a itself starts at legacy OGF parsing; it does not fork the OGFx
+writer or weaken runtime acceptance.
+
 **Blender opaque export probe — milestone number deferred.** Add the primary
 modern-content adapter from Blender to the same shared compiler and generate a
 texture-free, opaque, genuinely three-dimensional OGFx probe. This is an

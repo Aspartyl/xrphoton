@@ -132,6 +132,10 @@ Includes are kept acyclic by a deliberate rule:
 - `ogfx.hpp` is a stricter offline boundary: it depends only on the standard
   library and shares no renderer-native structs. Source adapters populate its
   compiler model, and only the canonical writer owns the serialized schema.
+  Its offline schema decoder supports compiler round trips, including logical
+  texture references; the separate runtime entry point layers the current M4
+  record-count, opacity, and texture capability gates over the same structural
+  validation.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -806,8 +810,10 @@ Decisions and contracts worth preserving:
    `build/<preset>/assets/test_quad.ogfx` through the shared writer; `main()` loads
    that file, appends the identity preview instance, and sends the resulting
    `SceneData` through the unchanged GpuScene/AS/RT path. The procedural runtime
-   builder is gone, so there is exactly one model-loading path. Next, M4a adds the direct
-   command-line legacy-static OGF
+   builder is gone, so there is exactly one model-loading path. The OGFx core
+   prerequisite for M4a is also landed: deterministic logical-texture arenas and
+   an offline full-schema decoder now support converter round-trip validation
+   without broadening runtime acceptance. Next, M4a adds the direct command-line legacy-static OGF
    converter and validates it offline against the externally supplied SoC
    `plitka1.ogf` corpus asset (repository tests generate their own fixture; no
    GSC asset or local absolute path is committed). Blender is not part of that

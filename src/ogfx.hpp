@@ -24,6 +24,9 @@ inline constexpr std::uint32_t NoTextureReference =
 inline constexpr std::uint32_t MaximumStringBytes = 4096;
 inline constexpr std::uint32_t MaximumChunkCount = 4096;
 inline constexpr std::uint64_t MaximumFileBytes = 1ull << 30;
+// Schema decoding materializes one owning string per referenced material. Keep
+// duplicate-reference expansion well below the independent file-size cap.
+inline constexpr std::uint64_t MaximumDecodedTextureBytes = 64ull << 20;
 
 inline constexpr std::uint32_t ModelRecordSize = 48;
 inline constexpr std::uint32_t GeometryRecordSize = 48;
@@ -85,9 +88,9 @@ struct Material
     std::array<float, 4> baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
     float alphaCutoff = 0.5f;
 
-    // The v1 schema reserves logical texture references, but M4 has no texture
-    // consumer. Keeping the source field explicit lets this profile reject rather
-    // than silently discard one.
+    // Offline compiler paths preserve logical texture references in the v1 string
+    // arena. The M4 runtime entry point still rejects them until a texture consumer
+    // can resolve the reference without discarding semantics.
     std::string baseColorTexture;
 };
 
@@ -127,6 +130,14 @@ struct DecodeResult
 // errors; it is never serialized, so identical models always produce identical bytes.
 [[nodiscard]] SerializeResult serializeModel(
     const Model& model,
+    std::string_view diagnosticName = "<memory>");
+
+// Decodes and validates the complete version-1 static schema within its published
+// resource caps, including logical texture references and record counts beyond the
+// current runtime capability gates. This is the offline round-trip/inspection entry
+// point; it does not make the model runtime-ready.
+[[nodiscard]] DecodeResult decodeModelSchema(
+    std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");
 
 // Decodes the strict M4 runtime profile transactionally: failure returns one

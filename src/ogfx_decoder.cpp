@@ -25,6 +25,7 @@ using detail::checkedAdd;
 using detail::checkedAlignUp;
 using detail::indexedField;
 using detail::positionIsFinite;
+using detail::validUtf8;
 
 constexpr std::array RequiredChunkIds{
     static_cast<std::uint32_t>(ChunkId::Model),
@@ -105,62 +106,22 @@ Bounds readBounds(std::span<const std::uint8_t> bytes, std::size_t offset)
     };
 }
 
-bool validUtf8(std::span<const std::uint8_t> bytes)
+enum class DecodeProfile
 {
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const std::uint8_t first = bytes[offset];
-        if (first <= 0x7f) {
-            ++offset;
-            continue;
-        }
-
-        std::size_t length = 0;
-        std::uint8_t secondMinimum = 0x80;
-        std::uint8_t secondMaximum = 0xbf;
-        if (first >= 0xc2 && first <= 0xdf) {
-            length = 2;
-        } else if (first >= 0xe0 && first <= 0xef) {
-            length = 3;
-            if (first == 0xe0) {
-                secondMinimum = 0xa0;
-            } else if (first == 0xed) {
-                secondMaximum = 0x9f;
-            }
-        } else if (first >= 0xf0 && first <= 0xf4) {
-            length = 4;
-            if (first == 0xf0) {
-                secondMinimum = 0x90;
-            } else if (first == 0xf4) {
-                secondMaximum = 0x8f;
-            }
-        } else {
-            return false;
-        }
-
-        if (length > bytes.size() - offset) {
-            return false;
-        }
-        if (bytes[offset + 1] < secondMinimum || bytes[offset + 1] > secondMaximum) {
-            return false;
-        }
-        for (std::size_t index = 2; index < length; ++index) {
-            if (bytes[offset + index] < 0x80 || bytes[offset + index] > 0xbf) {
-                return false;
-            }
-        }
-        offset += length;
-    }
-
-    return true;
-}
+    Schema,
+    RuntimeM4,
+};
 
 class Decoder
 {
 public:
-    Decoder(std::span<const std::uint8_t> bytes, std::string_view diagnosticName)
+    Decoder(
+        std::span<const std::uint8_t> bytes,
+        std::string_view diagnosticName,
+        DecodeProfile profile)
         : bytes_(bytes)
         , diagnosticName_(diagnosticName)
+        , profile_(profile)
     {
     }
 
@@ -184,8 +145,10 @@ public:
             || !decodePositions()
             || !decodeAttributes()
             || !decodeIndices()
-            || !validateModel(geometryBounds, metadata)
-            || !validateRuntimeProfile()) {
+            || !validateModel(geometryBounds, metadata)) {
+            return failedResult();
+        }
+        if (profile_ == DecodeProfile::RuntimeM4 && !validateRuntimeProfile()) {
             return failedResult();
         }
 
@@ -574,7 +537,8 @@ private:
         std::size_t arenaOffset,
         std::uint32_t arenaSize,
         const std::vector<std::uint32_t>& requestedOffsets,
-        std::vector<std::uint8_t>* matchedOffsets)
+        std::vector<std::uint8_t>* matchedOffsets,
+        std::vector<std::string_view>* matchedTexts)
     {
         std::uint32_t offset = 0;
         std::size_t requestedIndex = 0;
@@ -622,6 +586,12 @@ private:
             if (requestedIndex < requestedOffsets.size()
                 && requestedOffsets[requestedIndex] == offset) {
                 (*matchedOffsets)[requestedIndex] = 1;
+                if (matchedTexts != nullptr) {
+                    (*matchedTexts)[requestedIndex] = std::string_view{
+                        reinterpret_cast<const char*>(textBytes.data()),
+                        textBytes.size(),
+                    };
+                }
             }
             offset += 2 + length;
         }
@@ -720,9 +690,9 @@ private:
             model_.materials.push_back(std::move(material));
         }
 
-        // M4 ultimately rejects texture references, so retaining every arena string
-        // would only amplify hostile input. Sort the referenced offsets, validate all
-        // UTF-8 once, and mark matching entry starts in one bounded pass instead.
+        // Sort referenced offsets so the arena is validated once in a bounded pass.
+        // Runtime decoding retains only one byte per unique reference before rejecting
+        // at its capability gate; schema decoding also records views for reconstruction.
         std::vector<std::uint32_t> requestedOffsets;
         const std::size_t referenceCount = static_cast<std::size_t>(std::count_if(
             textureReferenceOffsets_.begin(),
@@ -741,6 +711,10 @@ private:
             std::unique(requestedOffsets.begin(), requestedOffsets.end()),
             requestedOffsets.end());
         std::vector<std::uint8_t> matchedOffsets(requestedOffsets.size(), 0);
+        std::vector<std::string_view> matchedTexts;
+        if (profile_ == DecodeProfile::Schema) {
+            matchedTexts.resize(requestedOffsets.size());
+        }
 
         const std::size_t arenaOffset = offset + MaterialHeaderSize
             + static_cast<std::size_t>(recordBytes);
@@ -749,7 +723,8 @@ private:
                 arenaOffset,
                 materialStringByteSize_,
                 requestedOffsets,
-                &matchedOffsets)) {
+                &matchedOffsets,
+                profile_ == DecodeProfile::Schema ? &matchedTexts : nullptr)) {
             return false;
         }
 
@@ -769,6 +744,46 @@ private:
                 indexedField("materials", materialIndex, "textureRefOffset"),
                 "UINT32_MAX or the start of a string entry",
                 std::to_string(unmatchedOffset));
+        }
+
+        if (profile_ == DecodeProfile::Schema) {
+            std::uint64_t decodedTextureBytes = 0;
+            for (std::uint32_t textureOffset : textureReferenceOffsets_) {
+                if (textureOffset == NoTextureReference) {
+                    continue;
+                }
+                const auto found = std::lower_bound(
+                    requestedOffsets.begin(),
+                    requestedOffsets.end(),
+                    textureOffset);
+                assert(found != requestedOffsets.end() && *found == textureOffset);
+                const std::size_t requestedIndex =
+                    static_cast<std::size_t>(found - requestedOffsets.begin());
+                const std::uint64_t textBytes = matchedTexts[requestedIndex].size();
+                if (textBytes > MaximumDecodedTextureBytes - decodedTextureBytes) {
+                    return reject(
+                        chunk.id,
+                        "decoded texture reference bytes",
+                        "at most " + std::to_string(MaximumDecodedTextureBytes),
+                        "more than " + std::to_string(MaximumDecodedTextureBytes));
+                }
+                decodedTextureBytes += textBytes;
+            }
+
+            for (std::size_t index = 0; index < textureReferenceOffsets_.size(); ++index) {
+                const std::uint32_t textureOffset = textureReferenceOffsets_[index];
+                if (textureOffset == NoTextureReference) {
+                    continue;
+                }
+                const auto found = std::lower_bound(
+                    requestedOffsets.begin(),
+                    requestedOffsets.end(),
+                    textureOffset);
+                assert(found != requestedOffsets.end() && *found == textureOffset);
+                const std::size_t requestedIndex =
+                    static_cast<std::size_t>(found - requestedOffsets.begin());
+                model_.materials[index].baseColorTexture = matchedTexts[requestedIndex];
+            }
         }
         return true;
     }
@@ -1101,20 +1116,21 @@ private:
 
     std::span<const std::uint8_t> bytes_;
     std::string_view diagnosticName_;
+    DecodeProfile profile_;
     std::vector<ChunkView> chunks_;
     Model model_;
     std::vector<std::uint32_t> textureReferenceOffsets_;
     std::uint32_t materialStringByteSize_ = 0;
     std::string error_;
 };
-}
 
-DecodeResult decodeModel(
+DecodeResult decodeWithProfile(
     std::span<const std::uint8_t> bytes,
-    std::string_view diagnosticName)
+    std::string_view diagnosticName,
+    DecodeProfile profile)
 {
     try {
-        return Decoder(bytes, diagnosticName).run();
+        return Decoder(bytes, diagnosticName, profile).run();
     } catch (const std::bad_alloc&) {
         return {
             .model = {},
@@ -1136,5 +1152,20 @@ DecodeResult decodeModel(
                 "a length error"),
         };
     }
+}
+}
+
+DecodeResult decodeModelSchema(
+    std::span<const std::uint8_t> bytes,
+    std::string_view diagnosticName)
+{
+    return decodeWithProfile(bytes, diagnosticName, DecodeProfile::Schema);
+}
+
+DecodeResult decodeModel(
+    std::span<const std::uint8_t> bytes,
+    std::string_view diagnosticName)
+{
+    return decodeWithProfile(bytes, diagnosticName, DecodeProfile::RuntimeM4);
 }
 }

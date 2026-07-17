@@ -47,6 +47,18 @@ std::uint32_t readU32(const std::vector<std::uint8_t>& bytes, std::size_t offset
         | (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
 }
 
+std::uint16_t readU16(const std::vector<std::uint8_t>& bytes, std::size_t offset)
+{
+    expect(offset + 2 <= bytes.size(), "u16 read stays inside the serialized file");
+    if (offset + 2 > bytes.size()) {
+        return 0;
+    }
+
+    return static_cast<std::uint16_t>(bytes[offset])
+        | static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(bytes[offset + 1]) << 8);
+}
+
 std::uint64_t readU64(const std::vector<std::uint8_t>& bytes, std::size_t offset)
 {
     return static_cast<std::uint64_t>(readU32(bytes, offset))
@@ -358,6 +370,111 @@ void testAsymmetricBoundsAndMaterialFraming()
         "each material gets the no-texture sentinel");
 }
 
+void testTextureStringArena()
+{
+    const std::string firstTexture = "textures/plitka";
+    const std::string utf8Texture = "textures/caf\xc3\xa9";
+    Model model = makeQuad();
+    model.materials[0].baseColorTexture = firstTexture;
+    model.materials.emplace_back();
+    model.materials.emplace_back();
+    model.materials.back().baseColorTexture = firstTexture;
+    model.materials.emplace_back();
+    model.materials.back().baseColorTexture = utf8Texture;
+
+    const SerializeResult first =
+        xrphoton::ogfx::serializeModel(model, "textured-first.ogfx");
+    const SerializeResult second =
+        xrphoton::ogfx::serializeModel(model, "textured-second.ogfx");
+    expect(static_cast<bool>(first), "logical texture references serialize");
+    expect(static_cast<bool>(second), "logical texture references serialize again");
+    if (!first || !second) {
+        if (!first.error.empty()) {
+            std::cerr << first.error << '\n';
+        }
+        if (!second.error.empty()) {
+            std::cerr << second.error << '\n';
+        }
+        return;
+    }
+
+    expect(first.bytes == second.bytes,
+        "textured serialization is deterministic and ignores diagnostic names");
+    const std::vector<std::uint8_t>& bytes = first.bytes;
+    const std::uint32_t secondOffset =
+        static_cast<std::uint32_t>(2 + firstTexture.size());
+    const std::uint32_t arenaBytes = secondOffset
+        + static_cast<std::uint32_t>(2 + utf8Texture.size());
+
+    expect(readU64(bytes, 240) == 16 + 4 * 32 + arenaBytes,
+        "material payload includes four records and the interned string arena");
+    expect(readU32(bytes, 256) == 4, "textured payload records four materials");
+    expect(readU32(bytes, 260) == arenaBytes,
+        "textured payload records the exact string arena size");
+    expect(readU32(bytes, 292) == 0,
+        "first texture reference points to the first arena entry");
+    expect(readU32(bytes, 324) == xrphoton::ogfx::NoTextureReference,
+        "an empty texture between references keeps the no-texture sentinel");
+    expect(readU32(bytes, 356) == 0,
+        "duplicate texture references reuse the first arena entry");
+    expect(readU32(bytes, 388) == secondOffset,
+        "second unique texture points past the first arena entry");
+
+    constexpr std::size_t arenaOffset = 400;
+    expect(readU16(bytes, arenaOffset) == firstTexture.size(),
+        "first arena entry has an explicit little-endian byte length");
+    expect(std::equal(
+            firstTexture.begin(),
+            firstTexture.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(arenaOffset + 2),
+            [](char left, std::uint8_t right) {
+                return static_cast<std::uint8_t>(left) == right;
+            }),
+        "first arena entry preserves its UTF-8 bytes");
+    const std::size_t secondEntry = arenaOffset + secondOffset;
+    expect(readU16(bytes, secondEntry) == utf8Texture.size(),
+        "second arena entry counts UTF-8 bytes rather than code points");
+    expect(std::equal(
+            utf8Texture.begin(),
+            utf8Texture.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(secondEntry + 2),
+            [](char left, std::uint8_t right) {
+                return static_cast<std::uint8_t>(left) == right;
+            }),
+        "second arena entry preserves multibyte UTF-8");
+
+    Model maximumLength = makeQuad();
+    maximumLength.materials[0].baseColorTexture.assign(
+        xrphoton::ogfx::MaximumStringBytes,
+        'a');
+    const SerializeResult maximum =
+        xrphoton::ogfx::serializeModel(maximumLength, "maximum-texture.ogfx");
+    expect(static_cast<bool>(maximum),
+        "a texture reference at the 4096-byte schema limit serializes");
+    if (maximum) {
+        expect(readU32(maximum.bytes, 260) == 2 + xrphoton::ogfx::MaximumStringBytes,
+            "the maximum-length entry contributes its prefix and all text bytes");
+        expect(readU32(maximum.bytes, 292) == 0,
+            "the maximum-length reference points to the arena start");
+        expect(readU16(maximum.bytes, 304) == xrphoton::ogfx::MaximumStringBytes,
+            "the maximum length fits the pinned u16 entry prefix");
+        const xrphoton::ogfx::DecodeResult decoded =
+            xrphoton::ogfx::decodeModelSchema(maximum.bytes, "maximum-schema.ogfx");
+        expect(static_cast<bool>(decoded),
+            "the schema decoder accepts a texture at the 4096-byte limit");
+        if (decoded) {
+            expect(
+                decoded.model.materials[0].baseColorTexture
+                        == maximumLength.materials[0].baseColorTexture,
+                "the schema decoder preserves every maximum-length texture byte");
+        } else {
+            std::cerr << decoded.error << '\n';
+        }
+    } else {
+        std::cerr << maximum.error << '\n';
+    }
+}
+
 void testValidation()
 {
     {
@@ -474,7 +591,15 @@ void testValidation()
     }
     {
         Model model = makeQuad();
-        model.materials[0].baseColorTexture = "ston/example";
+        model.materials[0].baseColorTexture.assign(
+            xrphoton::ogfx::MaximumStringBytes + 1,
+            'a');
+        expectRejected(std::move(model), "baseColorTexture");
+    }
+    {
+        Model model = makeQuad();
+        model.materials[0].baseColorTexture =
+            std::string{"\xc0\xaf", 2};
         expectRejected(std::move(model), "baseColorTexture");
     }
     {
@@ -511,6 +636,7 @@ int main()
     testSupportedSchemaBreadth();
     testSphereEnclosureRounding();
     testAsymmetricBoundsAndMaterialFraming();
+    testTextureStringArena();
     testValidation();
 
     if (failureCount != 0) {
