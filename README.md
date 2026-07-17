@@ -88,8 +88,8 @@ This first adapter intentionally accepts only the documented M4a static profile.
 Its output preserves a logical texture name for offline schema inspection, so it
 is not runtime-ready until texture resolution lands.
 
-With the local `plitka1.ogf` corpus file in
-`build/ogfx-core/corpus/meshes/objects/dynamics/plitka/`, run the complete,
+With the local `plitka1.ogf` source file in
+`build/ogfx-core/legacy-ogf-corpus/meshes/objects/dynamics/plitka/`, run the complete,
 opt-in offline proof with:
 
 ```sh
@@ -98,8 +98,9 @@ cmake --build --preset ogfx-core --target xrPhotonM4aOfflineProof
 
 It verifies the pinned source and output identities, conversion semantics,
 canonical schema round trip, and unchanged runtime texture gate. The persistent
-result is written to `build/ogfx-core/converted/plitka1.ogfx`. A different local
-source location can be selected at configure time with
+result is written to
+`build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`. A different
+local source location can be selected at configure time with
 `-DXRPHOTON_M4A_CORPUS_OGF=/path/to/plitka1.ogf`; the corpus remains outside the
 repository and normal builds do not depend on it.
 

@@ -835,8 +835,10 @@ each arrives with its own consumer.
    `xrPhotonM4aOfflineProof` build target verifies the exact local source identity,
    drives the real CLI, checks complete schema reconstruction and byte-exact
    canonical reserialization, confirms the runtime texture gate remains closed,
-   and persists the proven output under `build/<preset>/converted/`. It is not a
-   dependency of normal builds or repository tests.
+   and persists the proven output under its canonical relative asset path in
+   `build/<preset>/corpus/`. Legacy source assets live separately under
+   `build/<preset>/legacy-ogf-corpus/`. It is
+   not a dependency of normal builds or repository tests.
 2. **Blender opaque probe → add-on/export → OGFx.** The primary modern-content
    path lands with a no-texture-reference, opaque-only probe that can drive the
    N-BLAS generalization under the runtime's current capability gates. A

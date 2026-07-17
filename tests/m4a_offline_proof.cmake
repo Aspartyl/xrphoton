@@ -10,7 +10,7 @@ file(REMOVE "${candidate_output}")
 if(NOT EXISTS "${SOURCE_OGF}")
     message(FATAL_ERROR
         "M4a corpus source not found: ${SOURCE_OGF}\n"
-        "Place plitka1.ogf in the documented corpus path or configure "
+        "Place plitka1.ogf in the documented legacy OGF corpus path or configure "
         "XRPHOTON_M4A_CORPUS_OGF.")
 endif()
 

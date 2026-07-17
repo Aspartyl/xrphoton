@@ -1030,7 +1030,10 @@ nor a machine-specific path is committed. The opt-in
 the exact source/output hashes, invokes the production CLI, checks complete
 schema reconstruction plus byte-exact canonical reserialization, preserves the
 runtime texture rejection, and writes the proven file to
-`build/<preset>/converted/plitka1.ogfx`.
+`build/<preset>/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`. The legacy
+source lives at the matching relative path under
+`build/<preset>/legacy-ogf-corpus/`, keeping canonical OGFx assets separate from
+their import sources.
 
 The OGFx-core prerequisite landed first: the canonical
 writer now emits deterministic, first-use-interned logical-texture string arenas,

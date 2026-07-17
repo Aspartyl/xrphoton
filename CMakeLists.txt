@@ -87,11 +87,11 @@ if(BUILD_TESTING)
     )
 
     set(XRPHOTON_M4A_CORPUS_OGF
-        "${CMAKE_SOURCE_DIR}/build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogf"
+        "${CMAKE_SOURCE_DIR}/build/ogfx-core/legacy-ogf-corpus/meshes/objects/dynamics/plitka/plitka1.ogf"
         CACHE FILEPATH
         "Local plitka1.ogf used only by the opt-in M4a offline proof")
     set(XRPHOTON_M4A_PROOF_OUTPUT
-        "${CMAKE_CURRENT_BINARY_DIR}/converted/plitka1.ogfx")
+        "${CMAKE_CURRENT_BINARY_DIR}/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx")
     add_custom_target(xrPhotonM4aOfflineProof
         COMMAND ${CMAKE_COMMAND}
             -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
