@@ -35,13 +35,15 @@ handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
 into the runtime binary at build time, so shader deployment is self-contained
 and needs no runtime shader files.
 
-The first complete OGFx round trip has landed. Every normal engine build generates
-`build/<preset>/assets/test_quad.ogfx` through the canonical writer; the runtime
-strictly decodes that file into `SceneData` and renders the file-backed quad through
-the existing GPU/BLAS/TLAS path. Next up is direct legacy-static OGF conversion,
-followed by real geometry and materials, dynamic scenes (TLAS refits, skinning),
-actual path tracing with lights, and finally temporal accumulation and denoising.
-Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+The first complete OGFx round trip and the narrow M4a legacy-static converter have
+landed. Every normal engine build generates `build/<preset>/assets/test_quad.ogfx`
+through the canonical writer; the runtime strictly decodes that file into
+`SceneData` and renders the file-backed quad through the existing GPU/BLAS/TLAS
+path. The separate converter accepts the pinned OGF v4 static profile and feeds
+that same writer for offline validation. Next up is the Blender opaque export
+probe, followed by real geometry and materials, dynamic scenes (TLAS refits,
+skinning), actual path tracing with lights, and finally temporal accumulation and
+denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 
@@ -75,6 +77,16 @@ That graphics-free configuration can also generate the probe asset explicitly:
 ```sh
 cmake --build --preset ogfx-core --target xrPhotonAssets
 ```
+
+It also builds the narrow legacy OGF converter:
+
+```sh
+./build/ogfx-core/xrPhotonAssetCompiler convert-ogf input.ogf output.ogfx
+```
+
+This first adapter intentionally accepts only the documented M4a static profile.
+Its output preserves a logical texture name for offline schema inspection, so it
+is not runtime-ready until texture resolution lands.
 
 The current build and development environment is Linux with GCC or Clang.
 Windows support is planned, but its build and platform integration have not landed yet.

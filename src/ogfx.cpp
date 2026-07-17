@@ -480,15 +480,6 @@ SerializeResult prepareModel(
     return {};
 }
 
-void addChunkToFileSize(std::uint64_t payloadBytes, std::uint64_t* fileBytes)
-{
-    const std::uint64_t remainder = *fileBytes % ChunkAlignment;
-    if (remainder != 0) {
-        *fileBytes += ChunkAlignment - remainder;
-    }
-    *fileBytes += ChunkHeaderSize + payloadBytes;
-}
-
 void appendU32(std::vector<std::uint8_t>* bytes, std::uint32_t value)
 {
     bytes->push_back(static_cast<std::uint8_t>(value));
@@ -571,14 +562,16 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
     const std::uint64_t indexBytes =
         static_cast<std::uint64_t>(model.indices.size()) * IndexRecordSize;
 
-    std::uint64_t fileBytes = FileHeaderSize;
-    addChunkToFileSize(ModelRecordSize, &fileBytes);
-    addChunkToFileSize(geometryBytes, &fileBytes);
-    addChunkToFileSize(meshBytes, &fileBytes);
-    addChunkToFileSize(materialBytes, &fileBytes);
-    addChunkToFileSize(positionBytes, &fileBytes);
-    addChunkToFileSize(attributeBytes, &fileBytes);
-    addChunkToFileSize(indexBytes, &fileBytes);
+    const std::uint64_t fileBytes = detail::canonicalModelFileBytes({
+        .geometryCount = static_cast<std::uint32_t>(model.geometries.size()),
+        .meshCount = static_cast<std::uint32_t>(model.meshes.size()),
+        .materialCount = static_cast<std::uint32_t>(model.materials.size()),
+        .materialStringBytes =
+            static_cast<std::uint32_t>(prepared.materialStringArena.size()),
+        .positionCount = static_cast<std::uint32_t>(model.positions.size()),
+        .attributeCount = static_cast<std::uint32_t>(model.attributes.size()),
+        .indexCount = static_cast<std::uint32_t>(model.indices.size()),
+    });
     if (fileBytes > MaximumFileBytes) {
         return failure(
             diagnosticName,

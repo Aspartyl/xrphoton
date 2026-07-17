@@ -138,6 +138,54 @@ inline bool checkedAlignUp(
     return checkedAdd(value, alignment - remainder, result);
 }
 
+struct CanonicalModelCounts
+{
+    std::uint32_t geometryCount = 0;
+    std::uint32_t meshCount = 0;
+    std::uint32_t materialCount = 0;
+    std::uint32_t materialStringBytes = 0;
+    std::uint32_t positionCount = 0;
+    std::uint32_t attributeCount = 0;
+    std::uint32_t indexCount = 0;
+};
+
+// The canonical writer and bounded source adapters share this one size formula.
+// Every count is u32, so the pinned v1 record products and their sum fit u64.
+inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
+{
+    auto addChunk = [](std::uint64_t payloadBytes, std::uint64_t* fileBytes) {
+        const std::uint64_t remainder = *fileBytes % ChunkAlignment;
+        if (remainder != 0) {
+            *fileBytes += ChunkAlignment - remainder;
+        }
+        *fileBytes += ChunkHeaderSize + payloadBytes;
+    };
+
+    const std::uint64_t geometryBytes =
+        static_cast<std::uint64_t>(counts.geometryCount) * GeometryRecordSize;
+    const std::uint64_t meshBytes =
+        static_cast<std::uint64_t>(counts.meshCount) * MeshRecordSize;
+    const std::uint64_t materialBytes = MaterialHeaderSize
+        + static_cast<std::uint64_t>(counts.materialCount) * MaterialRecordSize
+        + counts.materialStringBytes;
+    const std::uint64_t positionBytes =
+        static_cast<std::uint64_t>(counts.positionCount) * PositionRecordSize;
+    const std::uint64_t attributeBytes =
+        static_cast<std::uint64_t>(counts.attributeCount) * AttributeRecordSize;
+    const std::uint64_t indexBytes =
+        static_cast<std::uint64_t>(counts.indexCount) * IndexRecordSize;
+
+    std::uint64_t fileBytes = FileHeaderSize;
+    addChunk(ModelRecordSize, &fileBytes);
+    addChunk(geometryBytes, &fileBytes);
+    addChunk(meshBytes, &fileBytes);
+    addChunk(materialBytes, &fileBytes);
+    addChunk(positionBytes, &fileBytes);
+    addChunk(attributeBytes, &fileBytes);
+    addChunk(indexBytes, &fileBytes);
+    return fileBytes;
+}
+
 inline bool positionIsFinite(const Position& position)
 {
     return std::isfinite(position.x)

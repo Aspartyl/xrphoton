@@ -1003,8 +1003,8 @@ The existing GPU/AS/RT path stays unchanged. Exit: the file-backed quad shows
 the predicted red/green UV gradient; plain and GPU-assisted validation are
 clean. This milestone proves the format boundary, not multi-object AS logic.
 
-**M4a — direct legacy-static OGF conversion, offline proof.** Grow the shared
-compiler behind a command-line front end that parses OGF directly — Blender is
+**M4a — direct legacy-static OGF conversion, offline proof. Landed.** The shared
+compiler now has a command-line front end that parses OGF directly — Blender is
 not an intermediate conversion stage — and converts the externally supplied
 SoC `meshes/objects/dynamics/plitka/plitka1.ogf` acceptance input. Pin the OGF
 v4 normal-model, direct chunk, header shader id `0`, FVF `0x112`, `u16`-index,
@@ -1017,13 +1017,23 @@ material mapping, determinism, and loud rejection offline. Its
 texture-referencing output is not runtime-ready until the texture consumer
 lands, so this step makes no premature visual-equivalence claim.
 
-The OGFx-core prerequisite is landed ahead of the source adapter: the canonical
+The landed `xrPhotonAssetCompiler convert-ogf` command uses a separate,
+standard-library-only legacy adapter and the one canonical OGFx writer. It
+accepts exactly the pinned flat four-chunk profile, passes coordinates, normals,
+UVs, and winding through unchanged, widens indices, regenerates bounds, and
+preserves the logical texture name. Generated fixtures cover the accepted
+boundary, unsupported/malformed rejection, deterministic CLI publication, and
+schema reconstruction. The local `plitka1.ogf` corpus produces the pinned 1,802
+vertices, 3,300 indices, and deterministic 71,328-byte OGFx output; neither it
+nor a machine-specific path is committed.
+
+The OGFx-core prerequisite landed first: the canonical
 writer now emits deterministic, first-use-interned logical-texture string arenas,
 and the offline schema decoder reconstructs them for byte-exact canonical
 writer/decoder/writer checks. The existing M4 runtime decoder remains the strict
 capability boundary and rejects textures, alpha-tested geometry, or expanded
-record counts. M4a itself starts at legacy OGF parsing; it does not fork the OGFx
-writer or weaken runtime acceptance.
+record counts. M4a starts at legacy OGF parsing; it does not fork the OGFx writer
+or weaken runtime acceptance.
 
 **Blender opaque export probe — milestone number deferred.** Add the primary
 modern-content adapter from Blender to the same shared compiler and generate a

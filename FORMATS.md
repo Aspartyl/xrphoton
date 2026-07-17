@@ -5,9 +5,9 @@ the role [ARCHITECTURE.md](ARCHITECTURE.md) plays for engine architecture. It
 records the settled decisions about how content reaches the runtime (OGFx,
 OMFx, the shared offline asset compiler) and the proposed elaboration of those
 decisions into concrete mechanism. OGFx v1's static core, canonical writer,
-strict runtime decoder/adapter, and offline quad front end now exist; later
-format families, source adapters, and SDK tools remain planned. The first landed
-slice is recorded at the
+strict runtime decoder/adapter, offline quad front end, and narrow M4a
+legacy-static adapter/CLI now exist; broader source profiles, later format
+families, and SDK tools remain planned. The landed slices are recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
 
 **How to read the labels.** Three kinds of statement appear below, and the
@@ -95,16 +95,16 @@ demands it.**
 ### The OGF heritage
 
 OGF version 4 is the model format shipped across the S.T.A.L.K.E.R. releases
-(version 3 appears in earlier builds; the converter detects source versions —
-see [the compiler](#the-shared-asset-compiler)). It is a chunk-oriented binary
-container: a flat sequence of `{u32 id, u32 size}` chunks, some containing
-nested sub-chunks. The chunk vocabulary, verified against xray_re's
-`xr_ogf_format.h`:
+(version 3 appears in earlier builds; the first converter profile accepts only
+its pinned version 4 input and rejects every other version). It is a
+chunk-oriented binary container: a flat sequence of `{u32 id, u32 size}` chunks,
+some containing nested sub-chunks. The chunk vocabulary, verified against
+xray_re's `xr_ogf_format.h`:
 
 | Id | Chunk | Contents |
 |----|-------|----------|
 | `0x1` | `OGF_HEADER` | `u8` format version (4), `u8` model type, `u16` shader id, AABB, bounding sphere |
-| `0x2` | `OGF_TEXTURE` | texture and engine-shader name strings *(exact layout: verify against OpenXRay sources at implementation time)* |
+| `0x2` | `OGF_TEXTURE` | texture name followed by engine-shader name, each a NUL-terminated byte string |
 | `0x3` | `OGF_VERTICES` | `u32` vertex format, `u32` vertex count, packed vertex array |
 | `0x4` | `OGF_INDICES` | `u32` index count, then **16-bit** (`u16`) indices |
 | `0x6` | `OGF_SWIDATA` | four reserved `u32` values, a `u32` window count, then slide-window records: `{u32 offset, u16 tris, u16 verts}` |
@@ -151,6 +151,26 @@ Sky / Call of Pripyat era as the small-integer `_CS` format values
 multiplied constants (`0x36154C80`, labeled N-link, plus `0x481C6600` =
 3-link and `0x5A237F80` = 4-link) whose real-asset use is unclear *(verify
 against a real asset corpus at implementation time)*.
+
+**IMPLEMENTED — narrow M4a source profile.** The first legacy adapter accepts
+exactly one flat, uncompressed instance of `OGF_HEADER`, `OGF_TEXTURE`,
+`OGF_VERTICES`, and `OGF_INDICES`, in any order, with no extra chunks. It pins
+version `4`, normal/static type `0`, header shader id `0`, engine shader
+`default`, FVF `0x112`, 32-byte position/normal/UV records, and `u16` triangle
+indices. Both source strings must be nonempty printable ASCII of at most 255
+bytes; this deliberately handles the ASCII corpus without pretending arbitrary
+legacy code-page bytes are UTF-8. Other versions, types, encodings, shaders,
+vertex formats, compression, and chunk families fail with a file/chunk/field
+diagnostic rather than losing semantics.
+
+Positions, normals, UVs, and triangle order pass through unchanged; indices are
+widened to `u32`. Source AABB extrema must exactly match the vertex stream, and
+the stored sphere must enclose it with the one-outward-`f32`-ULP tolerance needed
+by the acceptance corpus. Each corner normal of a nondegenerate triangle must
+agree with its unchanged right-handed winding. The adapter creates one opaque
+geometry/mesh/material and preserves the logical texture name; the canonical
+OGFx writer independently regenerates bounds and serializes it. The adapter does
+not add a runtime OGF loading path.
 
 What this heritage gets right — and what OGFx therefore **preserves**
 (**DECISION**):
@@ -666,10 +686,12 @@ outputs load, and the disagreement becomes load-bearing. This is the "one
 focus, clear vision" convention applied to tooling.
 
 The first landed compiler slice is the standard-library-only model and canonical
-writer in [`src/ogfx.hpp`](src/ogfx.hpp) / [`src/ogfx.cpp`](src/ogfx.cpp). It
-returns validated bytes in memory and deliberately owns neither Vulkan nor file
-I/O; offline front ends decide where outputs live, while every front end still
-uses the same serializer.
+writer in [`src/ogfx.hpp`](src/ogfx.hpp) / [`src/ogfx.cpp`](src/ogfx.cpp). The
+M4a [`src/legacy_ogf.hpp`](src/legacy_ogf.hpp) /
+[`src/legacy_ogf.cpp`](src/legacy_ogf.cpp) source adapter populates that model,
+and `xrPhotonAssetCompiler convert-ogf <input.ogf> <output.ogfx>` supplies the
+filesystem boundary. Parsing never owns serialization: the CLI always calls the
+same validated writer. These units own neither Vulkan nor renderer-native state.
 
 **DECISION — what the compiler does**, each with its reason:
 
@@ -785,12 +807,12 @@ each arrives with its own consumer.
 **After M4, in order:**
 
 1. **M4a — legacy static OGF → command-line converter → OGFx, offline proof
-   first.** This is a direct binary conversion path; Blender is neither an
-   intermediate format nor a required batch-conversion dependency. The
-   compiler grows source-version detection, real-corpus validation, coordinate
+   first. Landed.** This is a direct binary conversion path; Blender is neither an
+   intermediate format nor a required batch-conversion dependency. The landed
+   slice pins source-version rejection, real-corpus validation, coordinate
    handling, bounds generation, faithful logical texture references, and
-   explicit legacy-shader mapping. Its first local-corpus acceptance input is
-   the externally supplied SoC asset
+   explicit legacy-shader mapping. Its local-corpus acceptance input is the
+   externally supplied SoC asset
    `meshes/objects/dynamics/plitka/plitka1.ogf`: OGF v4 `normal`, direct
    `HEADER`/`TEXTURE`/`VERTICES`/`INDICES` chunks, header shader id `0`, FVF
    `0x112`, `u16` indices, and the source engine-shader name `default`. M4a
@@ -801,11 +823,15 @@ each arrives with its own consumer.
    path is supplied to the CLI at test time; no GSC asset
    or machine-specific absolute path enters this repository. Repository tests
    use generated synthetic OGF fixtures for the same contracts. Geometry,
-   bounds, the texture reference, and the shader mapping can be checked against
-   the external source corpus immediately; an output carrying a texture
+   bounds, the texture reference, and the shader mapping are checked against
+   the external source corpus; an output carrying a texture
    reference is not runtime-ready
    until the texture milestone. Visual-equivalence claims wait for that
-   consumer instead of silently dropping the source material.
+   consumer instead of silently dropping the source material. The landed
+   `xrPhotonAssetCompiler convert-ogf` path implements precisely this slice;
+   generated fixtures pin accepted data and loud rejection, while the local
+   corpus pins 1,802 vertices, 3,300 widened indices, its logical texture name,
+   and deterministic 71,328-byte canonical output.
 2. **Blender opaque probe → add-on/export → OGFx.** The primary modern-content
    path lands with a no-texture-reference, opaque-only probe that can drive the
    N-BLAS generalization under the runtime's current capability gates. A

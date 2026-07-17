@@ -20,6 +20,21 @@ add_library(xrPhotonOgfx STATIC
 target_include_directories(xrPhotonOgfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfx PRIVATE -Wall -Wextra)
 
+# Legacy source parsing is a separate offline adapter. It populates the shared
+# compiler model and never owns OGFx serialization or a runtime loading path.
+add_library(xrPhotonLegacyOgf STATIC
+    src/legacy_ogf.cpp
+)
+target_include_directories(xrPhotonLegacyOgf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_options(xrPhotonLegacyOgf PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonLegacyOgf PUBLIC xrPhotonOgfx)
+
+add_executable(xrPhotonAssetCompiler
+    tools/convert_ogf.cpp
+)
+target_compile_options(xrPhotonAssetCompiler PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonAssetCompiler PRIVATE xrPhotonLegacyOgf)
+
 add_executable(xrPhotonTestQuadCompiler EXCLUDE_FROM_ALL
     tools/compile_test_quad.cpp
 )
@@ -54,6 +69,22 @@ if(BUILD_TESTING)
     target_link_libraries(xrPhotonOgfxDecoderTests PRIVATE xrPhotonOgfx)
     target_compile_options(xrPhotonOgfxDecoderTests PRIVATE -Wall -Wextra)
     add_test(NAME ogfx_decoder COMMAND xrPhotonOgfxDecoderTests)
+
+    add_executable(xrPhotonLegacyOgfTests
+        tests/legacy_ogf_tests.cpp
+    )
+    target_link_libraries(xrPhotonLegacyOgfTests PRIVATE xrPhotonLegacyOgf)
+    target_compile_options(xrPhotonLegacyOgfTests PRIVATE -Wall -Wextra)
+    add_test(NAME legacy_ogf_adapter COMMAND xrPhotonLegacyOgfTests)
+
+    add_test(
+        NAME legacy_ogf_cli
+        COMMAND ${CMAKE_COMMAND}
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DFIXTURE_TOOL=$<TARGET_FILE:xrPhotonLegacyOgfTests>
+            -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/legacy-ogf-cli
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_ogf_cli_test.cmake
+    )
 endif()
 
 option(XRPHOTON_BUILD_ENGINE "Build the Vulkan renderer executable" ON)

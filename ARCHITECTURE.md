@@ -98,6 +98,8 @@ stage; the diagram shows the frame-path layering.)
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU record types | Plain value state loaded from OGFx and owned by `main()` |
 | [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict M4 byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
+| [src/legacy_ogf.hpp](src/legacy_ogf.hpp) / [.cpp](src/legacy_ogf.cpp) | Transactional source decoder for the pinned M4a OGF v4 static profile; validates legacy framing/semantics and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build |
+| [tools/convert_ogf.cpp](tools/convert_ogf.cpp) | `xrPhotonAssetCompiler convert-ogf` dispatch, bounded source-file input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter called by `main()`; the caller owns preview/world placement |
 | [tools/compile_test_quad.cpp](tools/compile_test_quad.cpp) | Offline M3b-equivalent quad front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
@@ -136,6 +138,10 @@ Includes are kept acyclic by a deliberate rule:
   texture references; the separate runtime entry point layers the current M4
   record-count, opacity, and texture capability gates over the same structural
   validation.
+- `legacy_ogf.hpp` depends only on that compiler-facing OGFx model and the
+  standard library. Its implementation may share private core invariants such
+  as canonical-size preflight, but it cannot serialize OGFx or reach renderer
+  state.
 
 The genuine cross-links are resolved in the `.cpp`s, not the headers:
 
@@ -810,14 +816,14 @@ Decisions and contracts worth preserving:
    `build/<preset>/assets/test_quad.ogfx` through the shared writer; `main()` loads
    that file, appends the identity preview instance, and sends the resulting
    `SceneData` through the unchanged GpuScene/AS/RT path. The procedural runtime
-   builder is gone, so there is exactly one model-loading path. The OGFx core
-   prerequisite for M4a is also landed: deterministic logical-texture arenas and
-   an offline full-schema decoder now support converter round-trip validation
-   without broadening runtime acceptance. Next, M4a adds the direct command-line legacy-static OGF
-   converter and validates it offline against the externally supplied SoC
-   `plitka1.ogf` corpus asset (repository tests generate their own fixture; no
-   GSC asset or local absolute path is committed). Blender is not part of that
-   conversion path. The opaque Blender export probe then supplies the first
+   builder is gone, so there is exactly one model-loading path. M4a is also
+   landed: deterministic logical-texture arenas, the offline full-schema
+   decoder, a narrow legacy-static OGF adapter, and
+   `xrPhotonAssetCompiler convert-ogf` provide direct offline conversion without
+   broadening runtime acceptance. The external SoC `plitka1.ogf` corpus pins the
+   accepted result; repository tests generate their own fixture, and no GSC asset
+   or local absolute path is committed. Blender is not part of that conversion
+   path. Next, the opaque Blender export probe supplies the first
    runtime-ready real meshes; the N-BLAS/N-instance generalization rides that
    probe;
    a temporary code-owned preview table supplies world transforms until
