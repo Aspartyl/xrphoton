@@ -206,12 +206,12 @@ bool readBytes(
 {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) {
-        std::cerr << "FAIL: could not open CLI test output " << path << ".\n";
+        std::cerr << "FAIL: could not open test file " << path << ".\n";
         return false;
     }
     const std::streampos end = input.tellg();
     if (end < 0) {
-        std::cerr << "FAIL: could not determine CLI test output size.\n";
+        std::cerr << "FAIL: could not determine test file size.\n";
         return false;
     }
     bytes->resize(static_cast<std::size_t>(end));
@@ -222,7 +222,7 @@ bool readBytes(
             static_cast<std::streamsize>(bytes->size()));
     }
     if (!input) {
-        std::cerr << "FAIL: could not read complete CLI test output.\n";
+        std::cerr << "FAIL: could not read the complete test file.\n";
         return false;
     }
     return true;
@@ -610,25 +610,35 @@ void testGeometryRejections()
     expectRejected(assemble(chunks), "OGF_INDICES", "triangles[0].winding");
 }
 
+void expectPinnedCorpusModel(const Model& model)
+{
+    expect(model.positions.size() == 1802 && model.attributes.size() == 1802,
+        "plitka corpus contains the pinned 1802 complete vertices");
+    expect(model.indices.size() == 3300,
+        "plitka corpus contains the pinned 3300 indices");
+    expect(model.geometries.size() == 1
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == 1802
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == 3300
+            && model.geometries[0].materialIndex == 0
+            && !model.geometries[0].alphaTested,
+        "plitka corpus maps to one complete opaque geometry");
+    expect(model.meshes.size() == 1
+            && model.meshes[0].firstGeometry == 0
+            && model.meshes[0].geometryCount == 1,
+        "plitka corpus maps to one mesh");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorTexture
+                == "ston\\ston_stena_marbl_m_03_back",
+        "plitka corpus preserves its pinned logical texture name");
+}
+
 void testLocalCorpus(const std::filesystem::path& path)
 {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    expect(static_cast<bool>(input), "the optional local OGF corpus file opens");
-    if (!input) {
-        return;
-    }
-    const std::streampos end = input.tellg();
-    expect(end >= 0, "the optional corpus file size is readable");
-    if (end < 0) {
-        return;
-    }
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(end));
-    input.seekg(0);
-    input.read(
-        reinterpret_cast<char*>(bytes.data()),
-        static_cast<std::streamsize>(bytes.size()));
-    expect(static_cast<bool>(input), "the optional corpus file is read completely");
-    if (!input) {
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
         return;
     }
 
@@ -638,14 +648,7 @@ void testLocalCorpus(const std::filesystem::path& path)
         std::cerr << decoded.error << '\n';
         return;
     }
-    expect(decoded.model.positions.size() == 1802,
-        "plitka corpus contains the pinned 1802 vertices");
-    expect(decoded.model.indices.size() == 3300,
-        "plitka corpus contains the pinned 3300 indices");
-    expect(decoded.model.materials.size() == 1
-            && decoded.model.materials[0].baseColorTexture
-                == "ston\\ston_stena_marbl_m_03_back",
-        "plitka corpus preserves its pinned logical texture name");
+    expectPinnedCorpusModel(decoded.model);
 
     const SerializeResult serialized =
         xrphoton::ogfx::serializeModel(decoded.model, "plitka1.ogfx");
@@ -662,6 +665,62 @@ void testLocalCorpus(const std::filesystem::path& path)
     } else {
         std::cerr << serialized.error << '\n';
     }
+}
+
+void verifyCorpusOutput(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& outputPath)
+{
+    std::vector<std::uint8_t> sourceBytes;
+    std::vector<std::uint8_t> outputBytes;
+    if (!readBytes(sourcePath, &sourceBytes)
+        || !readBytes(outputPath, &outputBytes)) {
+        ++failureCount;
+        return;
+    }
+
+    const DecodeResult source = decodeStaticModel(sourceBytes, sourcePath.string());
+    expect(static_cast<bool>(source),
+        "the M4a source corpus decodes through the legacy adapter");
+    if (!source) {
+        std::cerr << source.error << '\n';
+        return;
+    }
+    expectPinnedCorpusModel(source.model);
+
+    expect(outputBytes.size() == 71328,
+        "the persisted corpus output has the pinned canonical byte size");
+    if (outputBytes.size() >= 96) {
+        expect(readU32(outputBytes, 92) == 0x3fede7e4u,
+            "the persisted corpus output has the regenerated outward sphere");
+    }
+
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(outputBytes, outputPath.string());
+    expect(static_cast<bool>(schema),
+        "the persisted corpus output passes complete OGFx schema decoding");
+    if (!schema) {
+        std::cerr << schema.error << '\n';
+        return;
+    }
+    expect(modelsEqual(schema.model, source.model),
+        "the persisted OGFx model exactly reconstructs the legacy source model");
+
+    const SerializeResult canonical =
+        xrphoton::ogfx::serializeModel(source.model, "corpus-proof.ogfx");
+    expect(static_cast<bool>(canonical) && canonical.bytes == outputBytes,
+        "the persisted output is byte-exact canonical writer output");
+    const SerializeResult roundTrip =
+        xrphoton::ogfx::serializeModel(schema.model, "corpus-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip) && roundTrip.bytes == outputBytes,
+        "the persisted corpus writer-schema-writer round trip is byte exact");
+
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(outputBytes, outputPath.string());
+    expect(!runtime
+            && runtime.error.find("UINT32_MAX in the M4 runtime")
+                != std::string::npos,
+        "the proof preserves the runtime texture capability gate");
 }
 
 void verifyCliOutputs(
@@ -712,6 +771,17 @@ int main(int argumentCount, char** arguments)
                       << " asset compiler CLI test assertion(s) failed.\n";
             return 1;
         }
+        return 0;
+    }
+    if (argumentCount == 4
+        && std::string_view(arguments[1]) == "--verify-corpus-output") {
+        verifyCorpusOutput(arguments[2], arguments[3]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " M4a offline corpus proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "M4a offline corpus proof passed.\n";
         return 0;
     }
 

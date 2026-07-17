@@ -821,9 +821,11 @@ Decisions and contracts worth preserving:
    decoder, a narrow legacy-static OGF adapter, and
    `xrPhotonAssetCompiler convert-ogf` provide direct offline conversion without
    broadening runtime acceptance. The external SoC `plitka1.ogf` corpus pins the
-   accepted result; repository tests generate their own fixture, and no GSC asset
-   or local absolute path is committed. Blender is not part of that conversion
-   path. Next, the opaque Blender export probe supplies the first
+   accepted result through the opt-in `xrPhotonM4aOfflineProof` target, which
+   persists verified output only in the build tree; repository tests generate
+   their own fixture, and no GSC asset or local absolute path is committed.
+   Blender is not part of that conversion path. Next, the opaque Blender export
+   probe supplies the first
    runtime-ready real meshes; the N-BLAS/N-instance generalization rides that
    probe;
    a temporary code-owned preview table supplies world transforms until

@@ -85,6 +85,28 @@ if(BUILD_TESTING)
             -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/legacy-ogf-cli
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_ogf_cli_test.cmake
     )
+
+    set(XRPHOTON_M4A_CORPUS_OGF
+        "${CMAKE_SOURCE_DIR}/build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogf"
+        CACHE FILEPATH
+        "Local plitka1.ogf used only by the opt-in M4a offline proof")
+    set(XRPHOTON_M4A_PROOF_OUTPUT
+        "${CMAKE_CURRENT_BINARY_DIR}/converted/plitka1.ogfx")
+    add_custom_target(xrPhotonM4aOfflineProof
+        COMMAND ${CMAKE_COMMAND}
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DVERIFIER=$<TARGET_FILE:xrPhotonLegacyOgfTests>
+            -DSOURCE_OGF=${XRPHOTON_M4A_CORPUS_OGF}
+            -DOUTPUT_OGFX=${XRPHOTON_M4A_PROOF_OUTPUT}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/m4a_offline_proof.cmake
+        DEPENDS
+            xrPhotonAssetCompiler
+            xrPhotonLegacyOgfTests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/m4a_offline_proof.cmake
+        COMMENT "Proving the pinned legacy OGF conversion offline"
+        VERBATIM
+        USES_TERMINAL
+    )
 endif()
 
 option(XRPHOTON_BUILD_ENGINE "Build the Vulkan renderer executable" ON)

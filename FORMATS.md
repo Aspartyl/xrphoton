@@ -831,7 +831,12 @@ each arrives with its own consumer.
    `xrPhotonAssetCompiler convert-ogf` path implements precisely this slice;
    generated fixtures pin accepted data and loud rejection, while the local
    corpus pins 1,802 vertices, 3,300 widened indices, its logical texture name,
-   and deterministic 71,328-byte canonical output.
+   and deterministic 71,328-byte canonical output. The opt-in
+   `xrPhotonM4aOfflineProof` build target verifies the exact local source identity,
+   drives the real CLI, checks complete schema reconstruction and byte-exact
+   canonical reserialization, confirms the runtime texture gate remains closed,
+   and persists the proven output under `build/<preset>/converted/`. It is not a
+   dependency of normal builds or repository tests.
 2. **Blender opaque probe → add-on/export → OGFx.** The primary modern-content
    path lands with a no-texture-reference, opaque-only probe that can drive the
    N-BLAS generalization under the runtime's current capability gates. A

@@ -1025,7 +1025,12 @@ preserves the logical texture name. Generated fixtures cover the accepted
 boundary, unsupported/malformed rejection, deterministic CLI publication, and
 schema reconstruction. The local `plitka1.ogf` corpus produces the pinned 1,802
 vertices, 3,300 indices, and deterministic 71,328-byte OGFx output; neither it
-nor a machine-specific path is committed.
+nor a machine-specific path is committed. The opt-in
+`xrPhotonM4aOfflineProof` target makes that acceptance proof repeatable: it pins
+the exact source/output hashes, invokes the production CLI, checks complete
+schema reconstruction plus byte-exact canonical reserialization, preserves the
+runtime texture rejection, and writes the proven file to
+`build/<preset>/converted/plitka1.ogfx`.
 
 The OGFx-core prerequisite landed first: the canonical
 writer now emits deterministic, first-use-interned logical-texture string arenas,
