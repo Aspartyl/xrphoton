@@ -14,6 +14,8 @@
 #include <string>
 #include <utility>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 namespace xrphoton
 {
 namespace
@@ -46,12 +48,42 @@ constexpr std::array GalleryAssets{
         .ogfxPath = XRPHOTON_TEST_QUAD_ASSET_PATH,
         .optional = false,
     },
+    GalleryAsset{
+        .name = "test_wedge",
+        .ogfxPath = XRPHOTON_TEST_WEDGE_ASSET_PATH,
+        .optional = false,
+    },
 };
 
 const std::array GalleryPlacements{
     GalleryPlacement{
         .assetIndex = 0,
-        .transform = glm::mat4{1.0f},
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{-3.0f, 0.0f, 3.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = 1,
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{1.5f, 0.0f, 3.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = 1,
+        // Keeping the row at z=3 frames the full scaled silhouette at the default
+        // camera instead of clipping its right edge.
+        // GLM applies the rightmost operation first: scale in model space,
+        // rotate around world-up, then move the result into the gallery row.
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{3.6f, 0.0f, 3.0f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(30.0f),
+                glm::vec3{0.0f, 1.0f, 0.0f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{1.5f, 1.0f, 1.5f}),
     },
 };
 

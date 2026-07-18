@@ -83,20 +83,20 @@ and every row uses the same runtime path.
 
 ## 2. Current state (verified against the code)
 
-Phase 2 began from the clean `origin/main` Phase-1 commit `f75fe82`; this
-section reflects the verified Phase-2 working tree whose owner commit is still
-pending. The load-bearing facts, with citations; where the briefing that
-motivated this plan disagreed with the code, the correction is noted:
+Phases 0–2 are complete (`f75fe82`, `31e3e6e`), and this section reflects the
+verified Phase-3 working tree pending its owner commit. The load-bearing facts,
+with citations; where the briefing that motivated this plan disagreed with the
+code, the correction is noted:
 
 - **Runtime decoding.** The decoder has exactly two profiles —
   `DecodeProfile::Schema` and `DecodeProfile::Runtime`
   ([src/ogfx_decoder.cpp:109-113](src/ogfx_decoder.cpp)). Both run the complete
   structural/semantic validation; the runtime profile then layers
-  `validateRuntimeProfile()` ([src/ogfx_decoder.cpp:1068-1115](src/ogfx_decoder.cpp)):
-  exactly one mesh (:1070), one geometry (:1077), one material (:1084), opaque
-  geometry (:1091 — checks `geometries[0]` only, which is complete *because*
-  the count gate holds; the expansion must loop), every `textureRefOffset ==
-  UINT32_MAX` (:1098-1106), and `stringByteSize == 0` (:1107-1113).
+  `validateRuntimeProfile()`. Phase 3 removed the one-mesh, one-geometry, and
+  one-material restrictions and changed opacity validation to inspect every
+  geometry. It still requires opaque geometry, every `textureRefOffset ==
+  UINT32_MAX`, and `stringByteSize == 0` until the Phase-4 texture consumer
+  lands.
   `decodeModelSchema` / `decodeModel` are the two entry points
   (:1158-1170). **Correction to the brief:** the runtime adapter does not
   "discard the decoded logical texture reference" — under the runtime profile
@@ -110,32 +110,27 @@ motivated this plan disagreed with the code, the correction is noted:
 - **Runtime adaptation.** `decodeOgfxScene`
   ([src/ogfx_loader.cpp:51-124](src/ogfx_loader.cpp)) calls `ogfx::decodeModel`
   (:55), converts field-by-field into one `SceneData`, sets every
-  `SceneMaterial::baseColorImage` to zero (:112), and leaves `instances` and
+  `SceneMaterial::baseColorImage` to zero (:112), carries the decoded logical
+  `baseColorTexture` string into `SceneMaterial`, and leaves `instances` and
   `images` empty by contract ([src/ogfx_loader.hpp:24-31](src/ogfx_loader.hpp);
-  pinned by [tests/ogfx_loader_tests.cpp](tests/ogfx_loader_tests.cpp)). It also
-  carries `baseColorTexture` verbatim into `SceneMaterial`; the still-closed
-  runtime texture gate means that field remains empty until Phase 4.
+  pinned by [tests/ogfx_loader_tests.cpp:127-128](tests/ogfx_loader_tests.cpp)).
   `SceneData` already carries vectors for positions, attributes, indices,
   geometries, meshes, instances, materials, and images
   ([src/scene.hpp:62-72](src/scene.hpp)).
 - **Gallery orchestration.** `main()` calls `loadGalleryScene()` and retains
-  the returned plain `SceneData` for program lifetime. The current file-private
-  tables contain only the required `XRPHOTON_TEST_QUAD_ASSET_PATH` asset and one
-  identity placement; `gallery.cpp` loads the asset once, merges it through the
-  Vulkan-free assembly API, instantiates every mesh in its recorded range, and
-  performs final whole-scene validation. The absolute build-tree path remains
-  embedded at configure time and explicitly temporary.
-- **Acceleration structures.** `buildAccelerationStructures` hard-requires
-  exactly one mesh, one instance, one geometry, `meshIndex == 0`
-  ([src/acceleration_structure.cpp:275-283](src/acceleration_structure.cpp));
-  `InstanceCount = 1` is a file constant (:21). The owner holds singular
-  BLAS/TLAS handles and two scratch buffers
-  ([src/acceleration_structure.hpp:28-48](src/acceleration_structure.hpp)).
-  `instanceCustomIndex = mesh.firstGeometry` (:402);
-  `instanceShaderBindingTableRecordOffset` and instance flags are zero via
-  zero-init (:400-405). Scratch is allocated with `alignment − 1` slack and the
-  address `alignUp`ed (:179-195). One submission, two `VkMemoryBarrier`s:
-  BLAS→TLAS build-to-build (:504-519), then build-to-ray-tracing (:529-544).
+  the returned ordinary `SceneData`. File-private asset and placement tables
+  load the generated quad and wedge through the same OGFx path, merge their
+  records through the Vulkan-free scene-assembly API, and place the quad once
+  and the wedge twice. The absolute generated-asset paths remain embedded at
+  configure time and explicitly temporary.
+- **Acceleration structures.** Phase 3 builds one BLAS per mesh and one TLAS
+  instance per scene placement. BLAS handles and arena offsets are owned in a
+  vector; geometry storage and aligned scratch storage are arena-backed; all
+  BLAS builds are batched before the TLAS build. Device limits are checked for
+  geometry, primitive, instance, storage-buffer-range, and address-alignment
+  requirements. `instanceCustomIndex = mesh.firstGeometry` preserves the
+  shader's `InstanceID() + GeometryIndex()` lookup across merged models and
+  shared BLAS instances.
 - **RT pipeline.** Four descriptor bindings (TLAS, storage image,
   geometry-record SSBO, material SSBO —
   [src/rt_pipeline.cpp:90-113](src/rt_pipeline.cpp)); pool sized to exactly
@@ -164,22 +159,18 @@ motivated this plan disagreed with the code, the correction is noted:
   ([tests/legacy_ogf_tests.cpp:718-723](tests/legacy_ogf_tests.cpp), driven by
   [tests/m4a_offline_proof.cmake:41-52](tests/m4a_offline_proof.cmake)) — the
   Phase 4 gate removal must flip that assertion in that same commit. The
-  Git-ignored local SoC corpus now includes the matching DDS at the Phase-0 path
+  Git-ignored local SoC corpus includes the matching DDS at the Phase-0 path
   recorded below; no GSC texture is tracked by Git.
 - **Build layout.** `xrPhotonOgfx` (writer + decoders) and
   `xrPhotonLegacyOgf` build without graphics ([CMakeLists.txt:15-36](CMakeLists.txt));
   `XRPHOTON_BUILD_ENGINE=OFF` returns before any graphics dependency
-  (:112-116); `xrPhotonOgfxRuntime` now contains both the GLM-dependent loader
-  and Vulkan-free scene assembly, with separate runtime-loader and
-  scene-assembly suites in engine configurations. `gallery.cpp` belongs only
-  to the engine executable. The corpus-path cache variable precedent is
-  `XRPHOTON_M4A_CORPUS_OGF` (:89-92).
-- **Remaining documentation debt.** ARCHITECTURE.md reflects the Phase-2
-  gallery/assembly path and revised ordering. CLAUDE.md's "Next step" and
-  GEOMETRY_PLAN's older milestone narrative still require Phase-6 consolidation.
-  **Repository fact:**
-  CLAUDE.md is *gitignored* ([.gitignore:13](.gitignore)) — the docs phase
-  updates it in place, but it will not appear in any commit diff.
+  (:112-116); `xrPhotonOgfxRuntime` contains the GLM-dependent loader and
+  Vulkan-free scene assembly with their own tests. `gallery.cpp` belongs to
+  the engine executable. The probe compiler now emits both generated assets.
+  The corpus-path cache variable precedent is `XRPHOTON_M4A_CORPUS_OGF`.
+- **Remaining documentation debt.** ARCHITECTURE.md reflects the Phase-3
+  N-BLAS/gallery state. The older roadmap narrative receives its final
+  consolidation in Phase 6.
 
 ## 3. Non-goals
 
@@ -1033,7 +1024,11 @@ What replaces each diagnostic property the gradient provided:
   `sign(dot(hit.worldNormal, -WorldRayDirection()))` (green when the
   interpolated normal faces the viewer on a front-facing hit). Phase 5's
   standing claim is narrowed accordingly: its permanent oracles are texture
-  orientation and the offline validation.
+  orientation and the offline validation. The generated quad and wedge pin
+  the diagnostic convention: their geometric fronts and stored normals face
+  the startup camera, so their reference-pose hits must be green in both
+  transient passes. Plitka is judged independently against its Blender
+  reference rather than inheriting a generated-probe convention.
 
 `missMain` and `rayGenMain` are unchanged except that raygen's
 `RAY_FLAG_FORCE_OPAQUE`, zero SBT offsets, and `TMax` stay exactly as they are
@@ -1044,25 +1039,25 @@ multiplier flip (GEOMETRY_PLAN D10's indivisible-change note).
 
 **Decision:** `TMax` stays `100.0` ([shaders/raytrace.slang:122](shaders/raytrace.slang)).
 The recorded trigger ("rises to `1.0e4` when real converted scene extents
-first require it") does not fire: the gallery's extent is under six meters
+first require it") does not fire: the gallery's extent is under ten meters
 (plitka is 2.37 × 2.86 m, the quad 1 × 1), and the startup camera at
-`(0, 0, −2)` looking +Z ([src/camera.hpp:19-22](src/camera.hpp)) is ~3.5 m
+`(0, 0, −2)` looking +Z ([src/camera.hpp:19-22](src/camera.hpp)) is ~5 m
 from the placed models. Flying hundreds of meters away and losing the gallery
 past `TMax` is expected fly-camera behavior, not a defect. The camera unit is
 untouched.
 
 Provisional gallery placements (code-owned, adjusted on screen during
 Phase 3/5 review — they are preview policy, not contract): quad at
-`translate(-3.0, 0, 1.5)`; plitka at `translate(-0.8, -1.43, 1.5)` (centering
+`translate(-3.0, 0, 3.0)`; plitka at `translate(-0.8, -1.43, 3.0)` (centering
 its corner-origin AABB vertically); the generated wedge probe (Phase 3)
-placed twice on the right — `translate(+2.0, 0, 1.5)` and
-`translate(+3.6, 0, 1.5) · rotate(30°, Y) · scale(1.5, 1.0, 1.5)`, the second
+placed twice on the right — `translate(+1.5, 0, 3.0)` and
+`translate(+3.6, 0, 3.0) · rotate(30°, Y) · scale(1.5, 1.0, 1.5)`, the second
 deliberately rotated **and non-uniformly scaled** — its silhouette verifies
 the vertex transform in Phase 3, and the same instance becomes the
 normal-transform visual under Phase 4's view-dependent shading. The startup
-camera at
-`(0, 0, −2)` looking +Z frames the row's center; the fly camera reaches the
-rest, and the whole row sits comfortably inside `TMax`. Timing: the quad
+camera at `(0, 0, −2)` looking +Z frames every Phase-3 silhouette at 16:9;
+the fly camera reaches the rest, and the whole row sits comfortably inside
+`TMax`. Timing: the quad
 keeps the identity transform through Phase 2 (whose commit oracle is a
 pixel-identical render); the quad's placement and both wedge placements land
 together in Phase 3, whose oracle is placement; plitka's placement lands in
@@ -1154,8 +1149,7 @@ consumers). The render is pixel-identical.
 
 ### Phase 2 — Generic multi-model scene assembly; `main()` moves onto the gallery path (still one quad on screen)
 
-**Status: implementation complete and verified (2026-07-17; owner commit
-pending).**
+**Status: complete (2026-07-17, commit `31e3e6e`).**
 
 **Lands:** G3, plus the gallery skeleton from G4 with a single, non-optional
 quad entry carrying the **identity transform** (the G10 gallery placements
@@ -1191,6 +1185,9 @@ underneath.
   isolates the CPU path swap).
 
 ### Phase 3 — N-BLAS / N-instance acceleration structures; the record-count gates fall with their consumer (quad + twice-placed wedge)
+
+**Status: implementation complete and verified (2026-07-18; owner commit
+pending).**
 
 **Lands:** G5, the Phase-3 half of G1, and a second **permanent** generated
 probe asset. The offline front end
@@ -1467,7 +1464,7 @@ unconfigured builds to a single-model scene.
 
 **Lands:** the consolidation pass. Contract-level documentation already
 moved in-phase (ARCHITECTURE.md module rows, ownership, AS and RT-pipeline
-  sections, and status across Phases 3–5; FORMATS.md runtime-profile and
+sections, and status across Phases 2–5; FORMATS.md runtime-profile and
 texture paragraphs in Phases 3–4; README configuration in Phase 5) — a
 source-of-truth document is never left stale across commits;
 this phase owns the narrative and roadmap reconciliation:

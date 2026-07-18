@@ -25,25 +25,29 @@ way of doing each thing.
 
 ## Status
 
-Right now it renders an indexed quad with a UV gradient that you can fly around
-(WASD + mouse look).
+Right now it renders a small OGFx gallery that you can fly around (WASD + mouse
+look): one indexed quad and a two-geometry wedge placed twice, including one
+rotated and non-uniformly scaled instance.
 That said, the whole ray tracing stack is already behind it: every frame traces
-a ray per pixel through a real BLAS/TLAS with `vkCmdTraceRaysKHR` from a
+a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
+`vkCmdTraceRaysKHR` from a
 perspective camera fed to the shader via push constants, writes a storage image
 and blits it to the swapchain, with two frames in flight and proper resize
 handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
 into the runtime binary at build time, so shader deployment is self-contained
 and needs no runtime shader files.
 
-The first complete OGFx round trip and the narrow M4a legacy-static converter have
-landed. Every normal engine build generates `build/<preset>/assets/test_quad.ogfx`
-through the canonical writer; the runtime strictly decodes that file into
-`SceneData` and renders the file-backed quad through the existing GPU/BLAS/TLAS
-path. The separate converter accepts the pinned OGF v4 static profile and feeds
-that same writer for offline validation. Next up is the Blender opaque export
-probe, followed by real geometry and materials, dynamic scenes (TLAS refits,
-skinning), actual path tracing with lights, and finally temporal accumulation and
-denoising. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+The first complete OGFx round trip and the narrow M4a legacy-static converter
+have landed. Every normal engine build generates
+`build/<preset>/assets/test_quad.ogfx` and `test_wedge.ogfx` through the canonical
+writer; the runtime strictly decodes both, assembles their model records and world
+placements into `SceneData`, batches two different BLAS builds, and shares the
+wedge BLAS across two TLAS instances. The separate converter accepts the pinned
+OGF v4 static profile and feeds that same writer for offline validation. Next is
+the texture foundation and the first rendered converted `plitka1.ogfx`; the
+Blender opaque export probe follows that end-to-end legacy proof. Dynamic scenes
+(TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
+and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 

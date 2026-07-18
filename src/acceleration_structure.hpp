@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include <vulkan/vulkan.h>
 
 #include "vma_fwd.hpp"
@@ -9,6 +11,14 @@ namespace xrphoton
 struct RayTracingFunctions;
 struct SceneData;
 struct GpuScene;
+
+struct BlasEntry
+{
+    VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = nullptr;
+    VkDeviceAddress address = 0;
+};
 
 // Owns the acceleration structures built over GpuScene geometry and the host-visible
 // TLAS instance buffer. Built once at startup and
@@ -25,13 +35,13 @@ struct AccelerationStructure
     // structure handle below must set this first (alongside device).
     PFN_vkDestroyAccelerationStructureKHR destroyAccelerationStructure = nullptr;
 
-    // The one VkAccelerationStructureInstanceKHR the TLAS is built from.
+    // Host-visible records for every world placement consumed by the TLAS build.
     VkBuffer instanceBuffer = VK_NULL_HANDLE;
     VmaAllocation instanceBufferAllocation = nullptr;
 
-    VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
-    VkBuffer blasBuffer = VK_NULL_HANDLE;
-    VmaAllocation blasBufferAllocation = nullptr;
+    // One BLAS per SceneMesh. Entries retain the address referenced by every TLAS
+    // instance so no temporary address side table can diverge from ownership.
+    std::vector<BlasEntry> blases;
 
     // The TLAS handle is what the RT descriptor set will eventually bind
     // (VkWriteDescriptorSetAccelerationStructureKHR takes the handle, not an address).
@@ -39,13 +49,11 @@ struct AccelerationStructure
     VkBuffer tlasBuffer = VK_NULL_HANDLE;
     VmaAllocation tlasBufferAllocation = nullptr;
 
-    // Build-time scratch, owned here (not locally in the build path) so a failed build
-    // can still bare-return and rely on ~AccelerationStructure for cleanup. The build
-    // entry point frees them early once the build has been waited on successfully.
-    VkBuffer blasScratchBuffer = VK_NULL_HANDLE;
-    VmaAllocation blasScratchBufferAllocation = nullptr;
-    VkBuffer tlasScratchBuffer = VK_NULL_HANDLE;
-    VmaAllocation tlasScratchBufferAllocation = nullptr;
+    // One arena gives every concurrently batched BLAS a disjoint aligned region, then
+    // is reused by the TLAS after the build-to-build barrier. Ownership lives here so
+    // a failed build can still bare-return; success releases it after the fence wait.
+    VkBuffer scratchBuffer = VK_NULL_HANDLE;
+    VmaAllocation scratchBufferAllocation = nullptr;
 
     AccelerationStructure() = default;
     AccelerationStructure(const AccelerationStructure&) = delete;
@@ -61,12 +69,12 @@ struct AccelerationStructure
 // vulkan_context) so selection and the BLAS build share one format definition.
 bool hasRequiredAccelerationStructureFormatSupport(VkPhysicalDevice physicalDevice);
 
-// Populate *as: build one BLAS over the loaded scene's GpuScene buffers, then a TLAS
-// over its single preview instance (recorded back-to-back with a build-to-build barrier).
+// Populate *as: batch one BLAS build per assembled mesh over the borrowed GpuScene
+// buffers, then build a TLAS over every assembled world instance.
 // The submission borrows commandBuffer/traceQueue/fence and blocks until the GPU
 // finishes. The three build-input device addresses are checked against their
 // required 4/4/16-byte alignments; an under-aligned base address fails with
-// VK_ERROR_INITIALIZATION_FAILED. The scratch buffers are released before returning,
+// VK_ERROR_INITIALIZATION_FAILED. The shared scratch arena is released before returning,
 // so on success *as holds only program-lifetime resources and the fence is signaled for
 // the first drawFrame wait. On failure the fence may be left unsignaled and *as holds
 // whatever was created so far; ~AccelerationStructure cleans it up, so the caller can

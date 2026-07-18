@@ -361,6 +361,7 @@ int main()
     const VkResult gpuSceneResult = createGpuScene(
         &gpuScene,
         sceneData,
+        physicalDevice,
         ctx.device,
         ctx.allocator,
         rayTracingFunctions,
@@ -374,7 +375,9 @@ int main()
         return 1;
     }
 
-    std::cout << "Created Vulkan GPU scene (file-backed indexed quad).\n";
+    std::cout << "Created Vulkan GPU scene (meshes: " << sceneData.meshes.size()
+              << ", geometries: " << sceneData.geometries.size()
+              << ", materials: " << sceneData.materials.size() << ").\n";
 
     // Declared after ctx so it destructs before the device it borrows; its destructor
     // waits for device idle itself, so ordering relative to swap is immaterial. The
@@ -400,7 +403,9 @@ int main()
         return 1;
     }
 
-    std::cout << "Built Vulkan acceleration structures (quad BLAS, single-instance TLAS).\n";
+    std::cout << "Built Vulkan acceleration structures (BLASes: "
+              << sceneData.meshes.size() << ", TLAS instances: "
+              << sceneData.instances.size() << ").\n";
 
     // Declared after ctx so it destructs before the device it borrows; like the other
     // borrowing owners it waits for device idle itself, so its order relative to swap

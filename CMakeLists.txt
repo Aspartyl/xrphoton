@@ -35,25 +35,33 @@ add_executable(xrPhotonAssetCompiler
 target_compile_options(xrPhotonAssetCompiler PRIVATE -Wall -Wextra)
 target_link_libraries(xrPhotonAssetCompiler PRIVATE xrPhotonLegacyOgf)
 
-add_executable(xrPhotonTestQuadCompiler EXCLUDE_FROM_ALL
-    tools/compile_test_quad.cpp
+add_executable(xrPhotonProbeAssetCompiler EXCLUDE_FROM_ALL
+    tools/compile_probe_assets.cpp
 )
-target_link_libraries(xrPhotonTestQuadCompiler PRIVATE xrPhotonOgfx)
-target_compile_options(xrPhotonTestQuadCompiler PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonProbeAssetCompiler PRIVATE xrPhotonOgfx)
+target_compile_options(xrPhotonProbeAssetCompiler PRIVATE -Wall -Wextra)
 
 set(XRPHOTON_ASSET_DIR ${CMAKE_CURRENT_BINARY_DIR}/assets)
 set(XRPHOTON_TEST_QUAD_ASSET ${XRPHOTON_ASSET_DIR}/test_quad.ogfx)
+set(XRPHOTON_TEST_WEDGE_ASSET ${XRPHOTON_ASSET_DIR}/test_wedge.ogfx)
 add_custom_command(
-    OUTPUT ${XRPHOTON_TEST_QUAD_ASSET}
+    OUTPUT
+        ${XRPHOTON_TEST_QUAD_ASSET}
+        ${XRPHOTON_TEST_WEDGE_ASSET}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_ASSET_DIR}
-    COMMAND $<TARGET_FILE:xrPhotonTestQuadCompiler> ${XRPHOTON_TEST_QUAD_ASSET}
-    DEPENDS xrPhotonTestQuadCompiler
-    COMMENT "Compiling the procedural test quad to OGFx"
+    COMMAND $<TARGET_FILE:xrPhotonProbeAssetCompiler>
+        ${XRPHOTON_TEST_QUAD_ASSET}
+        ${XRPHOTON_TEST_WEDGE_ASSET}
+    DEPENDS xrPhotonProbeAssetCompiler
+    COMMENT "Compiling the procedural quad and wedge probes to OGFx"
     VERBATIM
 )
 # Asset generation is explicit for compiler-only builds; the engine dependency below
 # makes it automatic for normal builds without broadening the core-only default target.
-add_custom_target(xrPhotonAssets DEPENDS ${XRPHOTON_TEST_QUAD_ASSET})
+add_custom_target(xrPhotonAssets DEPENDS
+    ${XRPHOTON_TEST_QUAD_ASSET}
+    ${XRPHOTON_TEST_WEDGE_ASSET}
+)
 
 if(BUILD_TESTING)
     add_executable(xrPhotonOgfxTests
@@ -213,11 +221,12 @@ if(XRPHOTON_ENABLE_VALIDATION)
     target_compile_definitions(xrPhoton PRIVATE XRPHOTON_ENABLE_VALIDATION)
 endif()
 
-# The M4 preview asset is a build-tree probe, not packaged game content. Embed its
-# absolute UTF-8 path so launching the executable from any working directory still
-# exercises the generated OGFx file; later asset-root policy will replace this.
+# The preview assets are build-tree probes, not packaged game content. Embed their
+# absolute UTF-8 paths so launching the executable from any working directory still
+# exercises the generated OGFx files; later asset-root policy will replace this.
 target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
+    XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
 )
 
 add_dependencies(xrPhoton xrPhotonShaders xrPhotonAssets)

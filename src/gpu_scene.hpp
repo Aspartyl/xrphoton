@@ -70,6 +70,7 @@ struct GpuScene
 VkResult createGpuScene(
     GpuScene* gpu,
     const SceneData& scene,
+    VkPhysicalDevice physicalDevice,
     VkDevice device,
     VmaAllocator allocator,
     const RayTracingFunctions& functions,

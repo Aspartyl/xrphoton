@@ -130,6 +130,17 @@ Model makeTwoGeometryModel()
     return model;
 }
 
+Model makeAllOpaqueTwoGeometryModel()
+{
+    Model model = makeTwoGeometryModel();
+    model.geometries[1].materialIndex = 1;
+    model.geometries[1].alphaTested = false;
+    model.materials[0].baseColorFactor = {0.125f, 0.25f, 0.75f, 1.0f};
+    model.materials.emplace_back();
+    model.materials[1].baseColorFactor = {0.25f, 0.75f, 0.125f, 1.0f};
+    return model;
+}
+
 std::vector<std::uint8_t> serialize(const Model& model)
 {
     const SerializeResult result = xrphoton::ogfx::serializeModel(model, "test-source");
@@ -281,7 +292,8 @@ bool modelIsEmpty(const Model& model)
 void expectRejected(
     const std::vector<std::uint8_t>& bytes,
     std::string_view expectedChunk,
-    std::string_view expectedField)
+    std::string_view expectedField,
+    std::string_view expectedDetail = {})
 {
     const DecodeResult result = xrphoton::ogfx::decodeModel(bytes, "invalid.ogfx");
     expect(!result, "malformed OGFx is rejected");
@@ -292,6 +304,11 @@ void expectRejected(
         std::string("decoder diagnostic names chunk: ") + std::string(expectedChunk));
     expect(result.error.find(expectedField) != std::string::npos,
         std::string("decoder diagnostic names field: ") + std::string(expectedField));
+    if (!expectedDetail.empty()) {
+        expect(result.error.find(expectedDetail) != std::string::npos,
+            std::string("decoder diagnostic states detail: ")
+                + std::string(expectedDetail));
+    }
     expect(result.error.find(": expected ") != std::string::npos
             && result.error.find(", found ") != std::string::npos,
         "decoder diagnostic states expected and found values");
@@ -364,6 +381,34 @@ bool modelsEqual(const Model& left, const Model& right)
     return true;
 }
 
+void expectRuntimeMatchesSchema(
+    const Model& model,
+    std::string_view description)
+{
+    const std::vector<std::uint8_t> bytes = serialize(model);
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(bytes, "multi-record-schema.ogfx");
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(bytes, "multi-record-runtime.ogfx");
+    expect(static_cast<bool>(schema),
+        std::string(description) + " passes schema decoding");
+    expect(static_cast<bool>(runtime),
+        std::string(description) + " passes runtime decoding");
+    if (schema && runtime) {
+        expect(modelsEqual(schema.model, model),
+            std::string(description) + " preserves the source schema model");
+        expect(modelsEqual(runtime.model, schema.model),
+            std::string(description) + " has matching runtime and schema results");
+    } else {
+        if (!schema) {
+            std::cerr << schema.error << '\n';
+        }
+        if (!runtime) {
+            std::cerr << runtime.error << '\n';
+        }
+    }
+}
+
 void testRoundTripAndExtensions()
 {
     const Model quad = makeQuad();
@@ -415,10 +460,17 @@ void testRoundTripAndExtensions()
 
     Model multipleMaterials = makeQuad();
     multipleMaterials.materials.emplace_back();
-    expectRejected(
+    const DecodeResult multipleMaterialsDecoded = xrphoton::ogfx::decodeModel(
         serialize(multipleMaterials),
-        "OGFX_MATERIALS",
-        "M4 runtime record count");
+        "multiple-materials.ogfx");
+    expect(static_cast<bool>(multipleMaterialsDecoded),
+        "runtime decoding accepts multiple untextured opaque materials");
+    if (multipleMaterialsDecoded) {
+        expect(modelsEqual(multipleMaterialsDecoded.model, multipleMaterials),
+            "runtime decoding preserves multiple untextured opaque materials");
+    } else {
+        std::cerr << multipleMaterialsDecoded.error << '\n';
+    }
 }
 
 void testSchemaProfile()
@@ -446,7 +498,21 @@ void testSchemaProfile()
     } else {
         std::cerr << broadDecoded.error << '\n';
     }
-    expectRejected(broadBytes, "OGFX_MESHES", "M4 runtime record count");
+    expectRejected(
+        broadBytes,
+        "OGFX_GEOMETRIES",
+        "geometries[1].geometryFlags",
+        "alpha-tested consumer not yet implemented");
+
+    const Model allOpaqueTwoMeshes = makeAllOpaqueTwoGeometryModel();
+    expectRuntimeMatchesSchema(
+        allOpaqueTwoMeshes,
+        "an all-opaque two-mesh/two-geometry/two-material model");
+    Model allOpaqueOneMesh = allOpaqueTwoMeshes;
+    allOpaqueOneMesh.meshes = {Mesh{0, 2}};
+    expectRuntimeMatchesSchema(
+        allOpaqueOneMesh,
+        "an all-opaque one-mesh/two-geometry/two-material model");
 
     Model texturedQuad = makeQuad();
     texturedQuad.materials[0].baseColorTexture = "textures/plitka";
@@ -738,16 +804,25 @@ void testRangesBoundsAndRuntimeGates()
 
     Model alpha = makeQuad();
     alpha.geometries[0].alphaTested = true;
-    expectRejected(serialize(alpha), "OGFX_GEOMETRIES", "geometryFlags");
+    expectRejected(
+        serialize(alpha),
+        "OGFX_GEOMETRIES",
+        "geometries[0].geometryFlags",
+        "alpha-tested consumer not yet implemented");
 
     const std::vector<std::uint8_t> twoGeometry = serialize(makeTwoGeometryModel());
-    expectRejected(twoGeometry, "OGFX_MESHES", "M4 runtime record count");
+    expectRejected(
+        twoGeometry,
+        "OGFX_GEOMETRIES",
+        "geometries[1].geometryFlags",
+        "alpha-tested consumer not yet implemented");
     Model oneMeshTwoGeometries = makeTwoGeometryModel();
     oneMeshTwoGeometries.meshes = {Mesh{0, 2}};
     expectRejected(
         serialize(oneMeshTwoGeometries),
         "OGFX_GEOMETRIES",
-        "M4 runtime record count");
+        "geometries[1].geometryFlags",
+        "alpha-tested consumer not yet implemented");
     chunks = splitChunks(twoGeometry);
     RawChunk& meshes = chunkById(&chunks, ChunkId::Meshes);
     writeU32(&meshes.payload, 4, 0);

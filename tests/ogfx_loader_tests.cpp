@@ -44,6 +44,32 @@ xrphoton::ogfx::Model makeQuad()
     return model;
 }
 
+xrphoton::ogfx::Model makeOpaqueTwoGeometryModel()
+{
+    xrphoton::ogfx::Model model{};
+    model.positions = {
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {2.0f, 0.0f, 0.0f},
+        {3.0f, 0.0f, 0.0f},
+        {2.0f, 1.0f, 0.0f},
+    };
+    model.attributes.assign(
+        6,
+        xrphoton::ogfx::VertexAttributes{0.0f, 0.0f, 1.0f, 0.0f, 0.0f});
+    model.indices = {0, 1, 2, 0, 1, 2};
+    model.geometries = {
+        {0, 3, 0, 3, 0, false},
+        {3, 3, 3, 3, 1, false},
+    };
+    model.meshes = {{0, 2}};
+    model.materials.resize(2);
+    model.materials[0].baseColorFactor = {0.125f, 0.25f, 0.75f, 1.0f};
+    model.materials[1].baseColorFactor = {0.25f, 0.75f, 0.125f, 1.0f};
+    return model;
+}
+
 bool sceneIsEmpty(const xrphoton::SceneData& scene)
 {
     return scene.positions.empty()
@@ -126,7 +152,7 @@ void testSceneConversion()
             && loaded.scene.materials[0].alphaCutoff == 0.375f,
         "runtime material fields include an empty texture-reference carrier");
     expect(loaded.scene.instances.empty(), "OGFx decoding creates no world instances");
-    expect(loaded.scene.images.empty(), "the texture-free M4 profile creates no images");
+    expect(loaded.scene.images.empty(), "the texture-free runtime profile creates no images");
 
     std::vector<std::uint8_t> malformed = serialized.bytes;
     malformed[0] = 'X';
@@ -136,6 +162,56 @@ void testSceneConversion()
     expect(sceneIsEmpty(rejected.scene), "runtime adapter exposes no partial SceneData");
     expect(rejected.error.find("bad.ogfx") != std::string::npos,
         "runtime adapter preserves the decoder diagnostic");
+}
+
+void testMultiRecordSceneConversion()
+{
+    const xrphoton::ogfx::SerializeResult serialized =
+        xrphoton::ogfx::serializeModel(
+            makeOpaqueTwoGeometryModel(),
+            "multi-record-loader-source");
+    expect(static_cast<bool>(serialized), "multi-record runtime-loader source serializes");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+
+    const xrphoton::OgfxLoadResult loaded = xrphoton::decodeOgfxScene(
+        serialized.bytes,
+        "multi-record.ogfx");
+    expect(static_cast<bool>(loaded),
+        "runtime adapter accepts an opaque multi-record model");
+    if (!loaded) {
+        std::cerr << loaded.error << '\n';
+        return;
+    }
+
+    expect(loaded.scene.positions.size() == 18
+            && loaded.scene.attributes.size() == 6
+            && loaded.scene.indices
+                == std::vector<std::uint32_t>({0, 1, 2, 0, 1, 2}),
+        "runtime adapter preserves both geometry streams");
+    expect(loaded.scene.geometries.size() == 2
+            && loaded.scene.geometries[0].firstVertex == 0
+            && loaded.scene.geometries[0].materialIndex == 0
+            && loaded.scene.geometries[1].firstVertex == 3
+            && loaded.scene.geometries[1].firstIndex == 3
+            && loaded.scene.geometries[1].materialIndex == 1
+            && !loaded.scene.geometries[0].alphaTested
+            && !loaded.scene.geometries[1].alphaTested,
+        "runtime adapter preserves two opaque geometry records and material indices");
+    expect(loaded.scene.meshes.size() == 1
+            && loaded.scene.meshes[0].firstGeometry == 0
+            && loaded.scene.meshes[0].geometryCount == 2,
+        "runtime adapter preserves a multi-geometry mesh range");
+    expect(loaded.scene.materials.size() == 2
+            && loaded.scene.materials[0].baseColorFactor[2] == 0.75f
+            && loaded.scene.materials[1].baseColorFactor[1] == 0.75f
+            && loaded.scene.materials[0].baseColorTexture.empty()
+            && loaded.scene.materials[1].baseColorTexture.empty(),
+        "runtime adapter preserves both untextured material records");
+    expect(loaded.scene.instances.empty() && loaded.scene.images.empty(),
+        "multi-record OGFx decoding still creates no placements or images");
 }
 
 void testFileBoundary()
@@ -177,6 +253,7 @@ void testFileBoundary()
 int main()
 {
     testSceneConversion();
+    testMultiRecordSceneConversion();
     testFileBoundary();
 
     if (failureCount != 0) {

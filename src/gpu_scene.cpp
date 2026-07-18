@@ -6,6 +6,9 @@
 
 #include <cstring>
 #include <iostream>
+#include <limits>
+#include <new>
+#include <stdexcept>
 #include <vector>
 
 namespace xrphoton
@@ -45,6 +48,28 @@ bool hasScalarLoadAlignment(VkDeviceAddress address, const char* name)
     std::cerr << "Vulkan " << name << " device address is not 4-byte aligned.\n";
     return false;
 }
+
+bool checkedRecordBufferSize(
+    std::size_t recordCount,
+    VkDeviceSize recordSize,
+    const char* name,
+    VkDeviceSize maximumRange,
+    VkDeviceSize* byteSize)
+{
+    if (recordCount > std::numeric_limits<VkDeviceSize>::max() / recordSize) {
+        std::cerr << "Scene " << name << " byte size overflows VkDeviceSize.\n";
+        return false;
+    }
+
+    *byteSize = static_cast<VkDeviceSize>(recordCount) * recordSize;
+    if (*byteSize > maximumRange) {
+        std::cerr << "Scene " << name << " requires " << *byteSize
+                  << " bytes, exceeding maxStorageBufferRange "
+                  << maximumRange << ".\n";
+        return false;
+    }
+    return true;
+}
 }
 
 GpuScene::~GpuScene()
@@ -68,6 +93,7 @@ GpuScene::~GpuScene()
 VkResult createGpuScene(
     GpuScene* gpu,
     const SceneData& scene,
+    VkPhysicalDevice physicalDevice,
     VkDevice device,
     VmaAllocator allocator,
     const RayTracingFunctions& functions,
@@ -111,6 +137,26 @@ VkResult createGpuScene(
                 return VK_ERROR_INITIALIZATION_FAILED;
             }
         }
+    }
+
+    VkPhysicalDeviceProperties physicalDeviceProperties{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+
+    VkDeviceSize geometryRecordBytes = 0;
+    VkDeviceSize materialRecordBytes = 0;
+    if (!checkedRecordBufferSize(
+            scene.geometries.size(),
+            sizeof(GeometryRecord),
+            "geometry-record buffer",
+            physicalDeviceProperties.limits.maxStorageBufferRange,
+            &geometryRecordBytes)
+        || !checkedRecordBufferSize(
+            scene.materials.size(),
+            sizeof(MaterialRecord),
+            "material buffer",
+            physicalDeviceProperties.limits.maxStorageBufferRange,
+            &materialRecordBytes)) {
+        return VK_ERROR_INITIALIZATION_FAILED;
     }
 
     VkResult result = uploadDeviceLocalBuffer(
@@ -173,17 +219,26 @@ VkResult createGpuScene(
     }
 
     std::vector<GeometryRecord> geometryRecords;
-    geometryRecords.reserve(scene.geometries.size());
-    for (const SceneGeometry& geometry : scene.geometries) {
-        geometryRecords.push_back({
-            .indexAddress = gpu->indexBufferAddress
-                + static_cast<VkDeviceSize>(geometry.firstIndex) * sizeof(uint32_t),
-            .positionAddress = gpu->positionBufferAddress
-                + static_cast<VkDeviceSize>(geometry.firstVertex) * 3 * sizeof(float),
-            .attributeAddress = gpu->attributeBufferAddress
-                + static_cast<VkDeviceSize>(geometry.firstVertex) * sizeof(VertexAttributes),
-            .materialIndex = geometry.materialIndex,
-        });
+    std::vector<MaterialRecord> materialRecords;
+    try {
+        geometryRecords.reserve(scene.geometries.size());
+        for (const SceneGeometry& geometry : scene.geometries) {
+            geometryRecords.push_back({
+                .indexAddress = gpu->indexBufferAddress
+                    + static_cast<VkDeviceSize>(geometry.firstIndex) * sizeof(uint32_t),
+                .positionAddress = gpu->positionBufferAddress
+                    + static_cast<VkDeviceSize>(geometry.firstVertex) * 3 * sizeof(float),
+                .attributeAddress = gpu->attributeBufferAddress
+                    + static_cast<VkDeviceSize>(geometry.firstVertex) * sizeof(VertexAttributes),
+                .materialIndex = geometry.materialIndex,
+            });
+        }
+
+        materialRecords.resize(scene.materials.size());
+    } catch (const std::bad_alloc&) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (const std::length_error&) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
 
     result = uploadDeviceLocalBuffer(
@@ -193,7 +248,7 @@ VkResult createGpuScene(
         traceQueue,
         fence,
         geometryRecords.data(),
-        geometryRecords.size() * sizeof(GeometryRecord),
+        geometryRecordBytes,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         &gpu->geometryRecordBuffer,
         &gpu->geometryRecordAllocation);
@@ -201,7 +256,6 @@ VkResult createGpuScene(
         return result;
     }
 
-    std::vector<MaterialRecord> materialRecords(scene.materials.size());
     for (std::size_t index = 0; index < scene.materials.size(); ++index) {
         const SceneMaterial& source = scene.materials[index];
         MaterialRecord& destination = materialRecords[index];
@@ -220,7 +274,7 @@ VkResult createGpuScene(
         traceQueue,
         fence,
         materialRecords.data(),
-        materialRecords.size() * sizeof(MaterialRecord),
+        materialRecordBytes,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         &gpu->materialBuffer,
         &gpu->materialAllocation);

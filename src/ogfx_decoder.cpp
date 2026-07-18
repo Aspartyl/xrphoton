@@ -1067,33 +1067,15 @@ private:
 
     bool validateRuntimeProfile()
     {
-        if (model_.meshes.size() != 1) {
-            return reject(
-                static_cast<std::uint32_t>(ChunkId::Meshes),
-                "M4 runtime record count",
-                "exactly 1",
-                std::to_string(model_.meshes.size()));
-        }
-        if (model_.geometries.size() != 1) {
-            return reject(
-                static_cast<std::uint32_t>(ChunkId::Geometries),
-                "M4 runtime record count",
-                "exactly 1",
-                std::to_string(model_.geometries.size()));
-        }
-        if (model_.materials.size() != 1) {
-            return reject(
-                static_cast<std::uint32_t>(ChunkId::Materials),
-                "M4 runtime record count",
-                "exactly 1",
-                std::to_string(model_.materials.size()));
-        }
-        if (model_.geometries[0].alphaTested) {
-            return reject(
-                static_cast<std::uint32_t>(ChunkId::Geometries),
-                "geometries[0].geometryFlags",
-                "opaque geometry with bit 0 clear in M4",
-                "alpha-tested bit 0 set");
+        for (std::size_t index = 0; index < model_.geometries.size(); ++index) {
+            if (model_.geometries[index].alphaTested) {
+                return reject(
+                    static_cast<std::uint32_t>(ChunkId::Geometries),
+                    indexedField("geometries", index, "geometryFlags"),
+                    "opaque geometry required by the runtime profile "
+                    "(alpha-tested consumer not yet implemented)",
+                    "alpha-tested bit 0 set");
+            }
         }
         for (std::size_t index = 0; index < textureReferenceOffsets_.size(); ++index) {
             if (textureReferenceOffsets_[index] != NoTextureReference) {

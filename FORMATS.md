@@ -514,20 +514,19 @@ The design directly mirrors the engine's data model:
   real content far below 2³².
 
 OGFx contains no world-instance placement. It is a *model* format in the OGF
-tradition; placement belongs to the eventual scene/level representation. For
-M4 only, the preview caller appends one identity `SceneInstance` for the
-decoded file's one mesh so the existing `SceneData` and GPU path can render
-it. The reusable decoder itself returns no instances. This is runtime
-bring-up policy, not serialized model data, and it disappears once a real
-scene owner supplies instances.
+tradition; placement belongs to the eventual scene/level representation. The
+preview gallery assembles decoded models and supplies their `SceneInstance`
+placements. The reusable decoder itself returns no instances. This is runtime
+bring-up policy, not serialized model data, and it disappears once a real scene
+owner supplies instances.
 
-The M4 runtime profile loudly requires exactly one mesh, one geometry, and one
-material, matching the current GPU path it feeds. The container and writer can
-already represent multiple records; lifting this temporary capability gate during
-the N-BLAS generalization does not require a format-version change.
+The runtime profile accepts structurally valid multi-record mesh, geometry, and
+material arrays. The N-BLAS/N-instance consumer handles their mesh and geometry
+ranges without a format-version change. Logical texture references and their
+string arena remain rejected until texture resolution, upload, and sampling land.
 
-M4 and the later opaque-only N-BLAS probe reject geometry flag bit 0. The current trace uses
-`RAY_FLAG_FORCE_OPAQUE` and has no any-hit/SBT class split, so accepting an
+The opaque-only runtime profile rejects geometry flag bit 0. The current trace
+uses `RAY_FLAG_FORCE_OPAQUE` and has no any-hit/SBT class split, so accepting an
 alpha-tested record would silently render the wrong semantics. The later
 opaque/alpha milestone removes that capability gate when it adds the actual
 consumer.

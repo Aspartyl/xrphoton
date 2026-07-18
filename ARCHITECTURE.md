@@ -5,19 +5,20 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 ## Status
 
-xrPhoton renders its first ray traced pixels, and is interactive. It brings up a
-Vulkan instance and device configured for hardware ray tracing, creates a
-swapchain, loads a generated OGFx model, and builds the ray tracing
-**acceleration structures** (a BLAS over its indexed quad and a single-instance
-TLAS — see
+xrPhoton renders its first ray traced OGFx gallery, and is interactive. It brings
+up a Vulkan instance and device configured for hardware ray tracing, creates a
+swapchain, loads generated OGFx models, and builds the ray tracing
+**acceleration structures** (one BLAS per model mesh and a TLAS over every
+gallery placement — see
 [Acceleration structures](#acceleration-structures)), creates the **ray tracing
 pipeline and shader binding table** (see
 [Ray tracing pipeline](#ray-tracing-pipeline)), and runs a render loop in which
 `vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS from a **perspective
 fly camera** (WASD + mouse look, delivered to the raygen shader via push
 constants — see [Camera](#camera)), writing a device-local **storage image** —
-the quad in a smooth UV gradient over a dark red miss background — which is
-then blitted to the acquired swapchain image and presented. The present path is
+the translated quad and two wedge placements in material-modulated UV gradients
+over a dark red miss background — which is then blitted to the acquired swapchain
+image and presented. The present path is
 fully wired (swapchain creation, two-frame-in-flight synchronization, resize
 handling including the descriptor rewrite the resize obligates), and every piece
 of the RT stack is now exercised each frame. The frame path lives in its own
@@ -29,10 +30,11 @@ Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
 with a rotated and translated triangle. M3a established staged device-local uploads;
 M3b replaced the triangle with an indexed, X-rotated quad whose hit shader fetches
 indices, normals, and UVs through buffer device addresses, then reads materials
-from the descriptor-bound storage buffer. M4 moved that model construction offline:
-the build now writes `test_quad.ogfx`, the runtime strictly decodes it into
-model-owned `SceneData`, and the Vulkan-free gallery/assembly path merges it into
-the scene and supplies the preview's identity instance.
+from the descriptor-bound storage buffer. M4 moved model construction offline,
+and the Vulkan-free gallery/assembly path now merges the generated
+`test_quad.ogfx` and two-geometry `test_wedge.ogfx` models. The acceleration-
+structure path builds two distinct BLASes and a three-instance TLAS: the quad is
+placed once and the wedge BLAS is shared by two transformed placements.
 
 ## Goals and constraints
 
@@ -103,9 +105,9 @@ stage; the diagram shows the frame-path layering.)
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each OGFx model once, merges it, instantiates every mesh in each placement, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
-| [tools/compile_test_quad.cpp](tools/compile_test_quad.cpp) | Offline M3b-equivalent quad front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` in each binary directory |
-| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
-| [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
+| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` and `assets/test_wedge.ogfx` in each binary directory |
+| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers, including device storage-range gates | Program lifetime — created once at startup |
+| [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (N-instance buffer, vector of BLAS handles/backings, TLAS, and shared scratch arena) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
@@ -137,9 +139,8 @@ Includes are kept acyclic by a deliberate rule:
   library and shares no renderer-native structs. Source adapters populate its
   compiler model, and only the canonical writer owns the serialized schema.
   Its offline schema decoder supports compiler round trips, including logical
-  texture references; the separate runtime entry point layers the current M4
-  record-count, opacity, and texture capability gates over the same structural
-  validation.
+  texture references; the separate runtime entry point layers the current
+  opacity and texture capability gates over the same structural validation.
 - `legacy_ogf.hpp` depends only on that compiler-facing OGFx model and the
   standard library. Its implementation may share private core invariants such
   as canonical-size preflight, but it cannot serialize OGFx or reach renderer
@@ -195,12 +196,13 @@ Five RAII owners — split by resource lifetime:
   device/allocator and self-idle-waits before reverse-order destruction. `SceneData`
   is the separate plain CPU value owned by `main()` and remains alive for step 3.
 - **`AccelerationStructure`** (program lifetime, built once at startup) owns: the
-  host-visible instance buffer and the BLAS/TLAS handles with
-  their backing buffers, and — transiently, during the build only — the scratch
-  buffers and their VMA allocations. Like `Swapchain` it borrows its `VkDevice` and
-  `VmaAllocator`; it additionally keeps the
+  host-visible N-instance buffer, one `BlasEntry` handle/backing/address per
+  `SceneMesh`, and the TLAS handle and backing buffer. During the startup build it
+  also owns one scratch arena whose disjoint regions serve the batched BLAS builds
+  and whose aligned base is reused for the TLAS after a barrier. Like `Swapchain`
+  it borrows its `VkDevice` and `VmaAllocator`; it additionally keeps the
   `vkDestroyAccelerationStructureKHR` pointer (a runtime-resolved extension entry
-  point) so its destructor can tear down the two `VkAccelerationStructureKHR` handles
+  point) so its destructor can tear down every `VkAccelerationStructureKHR` handle
   without caller involvement.
 - **`RtPipeline`** (program lifetime, created once at startup) owns: the descriptor
   set layout, the pipeline layout, the descriptor pool and the one descriptor set
@@ -282,10 +284,11 @@ returns `1` on failure (RAII handles the unwind):
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
 10. **CPU/GPU scene.** `loadGalleryScene` loads the build-generated
-    `test_quad.ogfx`, transactionally merges its model-owned arrays, applies the
-    gallery's identity placement to every mesh, and validates the assembled
-    `SceneData`; `createGpuScene` then uploads its five device-local buffers through
-    the borrowed frame-0 slot.
+    `test_quad.ogfx` and `test_wedge.ogfx`, transactionally merges their model-owned
+    arrays, applies one quad and two wedge placements, and validates the assembled
+    `SceneData`; `createGpuScene` gates both shader-record buffers against
+    `maxStorageBufferRange`, then uploads its five device-local buffers through the
+    borrowed frame-0 slot.
 11. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
     command buffer and in-flight fence from step 9 and returns them in the state the
@@ -570,28 +573,44 @@ needs deeper overlap.
 
 ## Acceleration structures
 
-The ray tracing scene: a **BLAS** built over the two indexed triangles loaded from
-`test_quad.ogfx` and a **TLAS** whose single preview instance references it with an
-identity transform. Built once by `buildAccelerationStructures` after `GpuScene` upload,
-before the render loop; the TLAS handle is what the RT descriptor set binds
-(`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
-acceleration-structure *device address* is only needed where an instance references a
-BLAS). Everything is **swapchain-independent**: resize/recreate never touches it.
+The ray tracing scene contains one **BLAS per `SceneMesh`** and one **TLAS entry
+per `SceneInstance`**. The current gallery therefore builds two different BLASes
+(quad and wedge) and three TLAS instances; both wedge placements reference the
+same BLAS address. Built once by `buildAccelerationStructures` after `GpuScene`
+upload, before the render loop; the TLAS handle is what the RT descriptor set
+binds (`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
+acceleration-structure *device address* is only needed where a TLAS instance
+references a BLAS). Everything is **swapchain-independent**: resize/recreate
+never touches it.
 
 Decisions and contracts worth preserving:
 
 - **One transform-layout boundary.** Scene transforms use GLM's column-major
   `glm::mat4`; `toVkTransformMatrix` in `acceleration_structure.cpp` alone copies
-  them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The visible non-identity
-  M2 transform proved the transpose, and M3b's historical off-normal-axis rotation
-  proved the closest-hit normal transform. M4 deliberately uses identity placement
-  so the file boundary is the only changed variable.
+  them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The gallery's translated
+  quad and its translated/rotated/non-uniformly-scaled wedge make this boundary
+  visible without putting world placement into OGFx.
+- **Mesh ranges become BLAS geometry lists.** Each mesh's contiguous
+  `[firstGeometry, firstGeometry + geometryCount)` range is emitted in order as
+  one `VkAccelerationStructureGeometryKHR` per `SceneGeometry`. Vertex and index
+  addresses are pre-offset to that geometry's range; OGFx indices stay local, so
+  the build range uses `primitiveOffset = 0`, `firstVertex = 0`, and
+  `maxVertex = vertexCount - 1`. Every accepted runtime geometry is currently
+  opaque.
+- **Hit-record identity is flat and stable.** Each TLAS instance stores its
+  mesh's `firstGeometry` as `instanceCustomIndex`. Vulkan's `GeometryIndex()` is
+  the BLAS-local geometry index, so `InstanceID() + GeometryIndex()` recovers the
+  corresponding flat `GeometryRecord` index for every mesh and for any number of
+  placements sharing one BLAS. The interim one-hit-group SBT contract remains
+  explicit: record offset and instance flags are both zero.
 - **Staged device-local geometry.** `GpuScene` uploads vertex, attribute, index, and
   record data with `uploadDeviceLocalBuffer`: a transient mapped, host-coherent transfer-source buffer
   feeds a `TRANSFER_DST` device-local buffer, then dies after the submission fence.
   The destination is parked directly in `GpuScene`, preserving the
   null-guarded partial-failure teardown contract. The instance buffer remains mapped
   host-visible memory because dynamic-scene TLAS updates will rewrite it from the CPU.
+  Before upload, geometry and material record byte sizes are checked against
+  `maxStorageBufferRange` on the selected physical device.
 - **Upload visibility crosses submissions deliberately.** Every upload ends with a
   `VkMemoryBarrier` from `TRANSFER` writes to acceleration-structure-build reads and
   ray-tracing-shader reads. The fence wait only synchronizes the device with the host;
@@ -602,7 +621,7 @@ Decisions and contracts worth preserving:
   `SHADER_DEVICE_ADDRESS` usage. The program-lifetime VMA allocator is created with
   `VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`, so VMA derives the matching
   Vulkan memory-allocation flag from that usage and the two cannot diverge. The
-  **BLAS backing buffer** also needs the usage — querying
+  **BLAS backing buffers** also need the usage — querying
   a BLAS's acceleration-structure address for the TLAS instance requires it of the
   buffer underneath (VUID 09542). The **TLAS backing buffer** deliberately does not:
   nothing queries a TLAS address.
@@ -612,34 +631,40 @@ Decisions and contracts worth preserving:
   (`firstVertex × 12` and `firstIndex × 4`), so every derived build-input address keeps
   the required 4-byte alignment without byte padding. Startup still fails with a named
   diagnostic if a base-address premise is ever violated.
-- **Scratch alignment.** The spec requires the scratch **device address** — not the
-  buffer size or offset — to be a multiple of
-  `minAccelerationStructureScratchOffsetAlignment`, and a buffer's base address
-  carries no such guarantee. So the scratch is allocated with `alignment − 1` bytes
-  of slack and the address is rounded up; the unaligned handles are kept for cleanup.
-- **One submission, two barriers.** Both builds are recorded back-to-back into the
-  frame command buffer (one-time-submit): BLAS build → `VkMemoryBarrier`
-  (`ACCELERATION_STRUCTURE_BUILD` stage, AS-write → AS-read) → TLAS build → a final
-  `VkMemoryBarrier` (AS-build write → `RAY_TRACING_SHADER` AS-read). The TLAS can be
-  *recorded* against the BLAS before anything executes because an acceleration
-  structure's device address is fixed at creation; the first barrier orders the
-  *contents*. The trailing barrier exists because the fence only gives the **host**
-  visibility of the build and submission order carries no memory dependency; a
-  pipeline barrier's second scope covers all later commands in submission order on
-  the queue, so it makes the TLAS visible to every future `vkCmdTraceRaysKHR`
-  without the frame path needing its own barrier.
+- **Scene counts are gated against the device.** Instance count must fit both
+  `maxInstanceCount` and the 32-bit TLAS build-range field; each mesh's geometry
+  count must fit `maxGeometryCount`; and its summed triangle count must fit
+  `maxPrimitiveCount`. These checks happen before Vulkan consumes narrowed counts.
+- **One checked scratch arena.** Batched BLAS builds may execute concurrently, so
+  every BLAS receives a disjoint region sized and aligned to
+  `minAccelerationStructureScratchOffsetAlignment`. The arena's BLAS requirement
+  is the checked sum of those aligned sizes; its TLAS requirement is the aligned
+  TLAS scratch size. The allocation uses the larger requirement plus
+  `alignment - 1` bytes of slack, then rounds the returned *device address* up.
+  Checked `VkDeviceSize` arithmetic turns pathological overflow into a loud error.
+- **One submission, two barriers.** All BLASes are recorded in one batched
+  `vkCmdBuildAccelerationStructuresKHR` call, followed by a build-stage barrier
+  from AS write to **AS read and AS write**. The read scope makes BLAS contents
+  visible to the TLAS; the write scope orders reuse of the same scratch arena.
+  The TLAS build follows, then a final barrier from AS-build write to ray-tracing-
+  shader AS read. An acceleration structure's address is fixed at creation, so the
+  TLAS can be recorded before the BLAS batch executes; the barriers order the
+  contents. The trailing barrier makes the TLAS visible to future
+  `vkCmdTraceRaysKHR` calls without a per-frame AS barrier.
 - **Borrowed sync.** All five scene uploads and the AS build reuse `frames[0]`'s command buffer
   and in-flight fence. Each reset → submit → wait cycle leaves the fence signaled,
   exactly the state the next startup submission and first `drawFrame` wait depend on,
   without introducing temporary sync objects that could leak on a failure path. The
   command buffer is reset between submissions; the other frame slots are untouched.
-- **Scratch release.** The scratch buffers live in the owner (not as locals) so a
-  failed build bare-returns and the destructor cleans up; on success they are
-  destroyed immediately after the fence wait rather than held for the program's
-  lifetime.
-- **Teardown.** `~AccelerationStructure` waits for device idle, destroys the TLAS and
-  BLAS handles first (they are *placed on* their backing buffers), then its backing,
-  scratch, and instance buffers. `GpuScene` independently owns the geometry buffers.
+- **Scratch release.** The scratch arena lives in the owner (not as a local) so a
+  failed build bare-returns and the destructor cleans up; on success it is destroyed
+  immediately after the fence wait rather than held for the program's lifetime.
+- **Transactional ownership and teardown.** The BLAS vector reserves before any
+  Vulkan creation, and each created handle/backing is adopted immediately. Standard
+  allocation failures are translated to `VK_ERROR_OUT_OF_HOST_MEMORY`. The
+  destructor waits for device idle, destroys every BLAS and the TLAS handle before
+  their backing buffers, then releases any scratch arena and the instance buffer.
+  `GpuScene` independently owns the geometry buffers.
 
 ## Ray tracing pipeline
 
@@ -819,13 +844,17 @@ Decisions and contracts worth preserving:
    fly controls, fixing the bring-up aspect-ratio distortion on resize. See
    [Camera](#camera) for the decisions and contracts.
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
-   staged uploads, the indexed-quad BDA/ABI probe, and the complete M4 OGFx
-   round trip have landed. CMake generates
-   `build/<preset>/assets/test_quad.ogfx` through the shared writer; the temporary
-   gallery loads that required asset, merges it through the generic transactional
-   scene-assembly unit, applies its identity placement, and returns validated
-   `SceneData` to `main()` for the unchanged GpuScene/AS/RT path. The procedural runtime
-   builder is gone, so there is exactly one model-loading path. M4a is also
+   staged uploads, the indexed-geometry BDA/ABI probes, and the complete M4 OGFx
+   round trip have landed. CMake generates both
+   `build/<preset>/assets/test_quad.ogfx` and `test_wedge.ogfx` through the shared
+   writer; the temporary gallery loads both required assets, merges them through
+   the generic transactional scene-assembly unit, and returns validated
+   `SceneData` with three transformed placements. The GPU path now builds one BLAS
+   per mesh, batches those builds through one checked scratch arena, and builds a
+   TLAS over every instance; the two wedge placements visibly prove shared-BLAS
+   instancing and its two material factors prove multi-geometry indexing. The
+   procedural runtime builder is gone, so there is exactly one model-loading path.
+   M4a is also
    landed: deterministic logical-texture arenas, the offline full-schema
    decoder, a narrow legacy-static OGF adapter, and
    `xrPhotonAssetCompiler convert-ogf` provide direct offline conversion without
@@ -833,9 +862,8 @@ Decisions and contracts worth preserving:
    accepted result through the opt-in `xrPhotonM4aOfflineProof` target, which
    persists verified output only in the build tree; repository tests generate
    their own fixture, and no GSC asset or local absolute path is committed.
-   Blender is not part of that conversion path. Next, a generated multi-geometry
-   wedge makes the N-BLAS/N-instance generalization independently visible; the
-   texture path then brings the converted `plitka1.ogfx` into the same gallery.
+   Blender is not part of that conversion path. Next, the texture path brings the
+   converted `plitka1.ogfx` into the same gallery.
    The Blender opaque export probe follows as another entry after that end-to-end
    legacy proof. The temporary code-owned gallery table supplies world transforms
    until scene/level data has its real owner, without putting instances in OGFx:

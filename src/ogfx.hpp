@@ -133,19 +133,18 @@ struct DecodeResult
     std::string_view diagnosticName = "<memory>");
 
 // Decodes and validates the complete version-1 static schema within its published
-// resource caps, including logical texture references and record counts beyond the
-// current runtime capability gates. This is the offline round-trip/inspection entry
-// point; it does not make the model runtime-ready.
+// resource caps, including logical texture references and alpha-tested geometry
+// beyond the current runtime capability gates. This is the offline round-trip /
+// inspection entry point; it does not make the model runtime-ready.
 [[nodiscard]] DecodeResult decodeModelSchema(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");
 
 // Decodes the staged runtime profile transactionally: failure returns one diagnostic
-// and no partially populated model. Record-count gates remain until the N-BLAS /
-// N-instance consumer lands; texture-reference and string-arena gates remain until
-// resolution, upload, and sampling land; alpha-tested geometry remains gated until
-// the opaque/alpha split. The returned model deliberately has no instance concept
-// because OGFx stores reusable model data, not world placement.
+// and no partially populated model. Texture-reference and string-arena gates remain
+// until resolution, upload, and sampling land; alpha-tested geometry remains gated
+// until the opaque/alpha split. The returned model deliberately has no instance
+// concept because OGFx stores reusable model data, not world placement.
 [[nodiscard]] DecodeResult decodeModel(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");
