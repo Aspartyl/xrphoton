@@ -66,7 +66,9 @@ xrphoton::ogfx::Model makeOpaqueTwoGeometryModel()
     model.meshes = {{0, 2}};
     model.materials.resize(2);
     model.materials[0].baseColorFactor = {0.125f, 0.25f, 0.75f, 1.0f};
+    model.materials[0].baseColorTexture = "ston\\first";
     model.materials[1].baseColorFactor = {0.25f, 0.75f, 0.125f, 1.0f};
+    model.materials[1].baseColorTexture = "ston\\second";
     return model;
 }
 
@@ -152,7 +154,7 @@ void testSceneConversion()
             && loaded.scene.materials[0].alphaCutoff == 0.375f,
         "runtime material fields include an empty texture-reference carrier");
     expect(loaded.scene.instances.empty(), "OGFx decoding creates no world instances");
-    expect(loaded.scene.images.empty(), "the texture-free runtime profile creates no images");
+    expect(loaded.scene.images.empty(), "the untextured adapter fixture creates no images");
 
     std::vector<std::uint8_t> malformed = serialized.bytes;
     malformed[0] = 'X';
@@ -207,9 +209,11 @@ void testMultiRecordSceneConversion()
     expect(loaded.scene.materials.size() == 2
             && loaded.scene.materials[0].baseColorFactor[2] == 0.75f
             && loaded.scene.materials[1].baseColorFactor[1] == 0.75f
-            && loaded.scene.materials[0].baseColorTexture.empty()
-            && loaded.scene.materials[1].baseColorTexture.empty(),
-        "runtime adapter preserves both untextured material records");
+            && loaded.scene.materials[0].baseColorTexture == "ston\\first"
+            && loaded.scene.materials[1].baseColorTexture == "ston\\second"
+            && loaded.scene.materials[0].baseColorImage == 0
+            && loaded.scene.materials[1].baseColorImage == 0,
+        "runtime adapter preserves both textured material records before resolution");
     expect(loaded.scene.instances.empty() && loaded.scene.images.empty(),
         "multi-record OGFx decoding still creates no placements or images");
 }

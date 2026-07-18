@@ -111,9 +111,8 @@ OgfxLoadResult decodeOgfxScene(
             }
             sceneMaterial.baseColorImage = 0;
             sceneMaterial.alphaCutoff = material.alphaCutoff;
-            // Runtime acceptance still guarantees this is empty until the texture
-            // resolver/upload/sampling consumer lands, but preserve the OGFx carrier
-            // verbatim now so opening that gate cannot silently discard identity.
+            // Resolution is scene-global, so the model adapter preserves the logical
+            // OGFx identity while leaving the eventual image index at fallback slot 0.
             sceneMaterial.baseColorTexture = material.baseColorTexture;
             scene.materials.push_back(std::move(sceneMaterial));
         }

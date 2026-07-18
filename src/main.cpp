@@ -255,7 +255,7 @@ int main()
         return 1;
     }
 
-    std::cout << "Created Vulkan logical device with hardware ray tracing prerequisites.\n";
+    std::cout << "Created Vulkan logical device with renderer feature prerequisites.\n";
 
     const VkResult allocatorResult = createAllocator(
         ctx.instance,

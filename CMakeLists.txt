@@ -148,6 +148,7 @@ endif()
 add_library(xrPhotonOgfxRuntime STATIC
     src/ogfx_loader.cpp
     src/scene_assembly.cpp
+    src/texture_loader.cpp
 )
 target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
@@ -167,6 +168,13 @@ if(BUILD_TESTING)
     target_link_libraries(xrPhotonSceneAssemblyTests PRIVATE xrPhotonOgfxRuntime)
     target_compile_options(xrPhotonSceneAssemblyTests PRIVATE -Wall -Wextra)
     add_test(NAME scene_assembly COMMAND xrPhotonSceneAssemblyTests)
+
+    add_executable(xrPhotonTextureLoaderTests
+        tests/texture_loader_tests.cpp
+    )
+    target_link_libraries(xrPhotonTextureLoaderTests PRIVATE xrPhotonOgfxRuntime)
+    target_compile_options(xrPhotonTextureLoaderTests PRIVATE -Wall -Wextra)
+    add_test(NAME texture_loader COMMAND xrPhotonTextureLoaderTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.

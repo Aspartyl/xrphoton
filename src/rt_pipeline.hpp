@@ -59,7 +59,8 @@ struct RtPipeline
 };
 
 // Create the descriptor set layout (binding 0 the TLAS, binding 1 the storage image,
-// and bindings 2–3 the geometry/material records), a pool sized for exactly one set,
+// bindings 2–3 the geometry/material records, and binding 4 the fixed scene-texture
+// array), a pool sized for exactly one set,
 // and allocate that set.
 // Adopts device into *rt first, so on failure *rt holds whatever was created so far
 // and ~RtPipeline cleans it up; the caller can bare-return.
@@ -76,8 +77,8 @@ void writeRtDescriptorSet(
     VkAccelerationStructureKHR tlas,
     VkImageView storageImageView);
 
-// Write the program-lifetime scene buffers once at startup. Resize only rewrites
-// bindings 0–1 through writeRtDescriptorSet; these buffers never change in M3b.
+// Write the program-lifetime scene buffers and every slot of the fixed texture array
+// once at startup. Resize only rewrites bindings 0–1 through writeRtDescriptorSet.
 void writeSceneDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,

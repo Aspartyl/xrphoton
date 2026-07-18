@@ -94,7 +94,8 @@ bool sameMaterial(
 
 bool sameImage(const xrphoton::SceneImage& left, const xrphoton::SceneImage& right)
 {
-    return left.width == right.width
+    return left.format == right.format
+        && left.width == right.width
         && left.height == right.height
         && left.pixels == right.pixels;
 }
@@ -265,6 +266,9 @@ xrphoton::ogfx::Model makeRuntimeModel(float positionBase, bool quad)
     model.materials[0].baseColorFactor = quad
         ? std::array<float, 4>{0.1f, 0.2f, 0.3f, 1.0f}
         : std::array<float, 4>{0.7f, 0.6f, 0.5f, 1.0f};
+    model.materials[0].baseColorTexture = quad
+        ? "runtime\\second"
+        : "runtime\\first";
     return model;
 }
 
@@ -502,8 +506,10 @@ void testRuntimeLoadedModels()
         "runtime-loaded second mesh rebases through the real loader path");
     expect(scene.materials.size() == 2
             && scene.materials[0].baseColorFactor[0] == 0.7f
-            && scene.materials[1].baseColorFactor[0] == 0.1f,
-        "runtime-loaded material identities remain distinct after rebasing");
+            && scene.materials[1].baseColorFactor[0] == 0.1f
+            && scene.materials[0].baseColorTexture == "runtime\\first"
+            && scene.materials[1].baseColorTexture == "runtime\\second",
+        "runtime-loaded material and texture identities remain distinct after rebasing");
 }
 
 void testInstanceAppend()
@@ -625,7 +631,12 @@ void testModelPreconditionsAreTransactional()
         std::move(withInstance), "incoming model instances", "incoming instance precondition");
 
     xrphoton::SceneData withImage = makeTriangleModel();
-    withImage.images.push_back({1, 1, {255, 255, 255, 255}});
+    withImage.images.push_back({
+        .format = xrphoton::SceneImageFormat::Rgba8Srgb,
+        .width = 1,
+        .height = 1,
+        .pixels = {255, 255, 255, 255},
+    });
     expectAppendRejectedUnchanged(
         std::move(withImage), "incoming model images", "incoming image precondition");
 
@@ -651,7 +662,12 @@ void testModelPreconditionsAreTransactional()
         "resolved per-model image index precondition");
 
     xrphoton::SceneData scene = makeTriangleModel(100.0f, "target\\with_image");
-    scene.images.push_back({1, 1, {255, 255, 255, 255}});
+    scene.images.push_back({
+        .format = xrphoton::SceneImageFormat::Rgba8Srgb,
+        .width = 1,
+        .height = 1,
+        .pixels = {255, 255, 255, 255},
+    });
     const xrphoton::SceneData before = scene;
     std::string error;
     expect(!xrphoton::appendSceneModel(&scene, makeTriangleModel(), &error),

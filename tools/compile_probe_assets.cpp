@@ -44,6 +44,7 @@ xrphoton::ogfx::Model buildTestQuad()
         .geometryCount = 1,
     });
     model.materials.emplace_back();
+    model.materials[0].baseColorFactor = {1.0f, 0.45f, 0.12f, 1.0f};
     return model;
 }
 
@@ -111,9 +112,8 @@ xrphoton::ogfx::Model buildTestWedge()
         .geometryCount = 2,
     });
 
-    // The current probe shader multiplies an R/G UV gradient by these factors, so
-    // both factors retain nonzero red and green components. Phase 4's base-color
-    // shading will show their intended blue and green identities directly.
+    // The standing material shader multiplies these factors by the white fallback
+    // texture and a normal term, preserving the faces' blue/green identities.
     model.materials.resize(2);
     model.materials[0].baseColorFactor = {0.25f, 0.45f, 1.0f, 1.0f};
     model.materials[1].baseColorFactor = {0.15f, 1.0f, 0.25f, 1.0f};

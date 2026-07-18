@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <array>
 #include <iostream>
 #include <vector>
 
@@ -87,7 +88,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // ~RtPipeline even when a later step here fails and the caller bare-returns.
     rt->device = device;
 
-    VkDescriptorSetLayoutBinding bindings[4]{};
+    VkDescriptorSetLayoutBinding bindings[5]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[0].descriptorCount = 1;
@@ -106,10 +107,14 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = hitStageFlags;
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = MaxSceneTextures;
+    bindings[4].stageFlags = hitStageFlags;
 
     VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCreateInfo.bindingCount = 4;
+    layoutCreateInfo.bindingCount = 5;
     layoutCreateInfo.pBindings = bindings;
 
     VkResult result = vkCreateDescriptorSetLayout(
@@ -125,18 +130,20 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // Sized for exactly the one set. No FREE_DESCRIPTOR_SET_BIT: the set is only ever
     // released with the pool, and the resize-time rewrite goes through
     // vkUpdateDescriptorSets, which does not need it.
-    VkDescriptorPoolSize poolSizes[3]{};
+    VkDescriptorPoolSize poolSizes[4]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSizes[1].descriptorCount = 1;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[2].descriptorCount = 2;
+    poolSizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[3].descriptorCount = MaxSceneTextures;
 
     VkDescriptorPoolCreateInfo poolCreateInfo{};
     poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolCreateInfo.maxSets = 1;
-    poolCreateInfo.poolSizeCount = 3;
+    poolCreateInfo.poolSizeCount = 4;
     poolCreateInfo.pPoolSizes = poolSizes;
 
     result = vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &rt->descriptorPool);
@@ -203,7 +210,7 @@ void writeSceneDescriptorSet(
     bufferInfos[1].buffer = gpuScene.materialBuffer;
     bufferInfos[1].range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet writes[2]{};
+    VkWriteDescriptorSet writes[3]{};
     for (uint32_t index = 0; index < 2; ++index) {
         writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[index].dstSet = descriptorSet;
@@ -213,7 +220,24 @@ void writeSceneDescriptorSet(
         writes[index].pBufferInfo = &bufferInfos[index];
     }
 
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    std::array<VkDescriptorImageInfo, MaxSceneTextures> textureInfos{};
+    const VkImageView fallbackView = gpuScene.textures[0].view;
+    for (uint32_t index = 0; index < MaxSceneTextures; ++index) {
+        textureInfos[index].sampler = gpuScene.textureSampler;
+        textureInfos[index].imageView = index < gpuScene.textures.size()
+            ? gpuScene.textures[index].view
+            : fallbackView;
+        textureInfos[index].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = descriptorSet;
+    writes[2].dstBinding = 4;
+    writes[2].descriptorCount = MaxSceneTextures;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].pImageInfo = textureInfos.data();
+
+    vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 }
 
 VkResult createRtPipeline(

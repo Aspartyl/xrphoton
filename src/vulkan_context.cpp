@@ -1,6 +1,7 @@
 #include "vulkan_context.hpp"
 
 #include "acceleration_structure.hpp"
+#include "gpu_scene.hpp"
 #include "swapchain.hpp"
 #include "vk_mem_alloc.h"
 
@@ -20,8 +21,8 @@ namespace
 // structures, the RT pipeline, and deferred host operations (which
 // VK_KHR_acceleration_structure requires enabled even though nothing here defers);
 // the last is presentation. Deliberately absent: buffer device address is core in
-// the 1.3 baseline (the feature is enabled via the core
-// VkPhysicalDeviceBufferDeviceAddressFeatures struct, and a 1.3 driver need not
+// the 1.3 baseline (the feature is enabled via VkPhysicalDeviceVulkan12Features,
+// and a 1.3 driver need not
 // still advertise the promoted KHR extension string), and pipeline libraries are
 // only an optional interaction of the RT pipeline extension, never used here.
 constexpr const char* RequiredDeviceExtensions[] = {
@@ -169,6 +170,8 @@ struct RayTracingFeatureSupport
     bool wasQueried = false;
     bool hasShaderInt64 = false;
     bool hasBufferDeviceAddress = false;
+    bool hasSampledImageArrayNonUniformIndexing = false;
+    bool hasTextureCompressionBC = false;
     bool hasAccelerationStructure = false;
     bool hasRayTracingPipeline = false;
 
@@ -177,6 +180,8 @@ struct RayTracingFeatureSupport
         return wasQueried
             && hasShaderInt64
             && hasBufferDeviceAddress
+            && hasSampledImageArrayNonUniformIndexing
+            && hasTextureCompressionBC
             && hasAccelerationStructure
             && hasRayTracingPipeline;
     }
@@ -191,12 +196,12 @@ RayTracingFeatureSupport queryRequiredRayTracingFeatureSupport(
 {
     RayTracingFeatureSupport support{};
 
-    VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
-    bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    VkPhysicalDeviceVulkan12Features vulkan12Features{};
+    vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{};
     rayTracingPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-    rayTracingPipelineFeatures.pNext = &bufferDeviceAddressFeatures;
+    rayTracingPipelineFeatures.pNext = &vulkan12Features;
 
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
     accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
@@ -210,7 +215,11 @@ RayTracingFeatureSupport queryRequiredRayTracingFeatureSupport(
 
     support.wasQueried = true;
     support.hasShaderInt64 = physicalDeviceFeatures.features.shaderInt64 == VK_TRUE;
-    support.hasBufferDeviceAddress = bufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE;
+    support.hasBufferDeviceAddress = vulkan12Features.bufferDeviceAddress == VK_TRUE;
+    support.hasSampledImageArrayNonUniformIndexing =
+        vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+    support.hasTextureCompressionBC =
+        physicalDeviceFeatures.features.textureCompressionBC == VK_TRUE;
     support.hasAccelerationStructure =
         accelerationStructureFeatures.accelerationStructure == VK_TRUE;
     support.hasRayTracingPipeline = rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
@@ -292,6 +301,8 @@ struct PhysicalDeviceSuitability
     RayTracingFeatureSupport rayTracingFeatures{};
     bool hasSwapchainSupport = false;
     bool hasAccelerationStructureFormatSupport = false;
+    bool hasSceneTextureDescriptorLimits = false;
+    SceneTextureFormatSupport sceneTextureFormats{};
 
     bool hasRequiredApiVersion() const
     {
@@ -305,6 +316,8 @@ struct PhysicalDeviceSuitability
             && extensions.isComplete()
             && hasSwapchainSupport
             && hasAccelerationStructureFormatSupport
+            && hasSceneTextureDescriptorLimits
+            && sceneTextureFormats.isComplete()
             && rayTracingFeatures.isComplete();
     }
 };
@@ -320,6 +333,10 @@ PhysicalDeviceSuitability queryPhysicalDeviceSuitability(
     suitability.hasSwapchainSupport = hasRequiredSwapchainSupport(physicalDevice, surface);
     suitability.hasAccelerationStructureFormatSupport =
         hasRequiredAccelerationStructureFormatSupport(physicalDevice);
+    suitability.hasSceneTextureDescriptorLimits =
+        hasRequiredSceneTextureDescriptorLimits(suitability.properties.limits);
+    suitability.sceneTextureFormats =
+        queryRequiredSceneTextureFormatSupport(physicalDevice);
 
     // Buffer device address is core from VK 1.2 onward, while the other two feature
     // structs remain defined by device extensions. Do not put unsupported structs in
@@ -386,6 +403,50 @@ void reportPhysicalDeviceRejection(const PhysicalDeviceSuitability& suitability)
         std::cerr << "  - the BLAS vertex format cannot be used for acceleration-structure builds\n";
     }
 
+    if (!suitability.hasSceneTextureDescriptorLimits) {
+        const VkPhysicalDeviceLimits& limits = suitability.properties.limits;
+        const auto reportLimit = [](const char* name, uint32_t found, uint32_t required) {
+            if (found < required) {
+                std::cerr << "  - " << name << " is " << found
+                          << ", but the scene texture layout requires at least "
+                          << required << '\n';
+            }
+        };
+        reportLimit(
+            "maxPerStageDescriptorSampledImages",
+            limits.maxPerStageDescriptorSampledImages,
+            MaxSceneTextures);
+        reportLimit(
+            "maxPerStageDescriptorSamplers",
+            limits.maxPerStageDescriptorSamplers,
+            MaxSceneTextures);
+        reportLimit(
+            "maxDescriptorSetSampledImages",
+            limits.maxDescriptorSetSampledImages,
+            MaxSceneTextures);
+        reportLimit(
+            "maxDescriptorSetSamplers",
+            limits.maxDescriptorSetSamplers,
+            MaxSceneTextures);
+        reportLimit(
+            "maxPerStageResources",
+            limits.maxPerStageResources,
+            MaxSceneTextures + 2);
+    }
+
+    if (!suitability.sceneTextureFormats.rgba8Srgb) {
+        std::cerr << "  - VK_FORMAT_R8G8B8A8_SRGB lacks the required sampled, "
+                     "linear-filter, transfer-destination 2D image profile\n";
+    }
+    if (!suitability.sceneTextureFormats.bc1RgbaSrgb) {
+        std::cerr << "  - VK_FORMAT_BC1_RGBA_SRGB_BLOCK lacks the required sampled, "
+                     "linear-filter, transfer-destination 2D image profile\n";
+    }
+    if (!suitability.sceneTextureFormats.bc3Srgb) {
+        std::cerr << "  - VK_FORMAT_BC3_SRGB_BLOCK lacks the required sampled, "
+                     "linear-filter, transfer-destination 2D image profile\n";
+    }
+
     if (suitability.rayTracingFeatures.wasQueried) {
         if (!suitability.rayTracingFeatures.hasShaderInt64) {
             std::cerr << "  - missing required feature shaderInt64\n";
@@ -393,6 +454,15 @@ void reportPhysicalDeviceRejection(const PhysicalDeviceSuitability& suitability)
 
         if (!suitability.rayTracingFeatures.hasBufferDeviceAddress) {
             std::cerr << "  - missing required feature bufferDeviceAddress\n";
+        }
+
+        if (!suitability.rayTracingFeatures.hasSampledImageArrayNonUniformIndexing) {
+            std::cerr
+                << "  - missing required feature shaderSampledImageArrayNonUniformIndexing\n";
+        }
+
+        if (!suitability.rayTracingFeatures.hasTextureCompressionBC) {
+            std::cerr << "  - missing required feature textureCompressionBC\n";
         }
 
         if (!suitability.rayTracingFeatures.hasAccelerationStructure) {
@@ -624,13 +694,14 @@ VkResult createLogicalDevice(
     // Enable the same feature chain that queryRequiredRayTracingFeatureSupport verified,
     // this time with the flags set to VK_TRUE so the device exposes them. The chain is
     // passed through VkPhysicalDeviceFeatures2 on the create info's pNext.
-    VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
-    bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
-    bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+    VkPhysicalDeviceVulkan12Features vulkan12Features{};
+    vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vulkan12Features.bufferDeviceAddress = VK_TRUE;
+    vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{};
     rayTracingPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-    rayTracingPipelineFeatures.pNext = &bufferDeviceAddressFeatures;
+    rayTracingPipelineFeatures.pNext = &vulkan12Features;
     rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
 
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{};
@@ -642,6 +713,7 @@ VkResult createLogicalDevice(
     deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     deviceFeatures.pNext = &accelerationStructureFeatures;
     deviceFeatures.features.shaderInt64 = VK_TRUE;
+    deviceFeatures.features.textureCompressionBC = VK_TRUE;
 
     VkDeviceCreateInfo deviceCreateInfo{};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

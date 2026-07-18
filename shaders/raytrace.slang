@@ -44,6 +44,11 @@ StructuredBuffer<GeometryRecord> geometryRecords;
 [[vk::binding(3, 0)]]
 StructuredBuffer<MaterialRecord> materials;
 
+// Must match MaxSceneTextures in gpu_scene.hpp. Every slot is written; unused slots
+// repeat the opaque-white fallback, so no partially-bound descriptor feature is used.
+[[vk::binding(4, 0)]]
+Sampler2D sceneTextures[1024];
+
 struct CameraPushConstants
 {
     float3 origin;
@@ -135,7 +140,7 @@ void rayGenMain()
 [shader("miss")]
 void missMain(inout Payload payload)
 {
-    // Dark red keeps miss pixels visually distinct from the UV-gradient quad.
+    // Dark red keeps miss pixels visually distinct from gallery materials.
     payload.color = float3(0.24, 0.02, 0.015);
 }
 
@@ -144,9 +149,9 @@ void closestHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes
 {
     HitAttributes hit = fetchHitAttributes(attribs);
     MaterialRecord material = materials[hit.materialIndex];
-    // A smooth red/green UV gradient is an unambiguous BDA/stride/layout oracle.
-    // The normalized-normal factor stays 1 for valid data while ensuring the normal
-    // fetch and transform remain live in this probe shader.
-    float normalLength = saturate(dot(hit.worldNormal, hit.worldNormal));
-    payload.color = float3(hit.uv, 0.0) * material.baseColorFactor.rgb * normalLength;
+    float3 baseColor = material.baseColorFactor.rgb
+        * sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
+              .SampleLevel(hit.uv, 0.0).rgb;
+    payload.color = baseColor
+        * (0.2 + 0.8 * abs(dot(hit.worldNormal, -WorldRayDirection())));
 }

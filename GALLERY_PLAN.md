@@ -83,8 +83,8 @@ and every row uses the same runtime path.
 
 ## 2. Current state (verified against the code)
 
-Phases 0–2 are complete (`f75fe82`, `31e3e6e`), and this section reflects the
-verified Phase-3 working tree pending its owner commit. The load-bearing facts,
+Phases 0–3 are complete (`f75fe82`, `31e3e6e`, `4eea3ff`), and this section
+reflects the verified Phase-4 working tree pending its owner commit. The load-bearing facts,
 with citations; where the briefing that motivated this plan disagreed with the
 code, the correction is noted:
 
@@ -94,35 +94,32 @@ code, the correction is noted:
   structural/semantic validation; the runtime profile then layers
   `validateRuntimeProfile()`. Phase 3 removed the one-mesh, one-geometry, and
   one-material restrictions and changed opacity validation to inspect every
-  geometry. It still requires opaque geometry, every `textureRefOffset ==
-  UINT32_MAX`, and `stringByteSize == 0` until the Phase-4 texture consumer
-  lands.
+  geometry. Phase 4 removes the texture-reference/string-arena restrictions:
+  both profiles reconstruct references under the same 64 MiB expansion cap.
+  Runtime's remaining capability gate requires every geometry to be opaque.
   `decodeModelSchema` / `decodeModel` are the two entry points
-  (:1158-1170). **Correction to the brief:** the runtime adapter does not
-  "discard the decoded logical texture reference" — under the runtime profile
-  the decoder never *reconstructs* reference strings at all
-  (`matchedTexts` is recorded only for `Schema`,
-  [src/ogfx_decoder.cpp:713-717, 727, 749-787](src/ogfx_decoder.cpp)), so the
-  expansion starts in the decoder, not the loader. The 64 MiB
-  decoded-reference cap (`MaximumDecodedTextureBytes`,
-  [src/ogfx.hpp:29](src/ogfx.hpp)) is likewise enforced only on the Schema
-  branch today (:750-771).
+  ([src/ogfx_decoder.cpp:1119-1131](src/ogfx_decoder.cpp)). Reference
+  reconstruction and the 64 MiB decoded-reference cap
+  (`MaximumDecodedTextureBytes`, [src/ogfx.hpp:29](src/ogfx.hpp)) now have one
+  shared implementation for both profiles.
 - **Runtime adaptation.** `decodeOgfxScene`
   ([src/ogfx_loader.cpp:51-124](src/ogfx_loader.cpp)) calls `ogfx::decodeModel`
   (:55), converts field-by-field into one `SceneData`, sets every
   `SceneMaterial::baseColorImage` to zero (:112), carries the decoded logical
   `baseColorTexture` string into `SceneMaterial`, and leaves `instances` and
   `images` empty by contract ([src/ogfx_loader.hpp:24-31](src/ogfx_loader.hpp);
-  pinned by [tests/ogfx_loader_tests.cpp:127-128](tests/ogfx_loader_tests.cpp)).
+  pinned by [tests/ogfx_loader_tests.cpp:156-157](tests/ogfx_loader_tests.cpp)).
   `SceneData` already carries vectors for positions, attributes, indices,
   geometries, meshes, instances, materials, and images
-  ([src/scene.hpp:62-72](src/scene.hpp)).
+  ([src/scene.hpp:74-83](src/scene.hpp)).
 - **Gallery orchestration.** `main()` calls `loadGalleryScene()` and retains
   the returned ordinary `SceneData`. File-private asset and placement tables
   load the generated quad and wedge through the same OGFx path, merge their
   records through the Vulkan-free scene-assembly API, and place the quad once
-  and the wedge twice. The absolute generated-asset paths remain embedded at
-  configure time and explicitly temporary.
+  and the wedge twice. Final validation is followed by scene-global texture
+  resolution; the rootless generated gallery creates only image 0, the
+  opaque-white fallback. The absolute generated-asset paths remain embedded
+  at configure time and explicitly temporary.
 - **Acceleration structures.** Phase 3 builds one BLAS per mesh and one TLAS
   instance per scene placement. BLAS handles and arena offsets are owned in a
   vector; geometry storage and aligned scratch storage are arena-backed; all
@@ -131,22 +128,20 @@ code, the correction is noted:
   requirements. `instanceCustomIndex = mesh.firstGeometry` preserves the
   shader's `InstanceID() + GeometryIndex()` lookup across merged models and
   shared BLAS instances.
-- **RT pipeline.** Four descriptor bindings (TLAS, storage image,
-  geometry-record SSBO, material SSBO —
-  [src/rt_pipeline.cpp:90-113](src/rt_pipeline.cpp)); pool sized to exactly
-  those descriptors, `maxSets = 1` (:128-140); three shader groups (:25,
-  :277-299); SBT with one record per region (:352-434).
-  `writeSceneDescriptorSet` writes bindings 2–3 once at startup (:195-217);
-  `writeRtDescriptorSet` rewrites 0–1 per swapchain recreate.
+- **RT pipeline.** Five descriptor bindings (TLAS, storage image,
+  geometry-record SSBO, material SSBO, and 1,024 combined image samplers);
+  every texture slot is written at startup, with unused slots repeating the
+  fallback view. The pool remains one fixed set; the three shader groups and
+  one-record-per-region SBT are unchanged. `writeRtDescriptorSet` still
+  rewrites only bindings 0–1 per swapchain recreate.
 - **Shader.** `fetchHitAttributes` indexes
   `geometryRecords[InstanceID() + GeometryIndex()]`
-  ([shaders/raytrace.slang:72](shaders/raytrace.slang)); `TMax = 100.0` (:122);
+  ([shaders/raytrace.slang:77](shaders/raytrace.slang)); `TMax = 100.0` (:127);
   `TraceRay(..., RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 0, 0, ...)` — SBT offset and
-  geometry multiplier zero (:130); closest-hit shades a red/green UV gradient ×
-  `baseColorFactor` × a normal-length liveness term (:145-151).
-  `MaterialRecord.baseColorTexture` exists in the ABI
-  ([src/gpu_scene.hpp:31-42](src/gpu_scene.hpp), fed from `baseColorImage` at
-  [src/gpu_scene.cpp:212](src/gpu_scene.cpp)) but no shader reads it yet.
+  geometry multiplier zero (:135); closest-hit samples binding 4 through
+  `NonUniformResourceIndex(baseColorTexture)` and shades factor × sampled base
+  color × a view-dependent absolute normal term. The generated quad is amber;
+  the two wedge faces retain their blue/green material identities.
 - **plitka1 artifacts.** The canonical opt-in proof output exists locally at
   `build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`
   (71,328 bytes, SHA-256 `cdeb6203…`, logical texture
@@ -155,21 +150,21 @@ code, the correction is noted:
   model AABB is min ≈ (0, 0, −0.0104), max ≈ (2.3706, 2.8633, 0) — a wall-tile
   section about 2.4 m × 2.9 m and 1 cm thick with its corner at the origin
   (read from the file; useful for the preview transforms in G10). The proof
-  currently *asserts the runtime rejects the output*
-  ([tests/legacy_ogf_tests.cpp:718-723](tests/legacy_ogf_tests.cpp), driven by
-  [tests/m4a_offline_proof.cmake:41-52](tests/m4a_offline_proof.cmake)) — the
-  Phase 4 gate removal must flip that assertion in that same commit. The
+  now asserts that runtime decoding accepts the output and reconstructs its
+  exact logical texture reference, while the pinned bytes remain unchanged.
+  The
   Git-ignored local SoC corpus includes the matching DDS at the Phase-0 path
   recorded below; no GSC texture is tracked by Git.
 - **Build layout.** `xrPhotonOgfx` (writer + decoders) and
   `xrPhotonLegacyOgf` build without graphics ([CMakeLists.txt:15-36](CMakeLists.txt));
   `XRPHOTON_BUILD_ENGINE=OFF` returns before any graphics dependency
-  (:112-116); `xrPhotonOgfxRuntime` contains the GLM-dependent loader and
-  Vulkan-free scene assembly with their own tests. `gallery.cpp` belongs to
-  the engine executable. The probe compiler now emits both generated assets.
+  ([CMakeLists.txt:120-124](CMakeLists.txt)); `xrPhotonOgfxRuntime` contains the GLM-dependent loader,
+  Vulkan-free scene assembly, and strict DDS/logical-name texture resolver,
+  each with its own tests. `gallery.cpp` belongs to the engine executable. The
+  probe compiler emits both generated assets.
   The corpus-path cache variable precedent is `XRPHOTON_M4A_CORPUS_OGF`.
-- **Remaining documentation debt.** ARCHITECTURE.md reflects the Phase-3
-  N-BLAS/gallery state. The older roadmap narrative receives its final
+- **Remaining documentation debt.** ARCHITECTURE.md and FORMATS.md reflect the
+  Phase-4 texture foundation. The older roadmap narrative receives its final
   consolidation in Phase 6.
 
 ## 3. Non-goals
@@ -275,7 +270,7 @@ was flagged in external review.
 
 ### G2. Texture references travel inside `SceneMaterial`; resolution happens at scene assembly
 
-**Decision:** `SceneMaterial` ([src/scene.hpp:34-39](src/scene.hpp)) gains one
+**Decision:** `SceneMaterial` ([src/scene.hpp:35-43](src/scene.hpp)) gains one
 field:
 
 ```cpp
@@ -325,7 +320,7 @@ struct changes nothing about the boundary.
 **Decision:** new TU `src/scene_assembly.{hpp,cpp}`, added to the
 `xrPhotonOgfxRuntime` library (Vulkan-free; GLM only through `scene.hpp`, the
 same dependency story as the loader —
-[CMakeLists.txt:140-145](CMakeLists.txt)). Exported surface:
+[CMakeLists.txt:145-155](CMakeLists.txt)). Exported surface:
 
 ```cpp
 // scene_assembly.hpp — generic CPU-side scene assembly. OGFx models own no
@@ -447,10 +442,10 @@ struct GalleryPlacement   // one world placement of one loaded asset
 ```
 
 The path fields are `const char8_t*` because the embedded-path macros are
-C++ `u8"..."` literals ([CMakeLists.txt:210-212](CMakeLists.txt) —
+C++ `u8"..."` literals ([CMakeLists.txt:235-238](CMakeLists.txt) —
 `XRPHOTON_TEST_QUAD_ASSET_PATH=u8"…"`); a `const char*` table would not
 compile against them. Paths convert through `std::filesystem::path` at load
-time, exactly as [src/main.cpp:355](src/main.cpp) does today.
+time in [src/gallery.cpp:99-107](src/gallery.cpp).
 
 **Placement semantics (the multi-mesh rule, decided now so the Blender probe
 inherits it):** one placement instantiates **every mesh of its asset** with
@@ -496,8 +491,8 @@ The tables are bring-up scene ownership per GEOMETRY_PLAN D8, retired when
 scene/level data has a real owner; they never become an OGFx chunk.
 
 CMake policy (Phase 5), following the two precedents already in the tree —
-the embedded absolute asset path ([CMakeLists.txt:208-212](CMakeLists.txt))
-and the corpus cache variable ([CMakeLists.txt:89-92](CMakeLists.txt)):
+the embedded absolute asset path ([CMakeLists.txt:235-238](CMakeLists.txt))
+and the corpus cache variable ([CMakeLists.txt:97-100](CMakeLists.txt)):
 
 - `XRPHOTON_GALLERY_PLITKA_OGFX` — `CACHE FILEPATH`, **default empty**. When
   empty, the plitka entry is compiled out of the table (empty path literal)
@@ -717,7 +712,7 @@ flags, caps bits, mip count and layout — and pins this field list to observed
 reality *before any parser code is written in Phase 4*. A non-DXT1/DXT5
 variant extends the profile deliberately there, never mid-implementation.
 
-`SceneImage` ([src/scene.hpp:53-58](src/scene.hpp)) gains an explicit format:
+`SceneImage` ([src/scene.hpp:57-70](src/scene.hpp)) gains an explicit format:
 
 ```cpp
 enum class SceneImageFormat : uint32_t { Rgba8Srgb, Bc1RgbaSrgb, Bc3Srgb };
@@ -1037,7 +1032,7 @@ multiplier flip (GEOMETRY_PLAN D10's indivisible-change note).
 
 ### G10. Camera framing and `TMax`: keep `TMax = 100`; frame the gallery with the table's transforms, not camera changes
 
-**Decision:** `TMax` stays `100.0` ([shaders/raytrace.slang:122](shaders/raytrace.slang)).
+**Decision:** `TMax` stays `100.0` ([shaders/raytrace.slang:127](shaders/raytrace.slang)).
 The recorded trigger ("rises to `1.0e4` when real converted scene extents
 first require it") does not fire: the gallery's extent is under ten meters
 (plitka is 2.37 × 2.86 m, the quad 1 × 1), and the startup camera at
@@ -1186,8 +1181,7 @@ underneath.
 
 ### Phase 3 — N-BLAS / N-instance acceleration structures; the record-count gates fall with their consumer (quad + twice-placed wedge)
 
-**Status: implementation complete and verified (2026-07-18; owner commit
-pending).**
+**Status: complete (2026-07-18, commit `4eea3ff`).**
 
 **Lands:** G5, the Phase-3 half of G1, and a second **permanent** generated
 probe asset. The offline front end
@@ -1211,10 +1205,9 @@ leave BLAS selection, BLAS sharing, and geometry indexing unobserved:
   visually);
 - a rotated, **non-uniformly scaled** instance whose *placement and
   silhouette* verify the vertex transform. Its world-space **normal**
-  transform is deliberately *not* claimed as a Phase 3 visual: the standing
-  probe shader normalizes the normal and multiplies by
-  `saturate(dot(N, N))` ≈ 1
-  ([shaders/raytrace.slang:96, :150](shaders/raytrace.slang)) — a
+  transform is deliberately *not* claimed as a Phase 3 visual: the Phase-3
+  probe shader normalized the normal and multiplied by
+  `saturate(dot(N, N))` ≈ 1 — a
   view-independent liveness term, not an oracle. The normal-transform visual
   lands with Phase 4's view-dependent `abs(dot(N, −ray))` shading on this
   same instance; if Phase 3 debugging needs it earlier, the documented
@@ -1290,6 +1283,9 @@ leave BLAS selection, BLAS sharing, and geometry indexing unobserved:
   Phase 4).
 
 ### Phase 4 — Texture foundation: the texture/arena gates fall with their consumer — features, resolver, DDS decode, sampled base color (flat-shaded quad + wedges)
+
+**Status: implementation complete and verified (2026-07-18; owner commit
+pending).**
 
 **Lands:** G6, G7 (machinery; no root configured yet), G8, G9, and the
 Phase-4 half of G1: the texture-reference and string-arena gates fall, and
@@ -1398,7 +1394,9 @@ the generic shading path with zero image files involved.
   (`GpuScene` textures/views/sampler); the RT-pipeline section (binding 4,
   the Vulkan12Features consolidation, the descriptor-limit gate); the new
   device-feature requirements in the bring-up notes; the status line
-  (generic material shading + fallback sampling).
+  (generic material shading + fallback sampling). README's factual status and
+  offline-proof wording move with the landed gate; its gallery configuration
+  section remains Phase 5's responsibility.
 - **Depends on:** Phases 1–3 (carrier present; merged scene; generalized
   shading on N instances) and Phase 0 (the pinned DDS profile).
 - **Removes:** the UV-gradient probe shading, the "inert zero"
@@ -1562,26 +1560,18 @@ ownership of instances; path-tracing lighting, accumulation, or denoising.
 
 ## 8. Owner decisions and prerequisites
 
-1. **The texture asset (Phase 0 — needed before Phase 4 is implemented so
-   the DDS profile is pinned against the real file, and blocking Phase 5
-   acceptance).** Please provide the
-   original S.T.A.L.K.E.R. Shadow of Chernobyl texture for the logical
-   reference `ston\ston_stena_marbl_m_03_back` — the file
-   **`ston_stena_marbl_m_03_back.dds`** from the game's texture data (in the
-   unpacked archives it lives at `gamedata/textures/ston/ston_stena_marbl_m_03_back.dds`),
-   expected to be a DDS with a DXT1 or DXT5 payload. Place it under a local
-   directory of your choosing **preserving the `ston/` subdirectory** (i.e.
-   `<your-texture-root>/ston/ston_stena_marbl_m_03_back.dds`) and pass that
-   root at configure time via `-DXRPHOTON_GALLERY_TEXTURE_ROOT=…`. Like the
-   OGF corpus, it must never be committed. If the file turns out to carry a
-   different DDS variant (uncompressed, `DXT3`, `DX10` header), report the
-   header's fourCC/flags — the pinned decode profile (G6) is then extended
-   deliberately for that variant rather than guessed in advance.
-2. **Missing-texture policy confirmation.** This plan implements the loud
-   default: a configured gallery entry whose referenced texture cannot be
-   resolved or decoded aborts startup with the G7 diagnostic. If you instead
-   want a visible dev placeholder policy, say so before Phase 4; silence
-   means loud.
+1. **The texture asset (Phase 0 complete; still required for Phase 5
+   acceptance).** The owner supplied the original
+   `ston\ston_stena_marbl_m_03_back` DDS beneath the ignored SoC corpus at
+   `build/ogfx-core/original_game_files/soc/textures/ston/`; its pinned DXT1
+   profile is recorded in Phase 0. Phase 5 configures
+   `build/ogfx-core/original_game_files/soc/textures` as the texture root (or
+   another exact-case copy preserving the `ston/` subdirectory). The corpus
+   remains local and must never be committed.
+2. **Missing-texture policy: decided and implemented.** A configured gallery
+   entry whose referenced texture cannot be resolved or decoded aborts startup
+   with the structured G7 diagnostic. A visible development placeholder remains
+   a future explicit policy change; it is not the default.
 3. **plitka source-path choice.** The recommended configure value is the
    opt-in proof output
    `build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`

@@ -527,11 +527,14 @@ void testSchemaProfile()
     } else {
         std::cerr << texturedDecoded.error << '\n';
     }
-    expectRejected(texturedBytes, "OGFX_MATERIALS", "textureRefOffset");
-    expect(
-        xrphoton::ogfx::decodeModel(texturedBytes, "textured-runtime.ogfx")
-                .error.find("UINT32_MAX in the M4 runtime") != std::string::npos,
-        "runtime rejection remains the explicit M4 texture capability gate");
+    const DecodeResult texturedRuntime =
+        xrphoton::ogfx::decodeModel(texturedBytes, "textured-runtime.ogfx");
+    expect(static_cast<bool>(texturedRuntime),
+        "runtime decoding accepts a logical texture reference");
+    if (texturedRuntime) {
+        expect(texturedRuntime.model.materials[0].baseColorTexture == "textures/plitka",
+            "runtime decoding reconstructs the logical texture reference");
+    }
 }
 
 void testFileAndChunkFraming()
@@ -946,7 +949,14 @@ void testStringValidationAndTextureGate()
     chunks = splitChunks(canonical);
     setMaterialArena(&chunkById(&chunks, ChunkId::Materials), {1, 0, 'a'});
     const std::vector<std::uint8_t> unreferencedString = assembleFile(chunks);
-    expectRejected(unreferencedString, "OGFX_MATERIALS", "stringByteSize");
+    const DecodeResult unreferencedRuntime =
+        xrphoton::ogfx::decodeModel(unreferencedString, "unreferenced-runtime.ogfx");
+    expect(static_cast<bool>(unreferencedRuntime),
+        "runtime decoding permits a valid unreferenced string arena entry");
+    if (unreferencedRuntime) {
+        expect(unreferencedRuntime.model.materials[0].baseColorTexture.empty(),
+            "an unreferenced runtime arena entry stays unreferenced");
+    }
     const DecodeResult unreferencedSchema =
         xrphoton::ogfx::decodeModelSchema(unreferencedString, "unreferenced.ogfx");
     expect(static_cast<bool>(unreferencedSchema),
@@ -957,7 +967,12 @@ void testStringValidationAndTextureGate()
     }
     chunks = splitChunks(canonical);
     setMaterialArena(&chunkById(&chunks, ChunkId::Materials), {1, 0, 'a'}, 0);
-    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "textureRefOffset");
+    const DecodeResult firstReference = xrphoton::ogfx::decodeModel(
+        assembleFile(chunks),
+        "first-reference.ogfx");
+    expect(static_cast<bool>(firstReference)
+            && firstReference.model.materials[0].baseColorTexture == "a",
+        "runtime decoding accepts and reconstructs an offset-zero reference");
 
     const std::vector<std::uint8_t> severalStrings{
         1, 0, 'a',
@@ -970,11 +985,11 @@ void testStringValidationAndTextureGate()
         severalStrings,
         7);
     const std::vector<std::uint8_t> validLastReference = assembleFile(chunks);
-    expectRejected(validLastReference, "OGFX_MATERIALS", "textureRefOffset");
-    expect(
-        xrphoton::ogfx::decodeModel(validLastReference, "strings.ogfx")
-                .error.find("UINT32_MAX in the M4 runtime") != std::string::npos,
-        "a valid last-entry offset reaches the runtime texture capability gate");
+    const DecodeResult lastReferenceRuntime =
+        xrphoton::ogfx::decodeModel(validLastReference, "strings.ogfx");
+    expect(static_cast<bool>(lastReferenceRuntime)
+            && lastReferenceRuntime.model.materials[0].baseColorTexture == "d",
+        "runtime decoding reconstructs the final referenced string");
     const DecodeResult lastReferenceSchema =
         xrphoton::ogfx::decodeModelSchema(validLastReference, "strings-schema.ogfx");
     expect(static_cast<bool>(lastReferenceSchema),
@@ -1002,6 +1017,10 @@ void testStringValidationAndTextureGate()
     const std::vector<std::uint8_t> overBudgetReferences = assembleFile(chunks);
     expect(overBudgetReferences.size() < (1u << 20),
         "the decoded-text amplification fixture stays below one file MiB");
+    expectRejected(
+        overBudgetReferences,
+        "OGFX_MATERIALS",
+        "decoded texture reference bytes");
     expectSchemaRejected(
         overBudgetReferences,
         "OGFX_MATERIALS",

@@ -24,8 +24,8 @@ inline constexpr std::uint32_t NoTextureReference =
 inline constexpr std::uint32_t MaximumStringBytes = 4096;
 inline constexpr std::uint32_t MaximumChunkCount = 4096;
 inline constexpr std::uint64_t MaximumFileBytes = 1ull << 30;
-// Schema decoding materializes one owning string per referenced material. Keep
-// duplicate-reference expansion well below the independent file-size cap.
+// Decoding materializes one owning string per referenced material. Keep duplicate-
+// reference expansion well below the independent file-size cap in both profiles.
 inline constexpr std::uint64_t MaximumDecodedTextureBytes = 64ull << 20;
 
 inline constexpr std::uint32_t ModelRecordSize = 48;
@@ -88,9 +88,8 @@ struct Material
     std::array<float, 4> baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
     float alphaCutoff = 0.5f;
 
-    // Offline compiler paths preserve logical texture references in the v1 string
-    // arena. The M4 runtime entry point still rejects them until a texture consumer
-    // can resolve the reference without discarding semantics.
+    // OGFx v1 stores logical texture references in its string arena. Both decoder
+    // profiles preserve them so the runtime texture resolver can load the image.
     std::string baseColorTexture;
 };
 
@@ -141,10 +140,10 @@ struct DecodeResult
     std::string_view diagnosticName = "<memory>");
 
 // Decodes the staged runtime profile transactionally: failure returns one diagnostic
-// and no partially populated model. Texture-reference and string-arena gates remain
-// until resolution, upload, and sampling land; alpha-tested geometry remains gated
-// until the opaque/alpha split. The returned model deliberately has no instance
-// concept because OGFx stores reusable model data, not world placement.
+// and no partially populated model. Logical texture references are reconstructed for
+// the scene resolver; alpha-tested geometry remains gated until the opaque/alpha
+// split. The returned model deliberately has no instance concept because OGFx stores
+// reusable model data, not world placement.
 [[nodiscard]] DecodeResult decodeModel(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");

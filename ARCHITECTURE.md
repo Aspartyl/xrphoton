@@ -16,9 +16,10 @@ pipeline and shader binding table** (see
 `vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS from a **perspective
 fly camera** (WASD + mouse look, delivered to the raygen shader via push
 constants — see [Camera](#camera)), writing a device-local **storage image** —
-the translated quad and two wedge placements in material-modulated UV gradients
-over a dark red miss background — which is then blitted to the acquired swapchain
-image and presented. The present path is
+the translated amber quad and two flat blue/green wedge placements sample a shared
+texture descriptor array and receive view-dependent normal shading over a dark red
+miss background — which is then blitted to the acquired swapchain image and
+presented. The present path is
 fully wired (swapchain creation, two-frame-in-flight synchronization, resize
 handling including the descriptor rewrite the resize obligates), and every piece
 of the RT stack is now exercised each frame. The frame path lives in its own
@@ -34,7 +35,11 @@ from the descriptor-bound storage buffer. M4 moved model construction offline,
 and the Vulkan-free gallery/assembly path now merges the generated
 `test_quad.ogfx` and two-geometry `test_wedge.ogfx` models. The acceleration-
 structure path builds two distinct BLASes and a three-instance TLAS: the quad is
-placed once and the wedge BLAS is shared by two transformed placements.
+placed once and the wedge BLAS is shared by two transformed placements. The texture
+foundation now resolves logical material names into strict DDS BC1/BC3 scene images,
+always supplies an opaque-white fallback, uploads sampled images, and exposes them
+through one fixed descriptor array; the generated gallery currently exercises its
+fallback slot without requiring local game files.
 
 ## Goals and constraints
 
@@ -99,14 +104,15 @@ stage; the diagram shows the frame-path layering.)
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU record types | Plain value state loaded from OGFx and owned by `main()` |
-| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict M4 byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
+| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
 | [src/legacy_ogf.hpp](src/legacy_ogf.hpp) / [.cpp](src/legacy_ogf.cpp) | Transactional source decoder for the pinned M4a OGF v4 static profile; validates legacy framing/semantics and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build |
 | [tools/convert_ogf.cpp](tools/convert_ogf.cpp) | `xrPhotonAssetCompiler convert-ogf` dispatch, bounded source-file input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
+| [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5 framing and mip-0 decode, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each OGFx model once, merges it, instantiates every mesh in each placement, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` and `assets/test_wedge.ogfx` in each binary directory |
-| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers, including device storage-range gates | Program lifetime — created once at startup |
+| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (N-instance buffer, vector of BLAS handles/backings, TLAS, and shared scratch arena) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, ray tracing pipeline, SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
@@ -139,8 +145,8 @@ Includes are kept acyclic by a deliberate rule:
   library and shares no renderer-native structs. Source adapters populate its
   compiler model, and only the canonical writer owns the serialized schema.
   Its offline schema decoder supports compiler round trips, including logical
-  texture references; the separate runtime entry point layers the current
-  opacity and texture capability gates over the same structural validation.
+  texture references; the separate runtime entry point layers only the current
+  opaque-geometry capability gate over the same structural validation.
 - `legacy_ogf.hpp` depends only on that compiler-facing OGFx model and the
   standard library. Its implementation may share private core invariants such
   as canonical-size preflight, but it cannot serialize OGFx or reach renderer
@@ -151,7 +157,8 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
 1. `queryPhysicalDeviceSuitability` (in `vulkan_context.cpp`) calls
    `hasRequiredSwapchainSupport` (declared in `swapchain.hpp`) and
    `hasRequiredAccelerationStructureFormatSupport` (declared in
-   `acceleration_structure.hpp`).
+   `acceleration_structure.hpp`), plus the scene-texture descriptor-limit and
+   format-support helpers declared in `gpu_scene.hpp`.
 2. The swapchain functions need the full definition of `QueueFamilyIndices`, which
    they get by including `vulkan_context.hpp` in `swapchain.cpp`.
 3. `gpu_scene.cpp` includes `scene.hpp` and `vulkan_context.hpp` to turn CPU arrays
@@ -168,8 +175,9 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    standard-library-only decoded model into renderer-native `SceneData`.
 7. `scene_assembly.cpp` depends only on `scene.hpp` and standard-library helpers;
    it remains in the same Vulkan-free runtime library as the OGFx adapter.
-8. `gallery.cpp` includes the loader and assembly APIs to own temporary startup
-   policy; its public header exposes only `SceneData` and a value result.
+8. `gallery.cpp` includes the loader, assembly, and texture-resolution APIs to own
+   temporary startup policy; its public header exposes only `SceneData` and a value
+   result.
 9. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
    the pipeline layout's push-constant range; `camera.cpp` includes
    `GLFW/glfw3.h` for the real input API its header only forward-declared.
@@ -192,9 +200,11 @@ Five RAII owners — split by resource lifetime:
   recreate path. Its `VkDevice` and `VmaAllocator` are **non-owning** — borrowed
   from `VulkanContext` and used only to destroy the children above.
 - **`GpuScene`** (program lifetime, created once at startup) owns the device-local
-  position, attribute, index, geometry-record, and material buffers. It borrows the
-  device/allocator and self-idle-waits before reverse-order destruction. `SceneData`
-  is the separate plain CPU value owned by `main()` and remains alive for step 3.
+  position, attribute, index, geometry-record, and material buffers; every sampled
+  scene image and view; and one shared linear-repeat sampler. It borrows the
+  device/allocator and self-idle-waits before destroying sampler → views → images →
+  buffers. `SceneData` is the separate plain CPU value owned by `main()` and remains
+  alive for step 3.
 - **`AccelerationStructure`** (program lifetime, built once at startup) owns: the
   host-visible N-instance buffer, one `BlasEntry` handle/backing/address per
   `SceneMesh`, and the TLAS handle and backing buffer. During the startup build it
@@ -339,8 +349,8 @@ gate and then fails later in swapchain creation.
 stack — acceleration structure, ray tracing pipeline, deferred host operations
 (required *enabled* by `VK_KHR_acceleration_structure` even though nothing here
 defers) — plus `VK_KHR_swapchain` for presentation. Deliberately absent: **buffer
-device address** is core in the 1.3 baseline (its feature is enabled through the
-core `VkPhysicalDeviceBufferDeviceAddressFeatures` struct, and
+device address** is core in the 1.3 baseline (its feature is enabled through
+`VkPhysicalDeviceVulkan12Features`, and
 `vkGetBufferDeviceAddress` is resolved by its core name — a 1.3 driver need not
 still advertise the promoted KHR extension string), and **pipeline library** is
 only an optional interaction of the RT pipeline extension, never used here.
@@ -351,11 +361,21 @@ structure builds. The spec mandates that support wherever the feature exists, so
 this is a conformance backstop in the "check anyway, fail loudly" family (like the
 trace dispatch gate), not a real capability query.
 
-The ray tracing feature chain, plus core `VkPhysicalDeviceFeatures::shaderInt64`,
-(`VkPhysicalDeviceBufferDeviceAddressFeatures` → `RayTracingPipelineFeatures` →
-`AccelerationStructureFeatures` → `VkPhysicalDeviceFeatures2`) is queried during
-selection and re-used, with the same chain shape, to *enable* those features at
-device creation.
+The feature chain uses `VkPhysicalDeviceVulkan12Features` for both
+`bufferDeviceAddress` and `shaderSampledImageArrayNonUniformIndexing`, alongside
+the ray-tracing-pipeline and acceleration-structure extension structs. Core
+`VkPhysicalDeviceFeatures` carries `shaderInt64` and `textureCompressionBC`.
+Selection queries this exact chain and device creation reuses it with the required
+bits enabled; the standalone buffer-device-address feature struct is deliberately
+absent because chaining both promoted forms is invalid.
+
+Scene textures add two suitability backstops. The fixed 1,024-entry combined
+image-sampler array must fit the per-stage and per-set sampled-image/sampler limits,
+and `maxPerStageResources` must cover the array plus the two hit-stage SSBOs. For
+RGBA8-sRGB, BC1-sRGB, and BC3-sRGB, selection requires optimal-tiling sampled,
+linear-filter, and transfer-destination format features and confirms the exact 2D
+optimal `SAMPLED | TRANSFER_DST` image-creation tuple. Actual image extents are
+later gated against that tuple's returned `maxExtent` at `GpuScene` creation.
 
 ### Queue families
 
@@ -616,6 +636,16 @@ Decisions and contracts worth preserving:
   ray-tracing-shader reads. The fence wait only synchronizes the device with the host;
   the barrier's second scope is what makes the copy visible to later queue submissions,
   so neither the AS build nor frame path needs an upload-specific barrier.
+- **Sampled scene textures.** The Vulkan-free resolver always creates image 0 as a
+  1×1 opaque-white RGBA8-sRGB fallback, then appends deduplicated BC1/BC3 images in
+  first-material-use order. `GpuScene` reserves ownership before creation, uploads
+  each exact mip-0 payload through a transient staging buffer, and records
+  `UNDEFINED → TRANSFER_DST_OPTIMAL`, the tightly packed buffer-to-image copy, then
+  `TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL` with ray-tracing-shader read
+  visibility. A failed post-submit fence wait device-idles before transient staging
+  memory can die. Views are created after all images and the shared linear-repeat,
+  max-Lod-0 sampler last, giving strict reverse teardown. Compressed payloads stay
+  compressed in device memory; no runtime DXT decompression or mip generation exists.
 - **Device-address rules.** The build consumes buffer *device addresses*, not
   descriptors, so the input and scratch buffers carry
   `SHADER_DEVICE_ADDRESS` usage. The program-lifetime VMA allocator is created with
@@ -651,7 +681,8 @@ Decisions and contracts worth preserving:
   TLAS can be recorded before the BLAS batch executes; the barriers order the
   contents. The trailing barrier makes the TLAS visible to future
   `vkCmdTraceRaysKHR` calls without a per-frame AS barrier.
-- **Borrowed sync.** All five scene uploads and the AS build reuse `frames[0]`'s command buffer
+- **Borrowed sync.** All buffer and texture uploads plus the AS build reuse
+  `frames[0]`'s command buffer
   and in-flight fence. Each reset → submit → wait cycle leaves the fence signaled,
   exactly the state the next startup submission and first `drawFrame` wait depend on,
   without introducing temporary sync objects that could leak on a failure path. The
@@ -670,7 +701,8 @@ Decisions and contracts worth preserving:
 
 The machinery that turns the TLAS into pixels: three shaders, the pipeline over
 them, the shader binding table `vkCmdTraceRaysKHR` indexes into, and the descriptor
-set binding the TLAS, storage image, geometry records, and materials. Owned by `RtPipeline`
+set binding the TLAS, storage image, geometry records, materials, and sampled scene
+textures. Owned by `RtPipeline`
 ([src/rt_pipeline.hpp](src/rt_pipeline.hpp)), created once at startup in three
 steps (`createRtDescriptorSet` → `createRtPipeline` → `buildShaderBindingTable`),
 program-lifetime except for one resize obligation described below.
@@ -683,7 +715,8 @@ Decisions and contracts worth preserving:
   the payload contract — storage-image write at binding 1, `[format("rgba8")]`
   because the device's `shaderStorageImageWriteWithoutFormat` is not enabled),
   `missMain` (the dark red background), `closestHitMain` (indexed BDA fetch of
-  normals/UVs followed by a red/green UV gradient). CMake compiles it with `slangc
+  normals/UVs followed by material-factor × sampled-base-color × view-dependent
+  normal shading). CMake compiles it with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
   self-contained C header (`raytrace_spv.h`, includes prepended by the build) that
   `rt_pipeline.cpp` `#include`s — no runtime shader file paths, keeping the
@@ -727,7 +760,12 @@ Decisions and contracts worth preserving:
   local indices and interpolates UV/normal data, then transforms normals with the
   inverse-transpose implied by row-vector multiplication with `WorldToObject3x4()`.
 - **Descriptor set:** binding 0 TLAS and binding 1 storage image are raygen-only;
-  bindings 2–3 are geometry/material storage buffers visible to hit stages. The pool holds exactly the one
+  bindings 2–3 are geometry/material storage buffers visible to hit stages. Binding
+  4 is a fixed 1,024-entry combined-image-sampler array visible to closest-hit and
+  future any-hit stages. Startup writes every slot: real scene images first, then the
+  white fallback view in every unused slot, all sharing one sampler. The shader uses
+  `NonUniformResourceIndex`; no partially-bound, variable-count, or runtime-array
+  feature is enabled. The pool holds exactly the one
   set, without `FREE_DESCRIPTOR_SET_BIT` (the set is only released with the pool).
   The TLAS write chains `VkWriteDescriptorSetAccelerationStructureKHR` via `pNext`;
   the image write declares `IMAGE_LAYOUT_GENERAL`, which the frame's first barrier

@@ -393,9 +393,10 @@ void testAcceptedProfile()
     }
     const DecodeResult runtime =
         xrphoton::ogfx::decodeModel(first.bytes, "synthetic-runtime.ogfx");
-    expect(!runtime
-            && runtime.error.find("UINT32_MAX in the M4 runtime") != std::string::npos,
-        "converted textured output remains explicitly offline-only");
+    expect(static_cast<bool>(runtime)
+            && runtime.model.materials[0].baseColorTexture
+                == "ston\\synthetic_asymmetric",
+        "runtime decoding accepts and reconstructs converted texture references");
 
     std::vector<RawChunk> reordered = chunks;
     std::reverse(reordered.begin(), reordered.end());
@@ -717,10 +718,10 @@ void verifyCorpusOutput(
 
     const DecodeResult runtime =
         xrphoton::ogfx::decodeModel(outputBytes, outputPath.string());
-    expect(!runtime
-            && runtime.error.find("UINT32_MAX in the M4 runtime")
-                != std::string::npos,
-        "the proof preserves the runtime texture capability gate");
+    expect(static_cast<bool>(runtime)
+            && runtime.model.materials[0].baseColorTexture
+                == "ston\\ston_stena_marbl_m_03_back",
+        "the proof output is accepted by the runtime texture profile");
 }
 
 void verifyCliOutputs(

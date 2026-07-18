@@ -2,6 +2,7 @@
 
 #include "ogfx_loader.hpp"
 #include "scene_assembly.hpp"
+#include "texture_loader.hpp"
 
 #include <array>
 #include <cstddef>
@@ -206,6 +207,32 @@ GalleryLoadResult loadGalleryScene()
 
         if (!validateAssembledScene(scene, &assemblyError)) {
             return fail("Gallery scene validation failed: " + assemblyError);
+        }
+
+        const ResolveTexturesResult textures = resolveSceneTextures(&scene, {});
+        if (!textures) {
+            if (textures.failedMaterial.has_value()) {
+                const uint64_t failedMaterial = *textures.failedMaterial;
+                for (std::size_t assetIndex = 0;
+                     assetIndex < loadedAssets.size();
+                     ++assetIndex) {
+                    const LoadedGalleryAsset& loadedAsset = loadedAssets[assetIndex];
+                    const uint64_t materialEnd =
+                        static_cast<uint64_t>(loadedAsset.firstMaterial)
+                        + loadedAsset.materialCount;
+                    if (loadedAsset.loaded
+                        && failedMaterial >= loadedAsset.firstMaterial
+                        && failedMaterial < materialEnd) {
+                        return fail(
+                            entryDiagnosticPrefix(GalleryAssets[assetIndex])
+                            + textures.error);
+                    }
+                }
+                return fail(
+                    "Gallery texture resolution failed for unowned material["
+                    + std::to_string(failedMaterial) + "]: " + textures.error);
+            }
+            return fail("Gallery texture resolution failed: " + textures.error);
         }
         return {
             .scene = std::move(scene),

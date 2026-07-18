@@ -54,8 +54,16 @@ struct SceneInstance
     glm::mat4 transform{1.0f};
 };
 
+enum class SceneImageFormat : uint32_t
+{
+    Rgba8Srgb,
+    Bc1RgbaSrgb,
+    Bc3Srgb,
+};
+
 struct SceneImage
 {
+    SceneImageFormat format = SceneImageFormat::Rgba8Srgb;
     uint32_t width = 0;
     uint32_t height = 0;
     std::vector<uint8_t> pixels;

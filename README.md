@@ -42,9 +42,13 @@ have landed. Every normal engine build generates
 `build/<preset>/assets/test_quad.ogfx` and `test_wedge.ogfx` through the canonical
 writer; the runtime strictly decodes both, assembles their model records and world
 placements into `SceneData`, batches two different BLAS builds, and shares the
-wedge BLAS across two TLAS instances. The separate converter accepts the pinned
-OGF v4 static profile and feeds that same writer for offline validation. Next is
-the texture foundation and the first rendered converted `plitka1.ogfx`; the
+wedge BLAS across two TLAS instances. The texture foundation now reconstructs
+logical OGFx references, resolves strict DDS DXT1/DXT5 images, uploads BC1/BC3
+payloads directly, and exposes a fixed sampled-image array with an opaque-white
+fallback; the generated gallery exercises that fallback with an amber quad and
+blue/green wedge faces. The separate converter accepts the pinned OGF v4 static
+profile and feeds that same writer for offline validation. Next is the first
+rendered converted `plitka1.ogfx`; the
 Blender opaque export probe follows that end-to-end legacy proof. Dynamic scenes
 (TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
 and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -89,8 +93,8 @@ It also builds the narrow legacy OGF converter:
 ```
 
 This first adapter intentionally accepts only the documented M4a static profile.
-Its output preserves a logical texture name for offline schema inspection, so it
-is not runtime-ready until texture resolution lands.
+Its output preserves a logical texture name that the runtime now reconstructs for
+scene-global DDS resolution. Adding it to the configured gallery is the next phase.
 
 With the local `plitka1.ogf` source file in
 `build/ogfx-core/legacy-ogf-corpus/meshes/objects/dynamics/plitka/`, run the complete,
@@ -101,8 +105,8 @@ cmake --build --preset ogfx-core --target xrPhotonM4aOfflineProof
 ```
 
 It verifies the pinned source and output identities, conversion semantics,
-canonical schema round trip, and unchanged runtime texture gate. The persistent
-result is written to
+canonical schema round trip, and exact runtime texture-reference reconstruction.
+The persistent result is written to
 `build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`. A different
 local source location can be selected at configure time with
 `-DXRPHOTON_M4A_CORPUS_OGF=/path/to/plitka1.ogf`; the corpus remains outside the

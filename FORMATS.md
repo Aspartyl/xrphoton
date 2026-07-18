@@ -434,23 +434,22 @@ arena in first material-use order, so map/hash iteration order cannot affect
 the output. The offline `decodeModelSchema` entry point validates this complete
 static schema and reconstructs logical references; reserializing a model it
 decoded produces the canonical arena form. To bound expansion from many
-materials sharing one arena entry, both the writer and schema decoder cap the
+materials sharing one arena entry, the writer and both decoder profiles cap the
 sum of reconstructed texture-reference byte lengths at 64 MiB, counting each
 material reference; every canonical writer output is therefore accepted by
-that decoder resource check. Until the texture milestone lands, the strict
-runtime `decodeModel` entry point still requires all texture offsets to be
-`UINT32_MAX` and `stringByteSize` to be zero.
-`SceneMaterial::baseColorImage` remains an inert zero until that milestone
-supplies the guaranteed fallback image; a runtime file reference is rejected
-as unsupported, never silently discarded. The legacy converter may produce
-referenced OGFx for offline validation earlier, but those outputs are not
-declared runtime-ready.
+that decoder resource check. Runtime `decodeModel` reconstructs the same logical
+references as `decodeModelSchema`; its remaining capability difference is the
+opaque-only geometry gate.
 
-The reference is deliberately only a logical name at this stage. The texture
-milestone decides how it resolves to image bytes — for example, runtime DDS
-decode versus a separately compiled texture payload — before enabling nonempty
-references. This document does not make OGFx geometry files accidental image
-containers or assign an unimplemented decoder by implication.
+The reference remains an extensionless logical name rather than image bytes in
+the geometry container. The scene resolver accepts canonical X-Ray names made of
+`[A-Za-z0-9_-]+` components separated by `\`, maps them exactly beneath the
+configured texture root, appends `.dds`, and rejects traversal, alternate
+separators, drive syntax, control bytes, and non-ASCII names. DDS DXT1/DXT5 mip-0
+payloads remain BC-compressed and map to sRGB BC1/BC3 GPU images. Scene image 0 is
+always a generated opaque-white RGBA8-sRGB fallback; untextured materials select
+that real slot, while missing or invalid referenced files are loud startup
+failures. This keeps OGFx geometry reusable and image-container policy separate.
 
 The geometry, mesh, position, attribute, and index chunks are **pure arrays**:
 their element counts derive from `byteSize / stride`. Skeletal chunk families
@@ -521,9 +520,9 @@ bring-up policy, not serialized model data, and it disappears once a real scene
 owner supplies instances.
 
 The runtime profile accepts structurally valid multi-record mesh, geometry, and
-material arrays. The N-BLAS/N-instance consumer handles their mesh and geometry
-ranges without a format-version change. Logical texture references and their
-string arena remain rejected until texture resolution, upload, and sampling land.
+material arrays plus logical texture references and their string arena. The
+N-BLAS/N-instance consumer handles mesh and geometry ranges without a format-version
+change, and scene-global texture resolution assigns the material image indices.
 
 The opaque-only runtime profile rejects geometry flag bit 0. The current trace
 uses `RAY_FLAG_FORCE_OPAQUE` and has no any-hit/SBT class split, so accepting an
@@ -824,8 +823,8 @@ each arrives with its own consumer.
    use generated synthetic OGF fixtures for the same contracts. Geometry,
    bounds, the texture reference, and the shader mapping are checked against
    the external source corpus; an output carrying a texture
-   reference is not runtime-ready
-   until the texture milestone. Visual-equivalence claims wait for that
+   reference is runtime-decodable and retains that identity for scene texture
+   resolution. Visual-equivalence claims still wait for the rendered gallery
    consumer instead of silently dropping the source material. The landed
    `xrPhotonAssetCompiler convert-ogf` path implements precisely this slice;
    generated fixtures pin accepted data and loud rejection, while the local
@@ -833,7 +832,8 @@ each arrives with its own consumer.
    and deterministic 71,328-byte canonical output. The opt-in
    `xrPhotonM4aOfflineProof` build target verifies the exact local source identity,
    drives the real CLI, checks complete schema reconstruction and byte-exact
-   canonical reserialization, confirms the runtime texture gate remains closed,
+   canonical reserialization, confirms runtime reconstruction of the logical
+   texture reference,
    and persists the proven output under its canonical relative asset path in
    `build/<preset>/corpus/`. Legacy source assets live separately under
    `build/<preset>/legacy-ogf-corpus/`. It is
@@ -871,10 +871,13 @@ its real representation, a small code-owned preview table supplies
 deterministic mesh indices and world transforms; it contains no geometry and
 never becomes an OGFx chunk. The following alpha-split probe is regenerated
 from the same Blender project with alpha-class geometry but still no texture
-references. The texture milestone then decides the image carrier/resolver and
-regenerates the textured probe. These are deterministic outputs from one
-authoring source and one compiler writer, not one immutable file forced across
-incompatible runtime capabilities. The format-independent structural designs
+references. The landed texture foundation fixes the runtime image policy as
+strict DDS DXT1/DXT5 resolution beneath a configured root, with BC1/BC3 uploaded
+compressed; a later textured Blender probe uses that same consumer and lets its
+offline compiler decide how authored images become compatible DDS assets. These
+are deterministic outputs from one authoring source and one compiler writer,
+not one immutable file forced across incompatible runtime capabilities. The
+format-independent structural designs
 from the previous
 geometry plan — the opaque/alpha-tested hit-group split above all —
 remain the reference for when their content exists; the geometry-range class

@@ -691,8 +691,8 @@ private:
         }
 
         // Sort referenced offsets so the arena is validated once in a bounded pass.
-        // Runtime decoding retains only one byte per unique reference before rejecting
-        // at its capability gate; schema decoding also records views for reconstruction.
+        // Both public profiles reconstruct references: runtime texture support now
+        // consumes the same validated model strings as the offline schema path.
         std::vector<std::uint32_t> requestedOffsets;
         const std::size_t referenceCount = static_cast<std::size_t>(std::count_if(
             textureReferenceOffsets_.begin(),
@@ -711,10 +711,7 @@ private:
             std::unique(requestedOffsets.begin(), requestedOffsets.end()),
             requestedOffsets.end());
         std::vector<std::uint8_t> matchedOffsets(requestedOffsets.size(), 0);
-        std::vector<std::string_view> matchedTexts;
-        if (profile_ == DecodeProfile::Schema) {
-            matchedTexts.resize(requestedOffsets.size());
-        }
+        std::vector<std::string_view> matchedTexts(requestedOffsets.size());
 
         const std::size_t arenaOffset = offset + MaterialHeaderSize
             + static_cast<std::size_t>(recordBytes);
@@ -724,7 +721,7 @@ private:
                 materialStringByteSize_,
                 requestedOffsets,
                 &matchedOffsets,
-                profile_ == DecodeProfile::Schema ? &matchedTexts : nullptr)) {
+                &matchedTexts)) {
             return false;
         }
 
@@ -746,44 +743,42 @@ private:
                 std::to_string(unmatchedOffset));
         }
 
-        if (profile_ == DecodeProfile::Schema) {
-            std::uint64_t decodedTextureBytes = 0;
-            for (std::uint32_t textureOffset : textureReferenceOffsets_) {
-                if (textureOffset == NoTextureReference) {
-                    continue;
-                }
-                const auto found = std::lower_bound(
-                    requestedOffsets.begin(),
-                    requestedOffsets.end(),
-                    textureOffset);
-                assert(found != requestedOffsets.end() && *found == textureOffset);
-                const std::size_t requestedIndex =
-                    static_cast<std::size_t>(found - requestedOffsets.begin());
-                const std::uint64_t textBytes = matchedTexts[requestedIndex].size();
-                if (textBytes > MaximumDecodedTextureBytes - decodedTextureBytes) {
-                    return reject(
-                        chunk.id,
-                        "decoded texture reference bytes",
-                        "at most " + std::to_string(MaximumDecodedTextureBytes),
-                        "more than " + std::to_string(MaximumDecodedTextureBytes));
-                }
-                decodedTextureBytes += textBytes;
+        std::uint64_t decodedTextureBytes = 0;
+        for (std::uint32_t textureOffset : textureReferenceOffsets_) {
+            if (textureOffset == NoTextureReference) {
+                continue;
             }
+            const auto found = std::lower_bound(
+                requestedOffsets.begin(),
+                requestedOffsets.end(),
+                textureOffset);
+            assert(found != requestedOffsets.end() && *found == textureOffset);
+            const std::size_t requestedIndex =
+                static_cast<std::size_t>(found - requestedOffsets.begin());
+            const std::uint64_t textBytes = matchedTexts[requestedIndex].size();
+            if (textBytes > MaximumDecodedTextureBytes - decodedTextureBytes) {
+                return reject(
+                    chunk.id,
+                    "decoded texture reference bytes",
+                    "at most " + std::to_string(MaximumDecodedTextureBytes),
+                    "more than " + std::to_string(MaximumDecodedTextureBytes));
+            }
+            decodedTextureBytes += textBytes;
+        }
 
-            for (std::size_t index = 0; index < textureReferenceOffsets_.size(); ++index) {
-                const std::uint32_t textureOffset = textureReferenceOffsets_[index];
-                if (textureOffset == NoTextureReference) {
-                    continue;
-                }
-                const auto found = std::lower_bound(
-                    requestedOffsets.begin(),
-                    requestedOffsets.end(),
-                    textureOffset);
-                assert(found != requestedOffsets.end() && *found == textureOffset);
-                const std::size_t requestedIndex =
-                    static_cast<std::size_t>(found - requestedOffsets.begin());
-                model_.materials[index].baseColorTexture = matchedTexts[requestedIndex];
+        for (std::size_t index = 0; index < textureReferenceOffsets_.size(); ++index) {
+            const std::uint32_t textureOffset = textureReferenceOffsets_[index];
+            if (textureOffset == NoTextureReference) {
+                continue;
             }
+            const auto found = std::lower_bound(
+                requestedOffsets.begin(),
+                requestedOffsets.end(),
+                textureOffset);
+            assert(found != requestedOffsets.end() && *found == textureOffset);
+            const std::size_t requestedIndex =
+                static_cast<std::size_t>(found - requestedOffsets.begin());
+            model_.materials[index].baseColorTexture = matchedTexts[requestedIndex];
         }
         return true;
     }
@@ -1076,22 +1071,6 @@ private:
                     "(alpha-tested consumer not yet implemented)",
                     "alpha-tested bit 0 set");
             }
-        }
-        for (std::size_t index = 0; index < textureReferenceOffsets_.size(); ++index) {
-            if (textureReferenceOffsets_[index] != NoTextureReference) {
-                return reject(
-                    static_cast<std::uint32_t>(ChunkId::Materials),
-                    indexedField("materials", index, "textureRefOffset"),
-                    "UINT32_MAX in the M4 runtime",
-                    std::to_string(textureReferenceOffsets_[index]));
-            }
-        }
-        if (materialStringByteSize_ != 0) {
-            return reject(
-                static_cast<std::uint32_t>(ChunkId::Materials),
-                "stringByteSize",
-                "0 in the M4 runtime",
-                std::to_string(materialStringByteSize_));
         }
         return true;
     }
