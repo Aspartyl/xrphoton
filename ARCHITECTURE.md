@@ -5,41 +5,32 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 ## Status
 
-xrPhoton renders its first ray traced OGFx gallery, and is interactive. It brings
-up a Vulkan instance and device configured for hardware ray tracing, creates a
-swapchain, loads generated OGFx models, and builds the ray tracing
-**acceleration structures** (one BLAS per model mesh and a TLAS over every
-gallery placement — see
-[Acceleration structures](#acceleration-structures)), creates the **ray tracing
-pipeline and shader binding table** (see
-[Ray tracing pipeline](#ray-tracing-pipeline)), and runs a render loop in which
-`vkCmdTraceRaysKHR` fires one ray per pixel into the TLAS from a **perspective
-fly camera** (WASD + mouse look, delivered to the raygen shader via push
-constants — see [Camera](#camera)), writing a device-local **storage image** —
-the translated amber quad and two flat blue/green wedge placements sample a shared
-texture descriptor array and receive view-dependent normal shading over a dark red
-miss background — which is then blitted to the acquired swapchain image and
-presented. The present path is
-fully wired (swapchain creation, two-frame-in-flight synchronization, resize
-handling including the descriptor rewrite the resize obligates), and every piece
-of the RT stack is now exercised each frame. The frame path lives in its own
-`renderer.{hpp,cpp}` unit; `main.cpp` is orchestration only. The tracked
-bring-up roadmap is complete; of the follow-on roadmap, camera + push constants
-has landed, and the geometry + scene representation step is underway: M1
-replaced all direct device-memory allocation with the vendored Vulkan Memory
-Allocator (VMA), and M2 adopted GLM and proved the instance-transform conversion
-with a rotated and translated triangle. M3a established staged device-local uploads;
-M3b replaced the triangle with an indexed, X-rotated quad whose hit shader fetches
-indices, normals, and UVs through buffer device addresses, then reads materials
-from the descriptor-bound storage buffer. M4 moved model construction offline,
-and the Vulkan-free gallery/assembly path now merges the generated
-`test_quad.ogfx` and two-geometry `test_wedge.ogfx` models. The acceleration-
-structure path builds two distinct BLASes and a three-instance TLAS: the quad is
-placed once and the wedge BLAS is shared by two transformed placements. The texture
-foundation now resolves logical material names into strict DDS BC1/BC3 scene images,
-always supplies an opaque-white fallback, uploads sampled images, and exposes them
-through one fixed descriptor array; the generated gallery currently exercises its
-fallback slot without requiring local game files.
+xrPhoton renders an interactive, additive ray-traced OGFx preview gallery. It
+brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
+TLAS over every gallery placement, then fires one ray per pixel from a perspective
+fly camera (WASD + mouse look). The ray-tracing shader samples scene materials and
+writes a device-local storage image that is blitted to the swapchain. The present
+path has two frames in flight, resize handling, and the required descriptor rewrite;
+the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
+
+Generated-only builds load `test_quad.ogfx` and the permanent two-geometry
+`test_wedge.ogfx` regression probe: two BLASes and three TLAS instances, with the
+wedge BLAS shared by two transformed placements. A configured reference build adds
+the converted legacy `plitka1.ogfx` and resolves its
+`ston\ston_stena_marbl_m_03_back` DDS beneath an owner-supplied texture root. That
+configuration assembles three assets as four placements through three BLASes and
+four TLAS instances, and exercises plitka's real BC1/nonzero-descriptor path through
+the interactive render loop. Its final on-screen orientation, scale, winding, and
+texture appearance still require owner visual sign-off. Every entry uses the same
+OGFx decoder, `SceneData`, GPU upload, acceleration-structure, material/texture, and
+shader path.
+
+The landed texture foundation validates strict DDS DXT1/DXT5 input, uploads BC1/BC3
+payloads directly, always supplies an opaque-white fallback at image zero, and
+exposes one fixed sampled-image descriptor array. The generated probes select the
+fallback; configured plitka selects a real nonzero image index. M1 through M4a and
+the gallery work that instantiated their consumers are recorded in the roadmap
+below.
 
 ## Goals and constraints
 
@@ -110,7 +101,7 @@ stage; the diagram shows the frame-path layering.)
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5 framing and mip-0 decode, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
-| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each OGFx model once, merges it, instantiates every mesh in each placement, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
+| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` and `assets/test_wedge.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (N-instance buffer, vector of BLAS handles/backings, TLAS, and shared scratch arena) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
@@ -293,12 +284,12 @@ returns `1` on failure (RAII handles the unwind):
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
-10. **CPU/GPU scene.** `loadGalleryScene` loads the build-generated
-    `test_quad.ogfx` and `test_wedge.ogfx`, transactionally merges their model-owned
-    arrays, applies one quad and two wedge placements, and validates the assembled
-    `SceneData`; `createGpuScene` gates both shader-record buffers against
-    `maxStorageBufferRange`, then uploads its five device-local buffers through the
-    borrowed frame-0 slot.
+10. **CPU/GPU scene.** `loadGalleryScene` loads the required generated probes and
+    the optional configured plitka entry, transactionally merges their model-owned
+    arrays, applies every placement, validates the assembled `SceneData`, and
+    resolves fallback/DDS scene images. `createGpuScene` gates both shader-record
+    buffers against `maxStorageBufferRange`, then uploads its five geometry/record
+    buffers and all sampled scene images through the borrowed frame-0 slot.
 11. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
     command buffer and in-flight fence from step 9 and returns them in the state the
@@ -594,14 +585,15 @@ needs deeper overlap.
 ## Acceleration structures
 
 The ray tracing scene contains one **BLAS per `SceneMesh`** and one **TLAS entry
-per `SceneInstance`**. The current gallery therefore builds two different BLASes
-(quad and wedge) and three TLAS instances; both wedge placements reference the
-same BLAS address. Built once by `buildAccelerationStructures` after `GpuScene`
-upload, before the render loop; the TLAS handle is what the RT descriptor set
-binds (`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
-acceleration-structure *device address* is only needed where a TLAS instance
-references a BLAS). Everything is **swapchain-independent**: resize/recreate
-never touches it.
+per `SceneInstance`**. The generated-only gallery builds two different BLASes and
+three TLAS instances; the configured legacy gallery builds three BLASes and four
+TLAS instances. In both cases the two wedge placements reference the same BLAS
+address. The structures are built once by `buildAccelerationStructures` after
+`GpuScene` upload and before the render loop; the TLAS handle is what the RT
+descriptor set binds (`VkWriteDescriptorSetAccelerationStructureKHR` takes the
+handle — an acceleration-structure *device address* is needed only where a TLAS
+instance references a BLAS). Everything is **swapchain-independent**:
+resize/recreate never touches it.
 
 Decisions and contracts worth preserving:
 
@@ -882,48 +874,38 @@ Decisions and contracts worth preserving:
    fly controls, fixing the bring-up aspect-ratio distortion on resize. See
    [Camera](#camera) for the decisions and contracts.
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
-   staged uploads, the indexed-geometry BDA/ABI probes, and the complete M4 OGFx
-   round trip have landed. CMake generates both
-   `build/<preset>/assets/test_quad.ogfx` and `test_wedge.ogfx` through the shared
-   writer; the temporary gallery loads both required assets, merges them through
-   the generic transactional scene-assembly unit, and returns validated
-   `SceneData` with three transformed placements. The GPU path now builds one BLAS
-   per mesh, batches those builds through one checked scratch arena, and builds a
-   TLAS over every instance; the two wedge placements visibly prove shared-BLAS
-   instancing and its two material factors prove multi-geometry indexing. The
-   procedural runtime builder is gone, so there is exactly one model-loading path.
-   M4a is also
-   landed: deterministic logical-texture arenas, the offline full-schema
-   decoder, a narrow legacy-static OGF adapter, and
-   `xrPhotonAssetCompiler convert-ogf` provide direct offline conversion without
-   broadening runtime acceptance. The external SoC `plitka1.ogf` corpus pins the
-   accepted result through the opt-in `xrPhotonM4aOfflineProof` target, which
-   persists verified output only in the build tree; repository tests generate
-   their own fixture, and no GSC asset or local absolute path is committed.
-   Blender is not part of that conversion path. Next, the texture path brings the
-   converted `plitka1.ogfx` into the same gallery.
-   The Blender opaque export probe follows as another entry after that end-to-end
-   legacy proof. The temporary code-owned gallery table supplies world transforms
-   until scene/level data has its real owner, without putting instances in OGFx:
-   indexed vertex data with per-vertex attributes (normals,
-   UVs) fetched in the closest-hit shader via buffer device addresses, multiple
-   BLASes with instance transforms, and material data in storage buffers indexed
-   per instance/geometry. Designed from the start around the split between opaque
-   and alpha-tested geometry classes (separate hit groups and SBT entries):
-   foliage-heavy STALKER scenes make any-hit alpha testing the engine's single
-   biggest traversal cost lever, and the current `FORCE_OPAQUE` trace flag is
-   temporary. The runtime loads exactly one model format — modern assets and
-   legacy X-Ray content both arrive as OGFx through the shared offline compiler,
-   never through a runtime interchange loader. Direct Blender export is the
-   primary modern-content path; a future optional GLB importer may feed the
-   same compiler offline without becoming another OGFx writer. The first
-   recognizable legacy hierarchy/skeletal-rigid acceptance target is the
-   external SoC `bochka_fuel.ogf`; its direct CLI conversion is deferred until
-   nested visuals, bones/bind data, and IK/physics metadata have explicit
-   contracts, while its rendered comparison additionally waits for texture
-   resolution. Unsupported data is rejected rather than hidden by a
-   geometry-only conversion; Blender serves only as a visual oracle or
-   deliberate artist-editing path.
+   staged device-local uploads, indexed BDA-fetched geometry, the complete OGFx
+   round trip, generic multi-model scene assembly, N-BLAS/N-instance acceleration
+   structures, and opaque base-color DDS sampling have landed. CMake generates the
+   quad and permanent two-geometry wedge probe through the shared writer. The
+   optional configured gallery additionally loads the verified legacy-converted
+   `plitka1.ogfx`, resolves its BC1 texture, and carries it into the render loop
+   beside those probes. Plain, GPU-assisted, and synchronization validation are
+   clean; final visual sign-off remains pending.
+   The wedge remains the repository-owned multi-geometry/shared-BLAS regression
+   asset; it is not displaced by later content entries.
+
+   The permanent additive content ordering is **quad → plitka1 → Blender opaque
+   probe → `bochka_fuel`**. Plitka's runtime integration is implemented, with its
+   final visual sign-off still pending. The gallery is a preview/integration scene, not
+   another format or runtime path: every entry travels through the same OGFx
+   decoder, `SceneData`, GPU upload, BLAS/TLAS construction, material/texture
+   system, and shaders. Source-specific work stays offline. The narrow M4a legacy
+   adapter and `xrPhotonAssetCompiler convert-ogf` produced plitka; Blender is not
+   part of that conversion path and its direct opaque exporter/probe is the next
+   content milestone. The temporary code-owned tables supply placements until
+   scene/level data has a real owner; world instances never become OGFx chunks.
+
+   This ordering explicitly supersedes the earlier plan in which the Blender probe
+   drove N-BLAS generalization and the older GEOMETRY_PLAN sequence that placed the
+   opaque/alpha SBT split before any texture consumer. N-BLAS and the opaque
+   base-color texture consumer are already landed. The **next structural renderer
+   item** remains the opaque/alpha-tested hit-group and SBT split when a real
+   alpha-tested asset demands it; until then the runtime deliberately retains its
+   opaque gate and `RAY_FLAG_FORCE_OPAQUE`. The recognizable legacy
+   `bochka_fuel.ogf` target follows only after nested-visual, bone/bind, and
+   IK/physics contracts exist. Unsupported source semantics are rejected rather
+   than hidden by a geometry-only conversion.
 3. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
    rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
    buffers, one per `FrameResources` slot (the first genuinely per-frame-written

@@ -13,6 +13,15 @@
 > designs whose new milestone numbers are deliberately unassigned. Check
 > FORMATS.md before implementing any post-M3b milestone.
 
+> **Landed gallery update (2026-07-18).** [GALLERY_PLAN.md](GALLERY_PLAN.md)
+> Phases 2–5 instantiated generic scene assembly, the N-BLAS/N-instance design,
+> the fixed texture table, DDS-backed opaque base-color sampling, and the first
+> converted legacy model's configured end-to-end runtime path. Final on-screen
+> visual sign-off remains pending. The detailed sections below remain decision
+> history. D7's split-before-textures ordering is superseded only in sequence:
+> opaque base-color sampling landed first; the opaque/alpha SBT split remains the
+> next structural geometry item when a real alpha-tested consumer exists.
+
 This is the implementation record for roadmap step 2 in
 [ARCHITECTURE.md](ARCHITECTURE.md). M1–M3b describe landed work; later
 format-independent sections remain design references, subject to the revised
@@ -439,6 +448,12 @@ split exists for); *per-geometry records with embedded data* (rejected in D5);
 step 4 — parameterizing by `RayTypeCount` now costs nothing).
 
 ### D7. Alpha testing: structural split first (one-milestone procedural alpha), textures as the final milestone
+
+> **Partially landed via GALLERY_PLAN Phases 4–5.** Phase 4 implemented the
+> fallback/table/shared-sampler design with direct BC1/BC3 DDS uploads, and Phase 5
+> exercised a nonzero texture index with plitka. Any-hit alpha sampling and the SBT
+> class split remain future work. The original ordering argument below is retained
+> as history, not as the current milestone order.
 
 **Decision:** both land this step, sequenced split-before-textures. The
 hit-group/SBT split lands in its own later milestone with a file-private
@@ -1013,9 +1028,12 @@ pinned id/name pair to v1 opaque semantics and reject every other shader id or
 name until its complete mapping exists; do not silently discard an
 untranslated selector. Keep the corpus asset outside the repository and use
 generated synthetic fixtures in committed tests. Validate geometry, bounds,
-material mapping, determinism, and loud rejection offline. Its
-texture-referencing output is not runtime-ready until the texture consumer
-lands, so this step makes no premature visual-equivalence claim.
+material mapping, determinism, and loud rejection offline. At M4a's commit
+boundary its texture-referencing output was not runtime-ready, so that step made
+no premature visual-equivalence claim. GALLERY_PLAN Phases 4–5 subsequently
+landed the consumer; the same canonical output now reaches the render loop through
+its BC1/nonzero-descriptor path, with final visual-equivalence sign-off still
+pending.
 
 The landed `xrPhotonAssetCompiler convert-ogf` command uses a separate,
 standard-library-only legacy adapter and the one canonical OGFx writer. It
@@ -1028,8 +1046,8 @@ vertices, 3,300 indices, and deterministic 71,328-byte OGFx output; neither it
 nor a machine-specific path is committed. The opt-in
 `xrPhotonM4aOfflineProof` target makes that acceptance proof repeatable: it pins
 the exact source/output hashes, invokes the production CLI, checks complete
-schema reconstruction plus byte-exact canonical reserialization, preserves the
-runtime texture rejection, and writes the proven file to
+schema reconstruction plus byte-exact canonical reserialization, confirms
+runtime acceptance and exact logical-reference reconstruction, and writes the proven file to
 `build/<preset>/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`. The legacy
 source lives at the matching relative path under
 `build/<preset>/legacy-ogf-corpus/`, keeping canonical OGFx assets separate from
@@ -1038,17 +1056,19 @@ their import sources.
 The OGFx-core prerequisite landed first: the canonical
 writer now emits deterministic, first-use-interned logical-texture string arenas,
 and the offline schema decoder reconstructs them for byte-exact canonical
-writer/decoder/writer checks. The existing M4 runtime decoder remains the strict
-capability boundary and rejects textures, alpha-tested geometry, or expanded
-record counts. M4a starts at legacy OGF parsing; it does not fork the OGFx writer
-or weaken runtime acceptance.
+writer/decoder/writer checks. At M4a's boundary the runtime decoder still rejected
+textures, alpha-tested geometry, and expanded record counts. GALLERY_PLAN Phase 3
+later removed the record-count gates with N-BLAS/N-instance consumers, and Phase 4
+removed the texture/string-arena gates with the image consumer; only the alpha
+capability gate remains. M4a starts at legacy OGF parsing and never forks the OGFx
+writer.
 
 **Blender opaque export probe — milestone number deferred.** Add the primary
 modern-content adapter from Blender to the same shared compiler and generate a
 texture-free, opaque, genuinely three-dimensional OGFx probe. This is an
-authoring/export path, not part of legacy OGF migration. Its runtime-ready
-output supplies the controlled real-mesh input for the N-BLAS/N-instance
-generalization below.
+authoring/export path, not part of legacy OGF migration. Its runtime-ready output
+joins the already-generalized gallery and proves that a second source adapter
+feeds the same compiler/runtime path.
 
 **Legacy hierarchy / skeletal-rigid OGF proof — milestone number deferred.**
 The external SoC `meshes/objects/dynamics/balon/bochka_fuel.ogf` is the first
@@ -1058,11 +1078,18 @@ directly through the CLI only after those OGFx contracts are specified; until
 then, reject it rather than producing a geometry-only file that loses meaning.
 Blender import is an independent visual oracle or deliberate editing path, not
 part of canonical batch conversion. The rendered barrel comparison waits for
-the required runtime consumers, including texture resolution.
+the remaining hierarchy/skeletal runtime consumers; texture resolution is already
+available.
 
 **Post-M4 N-BLAS / N-instance generalization — milestone number deferred.**
-This rides the runtime-ready Blender opaque probe. The format-independent
-engineering recorded here applies when that generalization lands:
+
+> **Landed via GALLERY_PLAN Phase 3.** The generated wedge—not the still-future
+> Blender probe—drove this generalization. The implementation retained
+> `TMax = 100`; its gallery-specific acceptance oracles are recorded in
+> GALLERY_PLAN. The body below is preserved as the pre-landing reference design.
+
+The original plan had this riding the runtime-ready Blender opaque probe. The
+format-independent engineering record was instantiated with the generated wedge:
 
 - `AccelerationStructure` vectorizes (`blases`); all BLAS builds batch into
   **one** `cmdBuildAccelerationStructures` call with per-BLAS ranges and one
@@ -1167,12 +1194,12 @@ landed step (§10).
   bugs (they render as noise, never subtly) and its X-rotated instance +
   normal-visualization check catches a missing *or inverse-only* normal
   transform; revised M4's file-backed identity quad proves OGFx → `SceneData`
-  → screen data flow; the later generalization's per-object colors, positions,
-  and twice-instanced rotated mesh catch custom-index, transform, and
+  → screen data flow; the landed gallery generalization's per-object colors,
+  positions, and twice-instanced rotated wedge catch custom-index, transform, and
   normal-transform plumbing; the opaque/alpha split's cutout-in-front-of-a-box
   plus the mixed opaque+MASK mesh exercise `GeometryIndex()`-based SBT
-  selection; the texture milestone's two textures on two boxes exercise
-  `NonUniformResourceIndex`.
+  selection; the landed fallback + plitka BC texture pairing exercises
+  `NonUniformResourceIndex` with divergent image indices.
 - **Layout-dispute tiebreaker:** on any suspected Slang pointee-layout
   mismatch, compile with `slangc -target spirv-asm` and diff the member
   `Offset` decorations against the C++ `static_assert`s — decides the dispute
@@ -1298,4 +1325,5 @@ ledger (§9's resolutions) — and mirror the summary changes into
 `libglm-dev`, and the Next-step pointer moving to roadmap step 3).
 ARCHITECTURE.md remains the source of truth for landed runtime architecture
 and status; FORMATS.md owns format contracts and asset-pipeline sequencing.
-The texture milestone does the final pass that marks step 2 landed.
+GALLERY_PLAN.md records the landed N-BLAS/base-texture work; the Blender adapter
+and opaque/alpha split remain within roadmap step 2.

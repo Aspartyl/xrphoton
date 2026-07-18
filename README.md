@@ -25,9 +25,14 @@ way of doing each thing.
 
 ## Status
 
-Right now it renders a small OGFx gallery that you can fly around (WASD + mouse
-look): one indexed quad and a two-geometry wedge placed twice, including one
-rotated and non-uniformly scaled instance.
+Right now it renders an additive OGFx preview gallery that you can fly around
+(WASD + mouse look). Every build includes one indexed quad and a permanent
+two-geometry wedge regression probe placed twice, including one rotated and
+non-uniformly scaled instance. A configured reference build adds the converted,
+textured legacy `plitka1.ogfx` as a fourth placement through the same runtime path.
+That configured path reaches the interactive render loop and passes plain,
+GPU-assisted, and synchronization validation; plitka's final on-screen orientation,
+scale, winding, and texture appearance still require owner visual sign-off.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
@@ -45,11 +50,14 @@ placements into `SceneData`, batches two different BLAS builds, and shares the
 wedge BLAS across two TLAS instances. The texture foundation now reconstructs
 logical OGFx references, resolves strict DDS DXT1/DXT5 images, uploads BC1/BC3
 payloads directly, and exposes a fixed sampled-image array with an opaque-white
-fallback; the generated gallery exercises that fallback with an amber quad and
-blue/green wedge faces. The separate converter accepts the pinned OGF v4 static
-profile and feeds that same writer for offline validation. Next is the first
-rendered converted `plitka1.ogfx`; the
-Blender opaque export probe follows that end-to-end legacy proof. Dynamic scenes
+fallback. The generated probes exercise the fallback with an amber quad and
+blue/green wedge faces; configured plitka exercises the real BC1 upload and a
+nonzero texture-table index. The separate converter accepts the pinned OGF v4
+static profile and feeds that same writer for offline validation. The converted
+plitka is now the first original X-Ray model carried through xrPhoton's configured
+runtime path, with final visual sign-off pending. The Blender opaque export probe
+is the next primary content-source entry; `bochka_fuel` follows later
+once its hierarchy, bone, and IK/physics contracts exist. Dynamic scenes
 (TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
 and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -93,8 +101,9 @@ It also builds the narrow legacy OGF converter:
 ```
 
 This first adapter intentionally accepts only the documented M4a static profile.
-Its output preserves a logical texture name that the runtime now reconstructs for
-scene-global DDS resolution. Adding it to the configured gallery is the next phase.
+Its output preserves a logical texture name that the runtime reconstructs for
+scene-global DDS resolution and can be supplied directly to the optional gallery
+configuration below.
 
 With the local `plitka1.ogf` source file in
 `build/ogfx-core/legacy-ogf-corpus/meshes/objects/dynamics/plitka/`, run the complete,
@@ -111,6 +120,28 @@ The persistent result is written to
 local source location can be selected at configure time with
 `-DXRPHOTON_M4A_CORPUS_OGF=/path/to/plitka1.ogf`; the corpus remains outside the
 repository and normal builds do not depend on it.
+
+### Configuring the legacy gallery entry
+
+The generated quad and wedge need no local game files. To add the verified plitka
+output and its original texture to the debug gallery, configure both owner-local
+paths once, then build normally:
+
+```sh
+cmake --preset debug \
+  -DXRPHOTON_GALLERY_PLITKA_OGFX="$PWD/build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx" \
+  -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/build/ogfx-core/original_game_files/soc/textures"
+cmake --build --preset debug
+./build/debug/xrPhoton
+```
+
+The texture root must preserve the exact-case relative path
+`ston/ston_stena_marbl_m_03_back.dds`. CMake remembers both values separately in
+each build tree, so configure the `release` preset the same way when needed. With
+an empty `XRPHOTON_GALLERY_PLITKA_OGFX`, xrPhoton prints a skip line and renders
+only the generated entries. Once plitka is configured, a missing/broken OGFx,
+texture root, or DDS is a loud startup failure rather than a silent fallback. The
+original game files and generated proof output remain Git-ignored local inputs.
 
 The current build and development environment is Linux with GCC or Clang.
 Windows support is planned, but its build and platform integration have not landed yet.

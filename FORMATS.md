@@ -5,9 +5,10 @@ the role [ARCHITECTURE.md](ARCHITECTURE.md) plays for engine architecture. It
 records the settled decisions about how content reaches the runtime (OGFx,
 OMFx, the shared offline asset compiler) and the proposed elaboration of those
 decisions into concrete mechanism. OGFx v1's static core, canonical writer,
-strict runtime decoder/adapter, offline quad front end, and narrow M4a
-legacy-static adapter/CLI now exist; broader source profiles, later format
-families, and SDK tools remain planned. The landed slices are recorded at the
+strict runtime decoder/adapter, offline probe front ends, narrow M4a
+legacy-static adapter/CLI, generic multi-model gallery consumer, and DDS-backed
+opaque base-color path now exist; broader source profiles, later format families,
+and SDK tools remain planned. The landed slices are recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
 
 **How to read the labels.** Three kinds of statement appear below, and the
@@ -341,7 +342,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0001` | `OGFX_MODEL` | yes | `u32` model type, `u32` model flags, model bounds (AABB + bounding sphere — the OGF header heritage) |
 | `0x0010` | `OGFX_GEOMETRIES` | yes | fixed-width geometry-range records (below) |
 | `0x0011` | `OGFX_MESHES` | yes | `{u32 firstGeometry, u32 geometryCount}` records — the BLAS grouping |
-| `0x0012` | `OGFX_MATERIALS` | yes | material records: `f32[4]` baseColorFactor, `f32` alphaCutoff, logical texture reference string (resolution/carrier deferred) |
+| `0x0012` | `OGFX_MATERIALS` | yes | material records: `f32[4]` baseColorFactor, `f32` alphaCutoff, logical texture reference string (carried into `SceneData` and resolved scene-globally as described below) |
 | `0x0020` | `OGFX_POSITIONS` | yes | tightly packed `f32×3` positions, 12-byte stride |
 | `0x0021` | `OGFX_ATTRIBUTES` | yes | 20-byte all-scalar attribute records: `nx, ny, nz, u, v` |
 | `0x0022` | `OGFX_INDICES` | yes | `u32` indices, geometry-local |
@@ -802,7 +803,7 @@ the milestone's verification boundary.
 physics, and level formats. None of these is forced into the first milestone;
 each arrives with its own consumer.
 
-**After M4, in order:**
+**After M4, in permanent additive order:**
 
 1. **M4a — legacy static OGF → command-line converter → OGFx, offline proof
    first. Landed.** This is a direct binary conversion path; Blender is neither an
@@ -817,71 +818,60 @@ each arrives with its own consumer.
    accepts only that pinned id/name pair and maps it to the v1 opaque
    geometry/material semantics; any other header shader id or shader name is
    rejected until its complete mapping is specified. OGFx v1 therefore does
-   not need fields that merely carry untranslated legacy shader selectors. The
-   path is supplied to the CLI at test time; no GSC asset
-   or machine-specific absolute path enters this repository. Repository tests
-   use generated synthetic OGF fixtures for the same contracts. Geometry,
-   bounds, the texture reference, and the shader mapping are checked against
-   the external source corpus; an output carrying a texture
-   reference is runtime-decodable and retains that identity for scene texture
-   resolution. Visual-equivalence claims still wait for the rendered gallery
-   consumer instead of silently dropping the source material. The landed
-   `xrPhotonAssetCompiler convert-ogf` path implements precisely this slice;
-   generated fixtures pin accepted data and loud rejection, while the local
-   corpus pins 1,802 vertices, 3,300 widened indices, its logical texture name,
-   and deterministic 71,328-byte canonical output. The opt-in
-   `xrPhotonM4aOfflineProof` build target verifies the exact local source identity,
-   drives the real CLI, checks complete schema reconstruction and byte-exact
-   canonical reserialization, confirms runtime reconstruction of the logical
-   texture reference,
-   and persists the proven output under its canonical relative asset path in
-   `build/<preset>/corpus/`. Legacy source assets live separately under
-   `build/<preset>/legacy-ogf-corpus/`. It is
-   not a dependency of normal builds or repository tests.
-2. **Blender opaque probe → add-on/export → OGFx.** The primary modern-content
-   path lands with a no-texture-reference, opaque-only probe that can drive the
-   N-BLAS generalization under the runtime's current capability gates. A
-   direct GLB-to-compiler adapter remains an optional later tool, not part of
-   this milestone sequence.
+   not need fields that merely carry untranslated legacy shader selectors.
+   Repository tests use generated synthetic OGF fixtures; no GSC asset or
+   machine-specific absolute path enters the repository. The local corpus pins
+   1,802 vertices, 3,300 widened indices, its logical texture name, and a
+   deterministic 71,328-byte canonical output. The opt-in
+   `xrPhotonM4aOfflineProof` target drives the real CLI, verifies source identity,
+   complete schema reconstruction, byte-exact reserialization, and runtime
+   reconstruction of the logical reference, then persists the proven output
+   beneath `build/<preset>/corpus/`.
 
-**Legacy hierarchy / skeletal-rigid acceptance target — milestone number
-deferred.** The externally supplied SoC asset
-`meshes/objects/dynamics/balon/bochka_fuel.ogf` is the first recognizable
-legacy-object target after the simple M4a proof; its exact placement does not
-displace the ordered Blender probe above. It deliberately is *not*
-relabelled "static" merely because a barrel appears rigid: its root contains
-embedded child visuals plus bone-name and IK/physics chunks. The canonical
-path remains direct CLI conversion:
+2. **Additive runtime gallery + textured plitka path. Implementation landed;
+   final visual sign-off pending.** Generic scene
+   assembly merges independently decoded OGFx models and supplies world placements
+   without adding instances to the format. The permanent generated wedge probe
+   drove the N-BLAS/N-instance and multi-geometry generalization. The texture
+   foundation carries logical names into `SceneData`, resolves strict DDS
+   DXT1/DXT5 beneath an owner-configured root, uploads BC1/BC3 directly, and maps
+   untextured materials to a white fallback. The configured gallery now carries
+   the M4a plitka output and its marble DDS into the render loop beside the generated
+   probes, exercising the real BC1 upload and nonzero descriptor path without
+   changing the canonical bytes or adding source-specific runtime logic. Its
+   on-screen orientation, scale, winding, and texture appearance remain a final
+   owner visual check.
 
-```
-bochka_fuel.ogf ──► legacy OGF reader ──► shared compiler ──► bochka_fuel.ogfx
-```
+3. **Blender opaque probe → add-on/export → OGFx. Next.** The primary modern-
+   content path adds a no-texture-reference, opaque-only probe to the already
+   generalized gallery. It inherits the same decoder, scene assembly, BLAS/TLAS,
+   material, fallback-texture, and shader path; it does not create a second writer
+   or runtime loader. A direct GLB-to-compiler adapter remains an optional later
+   offline tool, not part of this milestone.
 
-Blender import is an independent visual oracle and an optional editing path,
-not a conversion stage. This target lands only with explicit nested-visual,
-bind/bone, and IK/physics contracts. Until those OGFx chunk families are
-specified, the converter rejects the barrel as unsupported; it must not emit a
-canonical geometry-only OGFx that silently discards the source semantics. The
-first rendered comparison also waits for every referenced runtime consumer
-(including texture resolution) instead of weakening M4a's static v1 profile.
+4. **Legacy hierarchy / skeletal-rigid target — later.** The externally supplied
+   SoC asset `meshes/objects/dynamics/balon/bochka_fuel.ogf` remains the first
+   recognizable target after the Blender probe. It is not relabelled "static"
+   merely because the barrel appears rigid: its root contains embedded child
+   visuals plus bone-name and IK/physics chunks. Its canonical path remains:
 
-The **N-BLAS / N-instance generalization** of the acceleration-structure and
-scene code rides the Blender-authored opaque probe. Until level/scene data has
-its real representation, a small code-owned preview table supplies
-deterministic mesh indices and world transforms; it contains no geometry and
-never becomes an OGFx chunk. The following alpha-split probe is regenerated
-from the same Blender project with alpha-class geometry but still no texture
-references. The landed texture foundation fixes the runtime image policy as
-strict DDS DXT1/DXT5 resolution beneath a configured root, with BC1/BC3 uploaded
-compressed; a later textured Blender probe uses that same consumer and lets its
-offline compiler decide how authored images become compatible DDS assets. These
-are deterministic outputs from one authoring source and one compiler writer,
-not one immutable file forced across incompatible runtime capabilities. The
-format-independent structural designs
-from the previous
-geometry plan — the opaque/alpha-tested hit-group split above all —
-remain the reference for when their content exists; the geometry-range class
-flag makes that split a first-class OGFx concept from the first file written.
+   ```text
+   bochka_fuel.ogf ──► legacy OGF reader ──► shared compiler ──► bochka_fuel.ogfx
+   ```
+
+   Blender import is an independent visual oracle and optional editing path, not a
+   conversion stage. The target lands only with explicit nested-visual, bind/bone,
+   and IK/physics contracts. Until those chunk families exist, the converter
+   rejects the barrel instead of emitting geometry-only OGFx that silently drops
+   source semantics. Its texture references can use the already-landed resolver.
+
+The code-owned gallery table remains temporary placement policy until level/scene
+data has its real owner; it contains no geometry and never becomes an OGFx chunk.
+The opaque/alpha-tested hit-group and `RayTypeCount` SBT split from
+[GEOMETRY_PLAN.md](GEOMETRY_PLAN.md) remains the next structural extension when a
+real alpha-tested consumer exists. Its sequence changed—not its design: N-BLAS and
+opaque base-color sampling landed first, while the geometry-range flag has kept the
+future class split explicit since OGFx v1.
 
 ## Guiding principle
 

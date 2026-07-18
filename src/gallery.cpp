@@ -26,6 +26,9 @@ struct GalleryAsset
     const char* name;
     const char8_t* ogfxPath;
     bool optional;
+    // Naming each row's CMake setting keeps optional skip lines actionable without
+    // introducing asset-specific branches in the loader.
+    const char* configurationName;
 };
 
 struct GalleryPlacement
@@ -39,6 +42,7 @@ struct LoadedGalleryAsset
     bool loaded = false;
     uint32_t firstMesh = 0;
     uint32_t meshCount = 0;
+    uint32_t geometryCount = 0;
     uint32_t firstMaterial = 0;
     uint32_t materialCount = 0;
 };
@@ -48,36 +52,52 @@ constexpr std::array GalleryAssets{
         .name = "test_quad",
         .ogfxPath = XRPHOTON_TEST_QUAD_ASSET_PATH,
         .optional = false,
+        .configurationName = "XRPHOTON_TEST_QUAD_ASSET_PATH",
     },
     GalleryAsset{
         .name = "test_wedge",
         .ogfxPath = XRPHOTON_TEST_WEDGE_ASSET_PATH,
         .optional = false,
+        .configurationName = "XRPHOTON_TEST_WEDGE_ASSET_PATH",
+    },
+    GalleryAsset{
+        .name = "plitka1",
+        .ogfxPath = XRPHOTON_GALLERY_PLITKA_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_PLITKA_OGFX",
     },
 };
 
 const std::array GalleryPlacements{
+    // Place every preview's vertical center on the y=0 screen row and keep every
+    // placement origin at z=3. The X positions account for each asset's width and
+    // depth, leaving clear, nearly uniform screen-space gaps without changing any
+    // model-space geometry.
     GalleryPlacement{
         .assetIndex = 0,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-3.0f, 0.0f, 3.0f}),
+            glm::vec3{-4.0f, 0.0f, 3.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = 2,
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{-2.9f, -1.43163f, 3.0f}),
     },
     GalleryPlacement{
         .assetIndex = 1,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{1.5f, 0.0f, 3.0f}),
+            glm::vec3{0.8f, 0.0f, 3.0f}),
     },
     GalleryPlacement{
         .assetIndex = 1,
-        // Keeping the row at z=3 frames the full scaled silhouette at the default
-        // camera instead of clipping its right edge.
         // GLM applies the rightmost operation first: scale in model space,
         // rotate around world-up, then move the result into the gallery row.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{3.6f, 0.0f, 3.0f})
+                         glm::vec3{3.2f, 0.0f, 3.0f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(30.0f),
@@ -111,6 +131,37 @@ const char* countLabel(std::size_t count, const char* singular, const char* plur
 {
     return count == 1 ? singular : plural;
 }
+
+std::size_t resolvedTextureCount(
+    const SceneData& scene,
+    const LoadedGalleryAsset& asset)
+{
+    std::size_t count = 0;
+    const std::size_t materialEnd =
+        static_cast<std::size_t>(asset.firstMaterial) + asset.materialCount;
+    for (std::size_t materialIndex = asset.firstMaterial;
+         materialIndex < materialEnd;
+         ++materialIndex) {
+        const uint32_t imageIndex = scene.materials[materialIndex].baseColorImage;
+        if (imageIndex == 0) {
+            continue;
+        }
+
+        bool firstUseInAsset = true;
+        for (std::size_t previous = asset.firstMaterial;
+             previous < materialIndex;
+             ++previous) {
+            if (scene.materials[previous].baseColorImage == imageIndex) {
+                firstUseInAsset = false;
+                break;
+            }
+        }
+        if (firstUseInAsset) {
+            ++count;
+        }
+    }
+    return count;
+}
 }
 
 GalleryLoadResult loadGalleryScene()
@@ -127,7 +178,8 @@ GalleryLoadResult loadGalleryScene()
             if (asset.ogfxPath == nullptr || asset.ogfxPath[0] == u8'\0') {
                 if (asset.optional) {
                     std::cout << "Gallery entry '" << asset.name
-                              << "': skipped (not configured).\n";
+                              << "': skipped (" << asset.configurationName
+                              << " not configured).\n";
                     continue;
                 }
                 return fail(
@@ -156,17 +208,9 @@ GalleryLoadResult loadGalleryScene()
             metadata.loaded = true;
             metadata.firstMesh = static_cast<uint32_t>(firstMesh);
             metadata.meshCount = static_cast<uint32_t>(meshCount);
+            metadata.geometryCount = static_cast<uint32_t>(geometryCount);
             metadata.firstMaterial = static_cast<uint32_t>(firstMaterial);
             metadata.materialCount = static_cast<uint32_t>(materialCount);
-
-            std::cout << "Gallery entry '" << asset.name << "': loaded ("
-                      << meshCount << ' '
-                      << countLabel(meshCount, "mesh", "meshes") << ", "
-                      << geometryCount << ' '
-                      << countLabel(geometryCount, "geometry", "geometries") << ", "
-                      << materialCount << ' '
-                      << countLabel(materialCount, "material", "materials")
-                      << ").\n";
         }
 
         for (std::size_t placementIndex = 0;
@@ -209,7 +253,8 @@ GalleryLoadResult loadGalleryScene()
             return fail("Gallery scene validation failed: " + assemblyError);
         }
 
-        const ResolveTexturesResult textures = resolveSceneTextures(&scene, {});
+        const std::filesystem::path textureRoot{XRPHOTON_GALLERY_TEXTURE_ROOT};
+        const ResolveTexturesResult textures = resolveSceneTextures(&scene, textureRoot);
         if (!textures) {
             if (textures.failedMaterial.has_value()) {
                 const uint64_t failedMaterial = *textures.failedMaterial;
@@ -233,6 +278,33 @@ GalleryLoadResult loadGalleryScene()
                     + std::to_string(failedMaterial) + "]: " + textures.error);
             }
             return fail("Gallery texture resolution failed: " + textures.error);
+        }
+
+        for (std::size_t assetIndex = 0;
+             assetIndex < loadedAssets.size();
+             ++assetIndex) {
+            const LoadedGalleryAsset& loadedAsset = loadedAssets[assetIndex];
+            if (!loadedAsset.loaded) {
+                continue;
+            }
+            const std::size_t textureCount =
+                resolvedTextureCount(scene, loadedAsset);
+            std::cout << "Gallery entry '" << GalleryAssets[assetIndex].name
+                      << "': loaded (" << loadedAsset.meshCount << ' '
+                      << countLabel(loadedAsset.meshCount, "mesh", "meshes") << ", "
+                      << loadedAsset.geometryCount << ' '
+                      << countLabel(
+                             loadedAsset.geometryCount,
+                             "geometry",
+                             "geometries")
+                      << ", " << loadedAsset.materialCount << ' '
+                      << countLabel(
+                             loadedAsset.materialCount,
+                             "material",
+                             "materials")
+                      << ", " << textureCount << ' '
+                      << countLabel(textureCount, "resolved texture", "resolved textures")
+                      << ").\n";
         }
         return {
             .scene = std::move(scene),

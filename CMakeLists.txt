@@ -123,6 +123,27 @@ if(NOT XRPHOTON_BUILD_ENGINE)
     return()
 endif()
 
+# Optional local real-content gallery input. Empty defaults preserve a generated-
+# asset-only build; once configured, a broken model or texture root is a loud runtime
+# error rather than a silently skipped integration probe.
+set(XRPHOTON_GALLERY_PLITKA_OGFX "" CACHE FILEPATH
+    "Optional converted plitka1.ogfx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_TEXTURE_ROOT "" CACHE PATH
+    "Texture root containing the DDS paths referenced by configured gallery assets")
+
+if(XRPHOTON_GALLERY_PLITKA_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_PLITKA_OGFX}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_TEXTURE_ROOT)
+    get_filename_component(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE
+        "${XRPHOTON_GALLERY_TEXTURE_ROOT}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE "")
+endif()
+
 # Whether to request the Khronos validation layer and debug messenger. Even when ON,
 # validation is best-effort at runtime: if the layer is not installed (machines without
 # the Vulkan SDK), the program warns and continues rather than refusing to start.
@@ -229,12 +250,15 @@ if(XRPHOTON_ENABLE_VALIDATION)
     target_compile_definitions(xrPhoton PRIVATE XRPHOTON_ENABLE_VALIDATION)
 endif()
 
-# The preview assets are build-tree probes, not packaged game content. Embed their
-# absolute UTF-8 paths so launching the executable from any working directory still
-# exercises the generated OGFx files; later asset-root policy will replace this.
+# The preview inputs are build-tree probes and optional owner-supplied local content,
+# not packaged game assets. Embed absolute UTF-8 paths so launching from any working
+# directory exercises the same configured gallery; a future asset root replaces this
+# temporary bring-up policy.
 target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
     XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
+    XRPHOTON_GALLERY_PLITKA_OGFX=u8\"${XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"
 )
 
 add_dependencies(xrPhoton xrPhotonShaders xrPhotonAssets)
