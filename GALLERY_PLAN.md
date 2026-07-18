@@ -83,12 +83,13 @@ and every row uses the same runtime path.
 
 ## 2. Current state (verified against the code)
 
-Worktree clean at `origin/main` (`772e714`). The load-bearing facts, with
-citations; where the briefing that motivated this plan disagreed with the code,
-the correction is noted:
+Phase 2 began from the clean `origin/main` Phase-1 commit `f75fe82`; this
+section reflects the verified Phase-2 working tree whose owner commit is still
+pending. The load-bearing facts, with citations; where the briefing that
+motivated this plan disagreed with the code, the correction is noted:
 
 - **Runtime decoding.** The decoder has exactly two profiles —
-  `DecodeProfile::Schema` and `DecodeProfile::RuntimeM4`
+  `DecodeProfile::Schema` and `DecodeProfile::Runtime`
   ([src/ogfx_decoder.cpp:109-113](src/ogfx_decoder.cpp)). Both run the complete
   structural/semantic validation; the runtime profile then layers
   `validateRuntimeProfile()` ([src/ogfx_decoder.cpp:1068-1115](src/ogfx_decoder.cpp)):
@@ -111,15 +112,19 @@ the correction is noted:
   (:55), converts field-by-field into one `SceneData`, sets every
   `SceneMaterial::baseColorImage` to zero (:112), and leaves `instances` and
   `images` empty by contract ([src/ogfx_loader.hpp:24-31](src/ogfx_loader.hpp);
-  pinned by [tests/ogfx_loader_tests.cpp:127-128](tests/ogfx_loader_tests.cpp)).
+  pinned by [tests/ogfx_loader_tests.cpp](tests/ogfx_loader_tests.cpp)). It also
+  carries `baseColorTexture` verbatim into `SceneMaterial`; the still-closed
+  runtime texture gate means that field remains empty until Phase 4.
   `SceneData` already carries vectors for positions, attributes, indices,
   geometries, meshes, instances, materials, and images
   ([src/scene.hpp:62-72](src/scene.hpp)).
-- **Single-model orchestration.** `main()` loads only
-  `XRPHOTON_TEST_QUAD_ASSET_PATH` and appends one identity instance
-  ([src/main.cpp:353-364](src/main.cpp)); the path is an absolute build-tree
-  path embedded at configure time, explicitly marked temporary
-  ([CMakeLists.txt:208-212](CMakeLists.txt)).
+- **Gallery orchestration.** `main()` calls `loadGalleryScene()` and retains
+  the returned plain `SceneData` for program lifetime. The current file-private
+  tables contain only the required `XRPHOTON_TEST_QUAD_ASSET_PATH` asset and one
+  identity placement; `gallery.cpp` loads the asset once, merges it through the
+  Vulkan-free assembly API, instantiates every mesh in its recorded range, and
+  performs final whole-scene validation. The absolute build-tree path remains
+  embedded at configure time and explicitly temporary.
 - **Acceleration structures.** `buildAccelerationStructures` hard-requires
   exactly one mesh, one instance, one geometry, `meshIndex == 0`
   ([src/acceleration_structure.cpp:275-283](src/acceleration_structure.cpp));
@@ -158,18 +163,21 @@ the correction is noted:
   currently *asserts the runtime rejects the output*
   ([tests/legacy_ogf_tests.cpp:718-723](tests/legacy_ogf_tests.cpp), driven by
   [tests/m4a_offline_proof.cmake:41-52](tests/m4a_offline_proof.cmake)) — the
-  Phase 4 gate removal must flip that assertion in that same commit. No texture
-  image for the logical reference exists anywhere in the repository (verified
-  by search); obtaining it is an owner prerequisite (§8).
+  Phase 4 gate removal must flip that assertion in that same commit. The
+  Git-ignored local SoC corpus now includes the matching DDS at the Phase-0 path
+  recorded below; no GSC texture is tracked by Git.
 - **Build layout.** `xrPhotonOgfx` (writer + decoders) and
   `xrPhotonLegacyOgf` build without graphics ([CMakeLists.txt:15-36](CMakeLists.txt));
   `XRPHOTON_BUILD_ENGINE=OFF` returns before any graphics dependency
-  (:112-116); `xrPhotonOgfxRuntime` (the GLM-dependent loader layer) and its
-  test are engine-configuration-only (:140-154). The corpus-path cache variable
-  precedent is `XRPHOTON_M4A_CORPUS_OGF` (:89-92).
-- **Documentation debt.** CLAUDE.md's "Next step" still names M4a conversion
-  as next; ARCHITECTURE.md's roadmap and GEOMETRY_PLAN's milestone list still
-  order the Blender probe before any legacy render. **Repository fact:**
+  (:112-116); `xrPhotonOgfxRuntime` now contains both the GLM-dependent loader
+  and Vulkan-free scene assembly, with separate runtime-loader and
+  scene-assembly suites in engine configurations. `gallery.cpp` belongs only
+  to the engine executable. The corpus-path cache variable precedent is
+  `XRPHOTON_M4A_CORPUS_OGF` (:89-92).
+- **Remaining documentation debt.** ARCHITECTURE.md reflects the Phase-2
+  gallery/assembly path and revised ordering. CLAUDE.md's "Next step" and
+  GEOMETRY_PLAN's older milestone narrative still require Phase-6 consolidation.
+  **Repository fact:**
   CLAUDE.md is *gitignored* ([.gitignore:13](.gitignore)) — the docs phase
   updates it in place, but it will not appear in any commit diff.
 
@@ -1073,12 +1081,31 @@ listed per phase; §6 collects the practicalities.
 
 ### Phase 0 — Prerequisite (no commit): obtain and pin the real texture asset
 
-Owner action plus a recorded inspection, done any time before Phase 4 is
-implemented (nothing earlier blocks on it):
+**Status: complete (2026-07-17).** The owner-supplied, Git-ignored corpus file
+`build/ogfx-core/original_game_files/soc/textures/ston/ston_stena_marbl_m_03_back.dds`
+was inspected read-only and pins G6 to this observed profile:
 
-- The owner supplies `ston_stena_marbl_m_03_back.dds` (§8.1).
-- Inspect and record here, in this document: file size, SHA-256, dimensions,
-  fourCC, header flags, caps bits, mip count and layout.
+- file size `174,904` bytes; SHA-256
+  `b38cf3b7ee85f0c8bf5f3ace83385c13fc0a5ebb5dfb11e7ea6f31f02cf64fad`;
+- `512 × 512`, fourCC `DXT1`, `DDS_HEADER.dwSize = 124`,
+  `DDS_PIXELFORMAT.dwSize = 32`, pixel-format flags `0x00000004`
+  (`DDPF_FOURCC`), and `dwPitchOrLinearSize = 131,072`;
+- header flags `0x000A1007` (`CAPS | HEIGHT | WIDTH | PIXELFORMAT |
+  LINEARSIZE | MIPMAPCOUNT`), caps `0x00401008`
+  (`TEXTURE | COMPLEX | MIPMAP`), and caps2/caps3/caps4 all zero;
+- `10` declared mip levels forming the complete 512→1 chain. Their DXT1
+  payload sizes are `131072, 32768, 8192, 2048, 512, 128, 32, 8, 8, 8`
+  bytes at file offsets `128, 131200, 163968, 172160, 174208, 174720,
+  174848, 174880, 174888, 174896`, totaling `174,776`; with the 128-byte
+  DDS framing this exactly matches the file size, with neither truncation nor
+  trailing bytes.
+
+Completed prerequisite record:
+
+- The owner supplied `ston_stena_marbl_m_03_back.dds` (§8.1) in the ignored
+  local corpus.
+- The inspection above records its file size, SHA-256, dimensions, fourCC,
+  header flags, caps bits, mip count, and exact layout.
 - G6's accepted-field list is pinned to the observed values; a non-DXT1/DXT5
   variant extends the parser profile deliberately *now*, before parser code
   exists — never discovered mid-Phase-4.
@@ -1086,6 +1113,8 @@ implemented (nothing earlier blocks on it):
 Exit: the pinned record exists in this file; no repository code changes.
 
 ### Phase 1 — Reference carrier groundwork: `SceneMaterial::baseColorTexture` and the profile rename
+
+**Status: complete (2026-07-17, commit `f75fe82`).**
 
 **Lands:** G2's carrier and the `DecodeProfile::Runtime` rename. **No
 acceptance change anywhere** — every gate in `validateRuntimeProfile()` still
@@ -1124,6 +1153,9 @@ consumers). The render is pixel-identical.
   `decodeModelSchema` as the offline superset.
 
 ### Phase 2 — Generic multi-model scene assembly; `main()` moves onto the gallery path (still one quad on screen)
+
+**Status: implementation complete and verified (2026-07-17; owner commit
+pending).**
 
 **Lands:** G3, plus the gallery skeleton from G4 with a single, non-optional
 quad entry carrying the **identity transform** (the G10 gallery placements

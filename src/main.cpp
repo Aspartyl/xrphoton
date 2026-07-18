@@ -1,7 +1,7 @@
 #include "acceleration_structure.hpp"
 #include "camera.hpp"
+#include "gallery.hpp"
 #include "gpu_scene.hpp"
-#include "ogfx_loader.hpp"
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
 #include "scene.hpp"
@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <utility>
@@ -350,21 +349,13 @@ int main()
 
     std::cout << "Created Vulkan frame sync objects.\n";
 
-    // OGFx owns model data, not world placement. Load the build-generated model,
-    // then give this standalone preview its temporary identity world instance.
-    const std::filesystem::path previewModelPath{XRPHOTON_TEST_QUAD_ASSET_PATH};
-    OgfxLoadResult loadedScene = loadOgfxModel(previewModelPath);
-    if (!loadedScene) {
-        std::cerr << "Failed to load OGFx preview model: "
-                  << loadedScene.error << '\n';
+    GalleryLoadResult loadedGallery = loadGalleryScene();
+    if (!loadedGallery) {
+        std::cerr << loadedGallery.error << '\n';
         return 1;
     }
 
-    SceneData sceneData = std::move(loadedScene.scene);
-    sceneData.instances.emplace_back();
-    // Keep native filesystem encoding out of narrow output streams; the loader's
-    // UTF-8 diagnostic conversion owns path rendering on failure.
-    std::cout << "Loaded build-generated OGFx preview model.\n";
+    SceneData sceneData = std::move(loadedGallery.scene);
 
     GpuScene gpuScene;
     const VkResult gpuSceneResult = createGpuScene(

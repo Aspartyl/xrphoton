@@ -139,6 +139,7 @@ endif()
 # the byte decoder and malformed-file tests remain available in ogfx-core builds.
 add_library(xrPhotonOgfxRuntime STATIC
     src/ogfx_loader.cpp
+    src/scene_assembly.cpp
 )
 target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
@@ -151,6 +152,13 @@ if(BUILD_TESTING)
     target_link_libraries(xrPhotonOgfxLoaderTests PRIVATE xrPhotonOgfxRuntime)
     target_compile_options(xrPhotonOgfxLoaderTests PRIVATE -Wall -Wextra)
     add_test(NAME ogfx_runtime_loader COMMAND xrPhotonOgfxLoaderTests)
+
+    add_executable(xrPhotonSceneAssemblyTests
+        tests/scene_assembly_tests.cpp
+    )
+    target_link_libraries(xrPhotonSceneAssemblyTests PRIVATE xrPhotonOgfxRuntime)
+    target_compile_options(xrPhotonSceneAssemblyTests PRIVATE -Wall -Wextra)
+    add_test(NAME scene_assembly COMMAND xrPhotonSceneAssemblyTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -190,6 +198,7 @@ add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER})
 
 add_executable(xrPhoton
     src/main.cpp
+    src/gallery.cpp
     src/third_party_impl.cpp
     src/vulkan_context.cpp
     src/swapchain.cpp

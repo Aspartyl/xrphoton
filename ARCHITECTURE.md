@@ -31,7 +31,8 @@ M3b replaced the triangle with an indexed, X-rotated quad whose hit shader fetch
 indices, normals, and UVs through buffer device addresses, then reads materials
 from the descriptor-bound storage buffer. M4 moved that model construction offline:
 the build now writes `test_quad.ogfx`, the runtime strictly decodes it into
-`SceneData`, and the caller supplies the preview's identity instance.
+model-owned `SceneData`, and the Vulkan-free gallery/assembly path merges it into
+the scene and supplies the preview's identity instance.
 
 ## Goals and constraints
 
@@ -59,9 +60,8 @@ the build now writes `test_quad.ogfx`, the runtime strictly decodes it into
 
 ## Module map
 
-The engine executable target is nine translation units, all in `namespace xrphoton`; the
-separate OGFx libraries and offline quad front end add four production translation
-units. The split is along **resource lifetime**
+The engine executable and its supporting runtime/offline libraries are split along
+**resource lifetime**
 (program-lifetime vs. recreated-on-resize), **orchestration vs. mechanism**, and
 the offline-compiler/runtime boundary.
 
@@ -100,7 +100,9 @@ stage; the diagram shows the frame-path layering.)
 | [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict M4 byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
 | [src/legacy_ogf.hpp](src/legacy_ogf.hpp) / [.cpp](src/legacy_ogf.cpp) | Transactional source decoder for the pinned M4a OGF v4 static profile; validates legacy framing/semantics and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build |
 | [tools/convert_ogf.cpp](tools/convert_ogf.cpp) | `xrPhotonAssetCompiler convert-ogf` dispatch, bounded source-file input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
-| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter called by `main()`; the caller owns preview/world placement |
+| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
+| [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
+| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each OGFx model once, merges it, instantiates every mesh in each placement, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
 | [tools/compile_test_quad.cpp](tools/compile_test_quad.cpp) | Offline M3b-equivalent quad front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, and staged upload of unified position/attribute/index and record buffers | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (instance buffer, BLAS/TLAS handles and backing buffers) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
@@ -163,7 +165,11 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    forward-declares.
 6. `ogfx_loader.cpp` includes `scene.hpp` through its public header and adapts the
    standard-library-only decoded model into renderer-native `SceneData`.
-7. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
+7. `scene_assembly.cpp` depends only on `scene.hpp` and standard-library helpers;
+   it remains in the same Vulkan-free runtime library as the OGFx adapter.
+8. `gallery.cpp` includes the loader and assembly APIs to own temporary startup
+   policy; its public header exposes only `SceneData` and a value result.
+9. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
    the pipeline layout's push-constant range; `camera.cpp` includes
    `GLFW/glfw3.h` for the real input API its header only forward-declared.
 
@@ -275,9 +281,11 @@ returns `1` on failure (RAII handles the unwind):
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
-10. **CPU/GPU scene.** Load the build-generated `test_quad.ogfx` into model-owned
-    `SceneData`, append one identity preview instance, then `createGpuScene` uploads
-    its five device-local buffers through the borrowed frame-0 slot.
+10. **CPU/GPU scene.** `loadGalleryScene` loads the build-generated
+    `test_quad.ogfx`, transactionally merges its model-owned arrays, applies the
+    gallery's identity placement to every mesh, and validates the assembled
+    `SceneData`; `createGpuScene` then uploads its five device-local buffers through
+    the borrowed frame-0 slot.
 11. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
     command buffer and in-flight fence from step 9 and returns them in the state the
@@ -813,9 +821,10 @@ Decisions and contracts worth preserving:
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
    staged uploads, the indexed-quad BDA/ABI probe, and the complete M4 OGFx
    round trip have landed. CMake generates
-   `build/<preset>/assets/test_quad.ogfx` through the shared writer; `main()` loads
-   that file, appends the identity preview instance, and sends the resulting
-   `SceneData` through the unchanged GpuScene/AS/RT path. The procedural runtime
+   `build/<preset>/assets/test_quad.ogfx` through the shared writer; the temporary
+   gallery loads that required asset, merges it through the generic transactional
+   scene-assembly unit, applies its identity placement, and returns validated
+   `SceneData` to `main()` for the unchanged GpuScene/AS/RT path. The procedural runtime
    builder is gone, so there is exactly one model-loading path. M4a is also
    landed: deterministic logical-texture arenas, the offline full-schema
    decoder, a narrow legacy-static OGF adapter, and
@@ -824,12 +833,12 @@ Decisions and contracts worth preserving:
    accepted result through the opt-in `xrPhotonM4aOfflineProof` target, which
    persists verified output only in the build tree; repository tests generate
    their own fixture, and no GSC asset or local absolute path is committed.
-   Blender is not part of that conversion path. Next, the opaque Blender export
-   probe supplies the first
-   runtime-ready real meshes; the N-BLAS/N-instance generalization rides that
-   probe;
-   a temporary code-owned preview table supplies world transforms until
-   scene/level data has its real owner, without putting instances in OGFx:
+   Blender is not part of that conversion path. Next, a generated multi-geometry
+   wedge makes the N-BLAS/N-instance generalization independently visible; the
+   texture path then brings the converted `plitka1.ogfx` into the same gallery.
+   The Blender opaque export probe follows as another entry after that end-to-end
+   legacy proof. The temporary code-owned gallery table supplies world transforms
+   until scene/level data has its real owner, without putting instances in OGFx:
    indexed vertex data with per-vertex attributes (normals,
    UVs) fetched in the closest-hit shader via buffer device addresses, multiple
    BLASes with instance transforms, and material data in storage buffers indexed
