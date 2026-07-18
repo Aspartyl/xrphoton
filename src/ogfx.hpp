@@ -140,9 +140,12 @@ struct DecodeResult
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");
 
-// Decodes the strict M4 runtime profile transactionally: failure returns one
-// diagnostic and no partially populated model. The returned model deliberately has
-// no instance concept because OGFx stores reusable model data, not world placement.
+// Decodes the staged runtime profile transactionally: failure returns one diagnostic
+// and no partially populated model. Record-count gates remain until the N-BLAS /
+// N-instance consumer lands; texture-reference and string-arena gates remain until
+// resolution, upload, and sampling land; alpha-tested geometry remains gated until
+// the opaque/alpha split. The returned model deliberately has no instance concept
+// because OGFx stores reusable model data, not world placement.
 [[nodiscard]] DecodeResult decodeModel(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");

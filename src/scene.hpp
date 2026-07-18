@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -36,6 +37,9 @@ struct SceneMaterial
     float baseColorFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     uint32_t baseColorImage = 0;
     float alphaCutoff = 0.5f;
+    // Exact logical texture reference carried by OGFx. Resolution assigns the
+    // scene-global baseColorImage later; an empty string means no reference.
+    std::string baseColorTexture;
 };
 
 struct SceneMesh

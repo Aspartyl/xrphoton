@@ -109,7 +109,7 @@ Bounds readBounds(std::span<const std::uint8_t> bytes, std::size_t offset)
 enum class DecodeProfile
 {
     Schema,
-    RuntimeM4,
+    Runtime,
 };
 
 class Decoder
@@ -148,7 +148,7 @@ public:
             || !validateModel(geometryBounds, metadata)) {
             return failedResult();
         }
-        if (profile_ == DecodeProfile::RuntimeM4 && !validateRuntimeProfile()) {
+        if (profile_ == DecodeProfile::Runtime && !validateRuntimeProfile()) {
             return failedResult();
         }
 
@@ -1166,6 +1166,6 @@ DecodeResult decodeModel(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName)
 {
-    return decodeWithProfile(bytes, diagnosticName, DecodeProfile::RuntimeM4);
+    return decodeWithProfile(bytes, diagnosticName, DecodeProfile::Runtime);
 }
 }

@@ -111,7 +111,11 @@ OgfxLoadResult decodeOgfxScene(
             }
             sceneMaterial.baseColorImage = 0;
             sceneMaterial.alphaCutoff = material.alphaCutoff;
-            scene.materials.push_back(sceneMaterial);
+            // Runtime acceptance still guarantees this is empty until the texture
+            // resolver/upload/sampling consumer lands, but preserve the OGFx carrier
+            // verbatim now so opening that gate cannot silently discard identity.
+            sceneMaterial.baseColorTexture = material.baseColorTexture;
+            scene.materials.push_back(std::move(sceneMaterial));
         }
 
         return {

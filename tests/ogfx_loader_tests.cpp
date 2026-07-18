@@ -122,8 +122,9 @@ void testSceneConversion()
             && loaded.scene.materials[0].baseColorFactor[2] == 0.75f
             && loaded.scene.materials[0].baseColorFactor[3] == 0.875f
             && loaded.scene.materials[0].baseColorImage == 0
+            && loaded.scene.materials[0].baseColorTexture.empty()
             && loaded.scene.materials[0].alphaCutoff == 0.375f,
-        "runtime material fields are reconstructed without a texture reference");
+        "runtime material fields include an empty texture-reference carrier");
     expect(loaded.scene.instances.empty(), "OGFx decoding creates no world instances");
     expect(loaded.scene.images.empty(), "the texture-free M4 profile creates no images");
 
