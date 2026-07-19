@@ -6,9 +6,10 @@ records the settled decisions about how content reaches the runtime (OGFx,
 OMFx, the shared offline asset compiler) and the proposed elaboration of those
 decisions into concrete mechanism. OGFx v1's static core, canonical writer,
 strict runtime decoder/adapter, offline probe front ends, narrow M4a
-legacy-static adapter/CLI, generic multi-model gallery consumer, and DDS-backed
-opaque base-color path now exist; broader source profiles, later format families,
-and SDK tools remain planned. The landed slices are recorded at the
+legacy-static adapter/CLI, narrow headless Blender 5.1.x static-mesh adapter,
+generic multi-model gallery consumer, and DDS-backed opaque base-color path now
+exist; broader source profiles, later format families, and SDK tools remain
+planned. The landed slices are recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
 
 **How to read the labels.** Three kinds of statement appear below, and the
@@ -70,7 +71,7 @@ guesswork.
 The same offline boundary applies to modern content:
 
 ```
-Blender  ──►  xrPhoton add-on / export path  ──►  shared asset compiler  ──►  .ogfx / .omfx
+Blender  ──►  xrPhoton export front end  ──►  shared asset compiler  ──►  .ogfx / .omfx
 ```
 
 The runtime loads exactly one model format: OGFx. No interchange format is a
@@ -557,8 +558,13 @@ The conversions the compiler owns:
   converter-implementation time is everything a pass-through can still get
   subtly wrong: triangle winding, normal orientation, and bind-pose
   conventions *(verify against OpenXRay sources at implementation time)*.
-- **Blender** is right-handed, Z-up; the export path converts to engine
-  space on the way into the compiler.
+- **Blender** is right-handed, Z-up. The landed static-mesh adapter maps each
+  transformed position and normal from `(x, y, z)` to engine `(x, z, y)`. That
+  axis swap has determinant `-1`; the compiler therefore reverses triangle
+  winding exactly when the complete object-plus-axis transform reverses
+  orientation. Object-space normals use the object's inverse transpose before
+  the same axis map and normalization. Scene-unit scaling and the affine object
+  transform are baked offline; the runtime performs no Blender fixup.
 
 ### What is decided vs. proposed — summary
 
@@ -645,12 +651,62 @@ question *inside* the preserve list, not a license to redesign animation.
 path is direct Blender export through the shared compiler:
 
 ```
-Blender ──► xrPhoton add-on / export path ──► shared asset compiler ──► OGFx / OMFx
+Blender ──► xrPhoton export front end ──► shared asset compiler ──► OGFx / OMFx
 ```
 
+**IMPLEMENTED — first headless Blender profile.** Blender 5.1.x runs
+[`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py) against a `.blend`
+file and one required object name. The script is an extractor, not an OGFx
+writer: it validates the source, triangulates the evaluated mesh, records its
+corner positions/normals and optional UVs, and supplies a bounded private
+versioned `XRBM` stream to `xrPhotonAssetCompiler convert-blender` over stdin.
+The standard-library-only [`src/blender_mesh.cpp`](src/blender_mesh.cpp) adapter
+owns axis/normal/winding conversion and corner deduplication, populates the same
+compiler model as the legacy adapter, and invokes the one canonical writer.
+`XRBM` is a private producer/compiler exchange contract; it is neither a
+persisted asset nor a runtime format.
+
+The accepted profile is intentionally exact: one explicitly named active-scene
+mesh object with no material slots or evaluated materials, modifiers, object or
+mesh animation data, shape keys, constraints, parenting, or color attributes.
+Linked-library data and overrides are also outside this self-contained source
+profile. It accepts zero or one UV layer and rejects loose vertices/edges, degenerate
+triangles, singular/non-finite transforms, non-finite corner data, and normals
+that disagree with the converted winding. A one-million-triangle profile cap
+bounds the extractor, stdin payload, deduplication table, and compiler model's
+combined working set. It produces one opaque geometry, one mesh, and one default
+material with no texture reference. This slice does not
+flatten hierarchy, apply modifiers, export materials/textures, or infer which
+object the user intended.
+
+**UV convention at this boundary.** XRBM version 1 and the current Blender
+adapter preserve authored Blender `(u, v)` values exactly; they do not flip V.
+That pins deterministic extraction for this material-free profile, but it does
+not decide the eventual textured-Blender sampling convention. Before texture
+references enter this source profile, an asymmetric textured oracle must decide
+one offline normalization point—either UV conversion or image-row conversion—
+and test it against both Blender's viewport and xrPhoton. The choice must be an
+explicit compiler-contract change, never an unannounced fix applied in multiple
+places.
+
+The ignored root `blender/` directory holds owner-local source files. The first
+fixtures are `test_pyramid.blend` / object `test_pyramid`, the gallery probe, and
+`test_sphere.blend` / object `test_sphere`, the flat-shaded
+dense-triangulation/UV-seam/corner-splitting regression fixture.
+Generated outputs live beneath the ignored
+`build/<preset>/assets/blender/` directory. The opt-in
+`xrPhotonBlenderOfflineProof` target uses the cache settings
+`XRPHOTON_BLENDER_EXECUTABLE`, `XRPHOTON_BLENDER_PYRAMID_BLEND`, and
+`XRPHOTON_BLENDER_SPHERE_BLEND` to run both files through Blender and verify
+their canonical outputs; it does not make the local `.blend` inputs normal-build
+dependencies. The pyramid's manual rendered appearance and GPU validation are
+still pending.
+
 Third-party assets — free path-tracing test models included — normally enter
-the same way: Blender imports them, then the xrPhoton add-on feeds the shared
-compiler. A GLB importer remains an allowed but deferred **offline adapter**:
+the same way: Blender imports them, then an xrPhoton export front end feeds the
+shared compiler. A polished add-on UI may later wrap this landed headless path;
+it must not fork the compiler or writer. A GLB importer remains an allowed but
+deferred **offline adapter**:
 
 ```
 GLB ──► optional importer ──► shared asset compiler ──► OGFx
@@ -689,8 +745,10 @@ writer in [`src/ogfx.hpp`](src/ogfx.hpp) / [`src/ogfx.cpp`](src/ogfx.cpp). The
 M4a [`src/legacy_ogf.hpp`](src/legacy_ogf.hpp) /
 [`src/legacy_ogf.cpp`](src/legacy_ogf.cpp) source adapter populates that model,
 and `xrPhotonAssetCompiler convert-ogf <input.ogf> <output.ogfx>` supplies the
-filesystem boundary. Parsing never owns serialization: the CLI always calls the
-same validated writer. These units own neither Vulkan nor renderer-native state.
+filesystem boundary. The Blender extractor and `src/blender_mesh.cpp` adapter add
+the `convert-blender <diagnostic-name> <output.ogfx>` stdin boundary described
+above. Neither source adapter owns serialization: the CLI always calls the same
+validated writer. These units own neither Vulkan nor renderer-native state.
 
 **DECISION — what the compiler does**, each with its reason:
 
@@ -782,7 +840,7 @@ gradient on the predicted identity-placed quad is the visual oracle; M3b
 already proved the deliberately X-rotated inverse-transpose normal path.
 
 **Landed:** the shared writer and offline quad front end generate
-`build/<preset>/assets/test_quad.ogfx`; the runtime opens that generated file through
+`build/<preset>/assets/probes/test_quad.ogfx`; the runtime opens that generated file through
 the strict transactional decoder and field-by-field `SceneData` adapter, then the
 caller appends one identity preview instance. The old `scene.cpp` procedural builder
 is gone, leaving exactly one runtime model-loading path. Deterministic serialization,
@@ -826,7 +884,8 @@ each arrives with its own consumer.
    `xrPhotonM4aOfflineProof` target drives the real CLI, verifies source identity,
    complete schema reconstruction, byte-exact reserialization, and runtime
    reconstruction of the logical reference, then persists the proven output
-   beneath `build/<preset>/corpus/`.
+   beneath
+   `build/<preset>/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`.
 
 2. **Additive runtime gallery + textured plitka path. Implementation landed;
    final visual sign-off pending.** Generic scene
@@ -842,15 +901,22 @@ each arrives with its own consumer.
    on-screen orientation, scale, winding, and texture appearance remain a final
    owner visual check.
 
-3. **Blender opaque probe → add-on/export → OGFx. Next.** The primary modern-
-   content path adds a no-texture-reference, opaque-only probe to the already
-   generalized gallery. It inherits the same decoder, scene assembly, BLAS/TLAS,
-   material, fallback-texture, and shader path; it does not create a second writer
-   or runtime loader. A direct GLB-to-compiler adapter remains an optional later
-   offline tool, not part of this milestone.
+3. **Blender opaque probe → headless export → OGFx. Landed; manual/GPU gallery
+   validation pending.** Blender 5.1.x and `tools/blender/export_ogfx.py` extract
+   the explicitly named, material-free static `test_pyramid` mesh through the
+   private stdin-only `XRBM` exchange. The C++ adapter applies scene/object
+   transforms, `(x, y, z)` → `(x, z, y)`, inverse-transpose normals, and
+   determinant-aware winding, then feeds the shared writer. The flat-shaded
+   `test_sphere` exercises dense triangulation, its UV seam, and corner splitting.
+   Both canonical outputs are reproducible
+   beneath `build/<preset>/assets/blender/`; the pyramid is the optional gallery
+   probe, but its manual rendered appearance and GPU validation have not yet been
+   signed off. The slice adds no second writer or runtime loader. A direct
+   GLB-to-compiler adapter remains an optional later offline tool.
 
-4. **Legacy hierarchy / skeletal-rigid target — later.** The externally supplied
-   SoC asset `meshes/objects/dynamics/balon/bochka_fuel.ogf` remains the first
+4. **Legacy hierarchy / skeletal-rigid target — next source-profile milestone.**
+   The externally supplied SoC asset
+   `meshes/objects/dynamics/balon/bochka_fuel.ogf` remains the first
    recognizable target after the Blender probe. It is not relabelled "static"
    merely because the barrel appears rigid: its root contains embedded child
    visuals plus bone-name and IK/physics chunks. Its canonical path remains:

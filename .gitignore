@@ -1,6 +1,12 @@
 # Build outputs
 build/
 
+# Local proprietary game data
+/original_game_files/
+
+# Local Blender authoring files
+/blender/
+
 # Machine-local CMake preset overrides
 CMakeUserPresets.json
 

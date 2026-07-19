@@ -1,6 +1,8 @@
+#include "blender_mesh.hpp"
 #include "legacy_ogf.hpp"
 #include "ogfx.hpp"
 
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -53,6 +55,23 @@ bool pathsAlias(
         && !equivalentError;
 }
 
+bool pathAliasesRunningCompiler(
+    const std::filesystem::path& invokedPath,
+    const std::filesystem::path& outputPath)
+{
+    if (pathsAlias(invokedPath, outputPath)) {
+        return true;
+    }
+
+    // argv[0] may be a bare PATH lookup, so it is not enough to compare that
+    // spelling from the caller's working directory. Linux is the currently
+    // supported host; /proc pins the executable that publication must protect.
+    std::error_code executableError;
+    const std::filesystem::path runningPath =
+        std::filesystem::read_symlink("/proc/self/exe", executableError);
+    return !executableError && pathsAlias(runningPath, outputPath);
+}
+
 bool readSourceFile(
     const std::filesystem::path& path,
     std::string_view diagnosticName,
@@ -103,6 +122,55 @@ bool readSourceFile(
         *error = std::string(diagnosticName)
             + ": source file changed size while it was being read.";
         return false;
+    }
+    return true;
+}
+
+bool readSourceStream(
+    std::istream& input,
+    std::string_view diagnosticName,
+    std::vector<std::uint8_t>* bytes,
+    std::string* error)
+{
+    bytes->clear();
+    constexpr std::uint64_t MaximumBlenderStreamBytes =
+        xrphoton::blender_mesh::StreamHeaderSize
+        + static_cast<std::uint64_t>(
+            xrphoton::blender_mesh::MaximumTriangleCount)
+            * xrphoton::blender_mesh::CornersPerTriangle
+            * xrphoton::blender_mesh::CornerRecordSize;
+    constexpr std::size_t ReadBlockSize = 64 * 1024;
+    std::array<char, ReadBlockSize> block{};
+    while (true) {
+        input.read(block.data(), static_cast<std::streamsize>(block.size()));
+        const std::streamsize readCount = input.gcount();
+        if (readCount < 0) {
+            *error = std::string(diagnosticName)
+                + ": failed to read the Blender exchange stream.";
+            return false;
+        }
+        if (readCount != 0) {
+            const std::uint64_t newSize =
+                static_cast<std::uint64_t>(bytes->size())
+                + static_cast<std::uint64_t>(readCount);
+            if (newSize > MaximumBlenderStreamBytes) {
+                *error = std::string(diagnosticName)
+                    + ": Blender exchange stream exceeds the "
+                    + std::to_string(MaximumBlenderStreamBytes)
+                    + "-byte profile cap.";
+                return false;
+            }
+            const auto* first = reinterpret_cast<const std::uint8_t*>(block.data());
+            bytes->insert(bytes->end(), first, first + readCount);
+        }
+        if (input.eof()) {
+            break;
+        }
+        if (!input) {
+            *error = std::string(diagnosticName)
+                + ": failed to read the complete Blender exchange stream.";
+            return false;
+        }
     }
     return true;
 }
@@ -185,13 +253,16 @@ bool publishOutput(
     return true;
 }
 
-int run(int argumentCount, char** arguments)
+void printUsage()
 {
-    if (argumentCount != 4 || std::string_view(arguments[1]) != "convert-ogf") {
-        std::cerr << "Usage: xrPhotonAssetCompiler convert-ogf <input.ogf> <output.ogfx>\n";
-        return 1;
-    }
+    std::cerr
+        << "Usage:\n"
+        << "  xrPhotonAssetCompiler convert-ogf <input.ogf> <output.ogfx>\n"
+        << "  xrPhotonAssetCompiler convert-blender <source-name> <output.ogfx> < XRBM\n";
+}
 
+int convertLegacyOgf(char** arguments)
+{
     const std::filesystem::path inputPath = arguments[2];
     const std::filesystem::path outputPath = arguments[3];
     if (pathsAlias(inputPath, outputPath)) {
@@ -230,6 +301,67 @@ int run(int argumentCount, char** arguments)
         return 1;
     }
     return 0;
+}
+
+int convertBlenderMesh(char** arguments)
+{
+    const std::string sourceName = arguments[2];
+    const std::filesystem::path outputPath = arguments[3];
+    const std::string outputName = outputPath.string();
+    std::string error;
+
+    xrphoton::ogfx::SerializeResult serialized;
+    {
+        xrphoton::ogfx::DecodeResult decoded;
+        {
+            std::vector<std::uint8_t> sourceBytes;
+            if (!readSourceStream(
+                    std::cin, sourceName, &sourceBytes, &error)) {
+                std::cerr << error << '\n';
+                return 1;
+            }
+            decoded = xrphoton::blender_mesh::decodeStaticMesh(
+                sourceBytes, sourceName);
+        }
+        if (!decoded) {
+            std::cerr << decoded.error << '\n';
+            return 1;
+        }
+        serialized = xrphoton::ogfx::serializeModel(decoded.model, outputName);
+    }
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return 1;
+    }
+    if (!publishOutput(outputPath, outputName, serialized.bytes, &error)) {
+        std::cerr << error << '\n';
+        return 1;
+    }
+    return 0;
+}
+
+int run(int argumentCount, char** arguments)
+{
+    if (argumentCount != 4) {
+        printUsage();
+        return 1;
+    }
+    const std::filesystem::path compilerPath = arguments[0];
+    const std::filesystem::path outputPath = arguments[3];
+    if (pathAliasesRunningCompiler(compilerPath, outputPath)) {
+        std::cerr << outputPath.string()
+                  << ": destination path must not identify the asset compiler executable.\n";
+        return 1;
+    }
+    const std::string_view command = arguments[1];
+    if (command == "convert-ogf") {
+        return convertLegacyOgf(arguments);
+    }
+    if (command == "convert-blender") {
+        return convertBlenderMesh(arguments);
+    }
+    printUsage();
+    return 1;
 }
 }
 

@@ -37,6 +37,14 @@ struct GalleryPlacement
     glm::mat4 transform;
 };
 
+enum GalleryAssetIndex : uint32_t
+{
+    QuadAsset = 0,
+    WedgeAsset,
+    PlitkaAsset,
+    BlenderPyramidAsset,
+};
+
 struct LoadedGalleryAsset
 {
     bool loaded = false;
@@ -66,38 +74,53 @@ constexpr std::array GalleryAssets{
         .optional = true,
         .configurationName = "XRPHOTON_GALLERY_PLITKA_OGFX",
     },
+    GalleryAsset{
+        .name = "test_pyramid",
+        .ogfxPath = XRPHOTON_GALLERY_BLENDER_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_BLENDER_OGFX",
+    },
 };
+static_assert(BlenderPyramidAsset + 1 == GalleryAssets.size());
 
 const std::array GalleryPlacements{
     // Place every preview's vertical center on the y=0 screen row and keep every
-    // placement origin at z=3. The X positions account for each asset's width and
-    // depth, leaving clear, nearly uniform screen-space gaps without changing any
-    // model-space geometry.
+    // placement origin at z=4. The X positions use the actual compiled bounds plus
+    // a 0.5-unit gap; the extra depth keeps the complete five-placement row inside
+    // the startup camera's 60-degree vertical FOV at 16:9.
     GalleryPlacement{
-        .assetIndex = 0,
+        .assetIndex = QuadAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-4.0f, 0.0f, 3.0f}),
+            glm::vec3{-5.14f, 0.0f, 4.0f}),
     },
     GalleryPlacement{
-        .assetIndex = 2,
+        .assetIndex = PlitkaAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-2.9f, -1.43163f, 3.0f}),
+            glm::vec3{-4.14f, -1.43163f, 4.0f}),
     },
     GalleryPlacement{
-        .assetIndex = 1,
+        .assetIndex = BlenderPyramidAsset,
+        // The source pyramid spans Y=[0, 2] after Blender-to-engine conversion.
+        // Move its center onto the same preview row without changing model data.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{0.8f, 0.0f, 3.0f}),
+            glm::vec3{-0.27f, -1.0f, 4.0f}),
     },
     GalleryPlacement{
-        .assetIndex = 1,
+        .assetIndex = WedgeAsset,
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{2.0f, 0.0f, 4.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = WedgeAsset,
         // GLM applies the rightmost operation first: scale in model space,
         // rotate around world-up, then move the result into the gallery row.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{3.2f, 0.0f, 3.0f})
+                         glm::vec3{4.45f, 0.0f, 4.0f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(30.0f),

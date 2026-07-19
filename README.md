@@ -30,9 +30,13 @@ Right now it renders an additive OGFx preview gallery that you can fly around
 two-geometry wedge regression probe placed twice, including one rotated and
 non-uniformly scaled instance. A configured reference build adds the converted,
 textured legacy `plitka1.ogfx` as a fourth placement through the same runtime path.
-That configured path reaches the interactive render loop and passes plain,
-GPU-assisted, and synchronization validation; plitka's final on-screen orientation,
+That plitka configuration reaches the interactive render loop and passes plain,
+GPU-assisted, and synchronization validation; its final on-screen orientation,
 scale, winding, and texture appearance still require owner visual sign-off.
+The converted `test_pyramid.ogfx` can be configured independently as the first
+Blender gallery placement; with both optional assets enabled the gallery contains
+four BLASes and five TLAS instances. The pyramid has not yet received equivalent
+manual visual or GPU validation.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
@@ -42,10 +46,10 @@ handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
 into the runtime binary at build time, so shader deployment is self-contained
 and needs no runtime shader files.
 
-The first complete OGFx round trip and the narrow M4a legacy-static converter
-have landed. Every normal engine build generates
-`build/<preset>/assets/test_quad.ogfx` and `test_wedge.ogfx` through the canonical
-writer; the runtime strictly decodes both, assembles their model records and world
+The first complete OGFx round trip, the narrow M4a legacy-static converter, and
+the first headless Blender-to-OGFx path have landed. Every normal engine build
+generates `build/<preset>/assets/probes/test_quad.ogfx` and `test_wedge.ogfx`
+through the canonical writer; the runtime strictly decodes both, assembles their model records and world
 placements into `SceneData`, batches two different BLAS builds, and shares the
 wedge BLAS across two TLAS instances. The texture foundation now reconstructs
 logical OGFx references, resolves strict DDS DXT1/DXT5 images, uploads BC1/BC3
@@ -55,9 +59,17 @@ blue/green wedge faces; configured plitka exercises the real BC1 upload and a
 nonzero texture-table index. The separate converter accepts the pinned OGF v4
 static profile and feeds that same writer for offline validation. The converted
 plitka is now the first original X-Ray model carried through xrPhoton's configured
-runtime path, with final visual sign-off pending. The Blender opaque export probe
-is the next primary content-source entry; `bochka_fuel` follows later
-once its hierarchy, bone, and IK/physics contracts exist. Dynamic scenes
+runtime path, with final visual sign-off pending. The Blender slice uses Blender
+5.1.x and [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py) to extract
+one explicitly named, material-free static mesh. A private `XRBM` stream crosses
+stdin to the C++ adapter, which performs coordinate/normal/winding conversion and
+feeds the same canonical writer used by every other source. `test_pyramid` is the
+first gallery probe and the flat-shaded `test_sphere` exercises dense
+triangulation, its UV seam, and corner splitting. The pyramid's manual gallery
+appearance and GPU validation are still pending; the sphere is an offline
+regression fixture. The next
+source-profile milestone is `bochka_fuel`, once its hierarchy, bone, and IK/physics
+contracts exist. Dynamic scenes
 (TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
 and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -105,8 +117,55 @@ Its output preserves a logical texture name that the runtime reconstructs for
 scene-global DDS resolution and can be supplied directly to the optional gallery
 configuration below.
 
+### Converting the Blender probes
+
+The first Blender exporter is deliberately headless rather than a polished add-on
+UI. Build the graphics-free compiler, then run the script with Blender 5.1.x (not
+the system Python interpreter):
+
+```sh
+cmake --build --preset ogfx-core --target xrPhotonAssetCompiler
+/path/to/blender --background --factory-startup --disable-autoexec \
+  --python-exit-code 1 blender/test_pyramid.blend \
+  --python tools/blender/export_ogfx.py -- \
+  --compiler "$PWD/build/ogfx-core/xrPhotonAssetCompiler" \
+  --output "$PWD/build/ogfx-core/assets/blender/test_pyramid.ogfx" \
+  --object test_pyramid
+```
+
+The checked input profile is exactly one explicitly named mesh object: no
+materials, modifiers, animation, shape keys, constraints, parenting, or color
+attributes; linked-library data and overrides are also rejected. It accepts
+either zero or one UV layer. Scene units and the object's affine
+transform are baked by the compiler; a one-million-triangle cap bounds peak
+working memory. Blender source files live in the Git-ignored
+root `blender/` directory; reproducible outputs live under the Git-ignored
+`build/<preset>/assets/blender/` directory. The exporter does not write OGFx: it
+sends a bounded private `XRBM` extraction stream to
+`xrPhotonAssetCompiler convert-blender`, and the shared C++ writer publishes the
+canonical file.
+
+For the two local regression sources, configure their ignored paths once and run
+the opt-in end-to-end proof:
+
+```sh
+cmake --preset ogfx-core \
+  -DXRPHOTON_BLENDER_EXECUTABLE=/path/to/blender \
+  -DXRPHOTON_BLENDER_PYRAMID_BLEND="$PWD/blender/test_pyramid.blend" \
+  -DXRPHOTON_BLENDER_SPHERE_BLEND="$PWD/blender/test_sphere.blend"
+cmake --build --preset ogfx-core --target xrPhotonBlenderOfflineProof
+```
+
+It runs the real Blender extractor and compiler twice for each fixture, verifies
+deterministic canonical schema reconstruction, and persists
+`test_pyramid.ogfx` and `test_sphere.ogfx` under
+`build/ogfx-core/assets/blender/`. Normal builds do not depend on Blender or the
+ignored `.blend` files.
+
+### Proving the legacy plitka conversion
+
 With the local `plitka1.ogf` source file in
-`build/ogfx-core/legacy-ogf-corpus/meshes/objects/dynamics/plitka/`, run the complete,
+`original_game_files/soc/meshes/objects/dynamics/plitka/`, run the complete,
 opt-in offline proof with:
 
 ```sh
@@ -116,21 +175,22 @@ cmake --build --preset ogfx-core --target xrPhotonM4aOfflineProof
 It verifies the pinned source and output identities, conversion semantics,
 canonical schema round trip, and exact runtime texture-reference reconstruction.
 The persistent result is written to
-`build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`. A different
+`build/ogfx-core/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`. A different
 local source location can be selected at configure time with
-`-DXRPHOTON_M4A_CORPUS_OGF=/path/to/plitka1.ogf`; the corpus remains outside the
-repository and normal builds do not depend on it.
+`-DXRPHOTON_M4A_CORPUS_OGF=/path/to/plitka1.ogf`; the source tree remains
+untracked and normal builds do not depend on it.
 
-### Configuring the legacy gallery entry
+### Configuring the optional gallery entries
 
-The generated quad and wedge need no local game files. To add the verified plitka
-output and its original texture to the debug gallery, configure both owner-local
-paths once, then build normally:
+The generated quad and wedge need no local source files. To add the verified
+plitka output, its original texture, and the converted pyramid to the debug
+gallery, configure the owner-local paths once, then build normally:
 
 ```sh
 cmake --preset debug \
-  -DXRPHOTON_GALLERY_PLITKA_OGFX="$PWD/build/ogfx-core/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx" \
-  -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/build/ogfx-core/original_game_files/soc/textures"
+  -DXRPHOTON_GALLERY_PLITKA_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx" \
+  -DXRPHOTON_GALLERY_BLENDER_OGFX="$PWD/build/ogfx-core/assets/blender/test_pyramid.ogfx" \
+  -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
 cmake --build --preset debug
 ./build/debug/xrPhoton
 ```
@@ -138,10 +198,12 @@ cmake --build --preset debug
 The texture root must preserve the exact-case relative path
 `ston/ston_stena_marbl_m_03_back.dds`. CMake remembers both values separately in
 each build tree, so configure the `release` preset the same way when needed. With
-an empty `XRPHOTON_GALLERY_PLITKA_OGFX`, xrPhoton prints a skip line and renders
-only the generated entries. Once plitka is configured, a missing/broken OGFx,
-texture root, or DDS is a loud startup failure rather than a silent fallback. The
-original game files and generated proof output remain Git-ignored local inputs.
+an empty `XRPHOTON_GALLERY_PLITKA_OGFX` or
+`XRPHOTON_GALLERY_BLENDER_OGFX`, xrPhoton skips that optional entry. Once an
+entry is configured, a missing/broken OGFx—or plitka texture root/DDS—is a loud
+startup failure rather than a silent fallback. The original game files, Blender
+sources, and generated proof outputs remain Git-ignored local inputs. The
+pyramid's manual rendered appearance and GPU validation remain pending.
 
 The current build and development environment is Linux with GCC or Clang.
 Windows support is planned, but its build and platform integration have not landed yet.

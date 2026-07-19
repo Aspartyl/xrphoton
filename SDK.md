@@ -3,8 +3,10 @@
 This document is the plan for the modern successor to the X-Ray SDK. It is the
 SDK counterpart to [FORMATS.md](FORMATS.md) — read that first for the
 asset-format direction and the shared asset compiler the SDK is built around.
-Everything here is plan, not description: none of it exists yet, and none of
-it is scheduled before the runtime milestones that need it
+The SDK described here remains a plan; its shared compiler foundation, including
+the legacy and first headless Blender source adapters, already exists. No SDK GUI
+or project model exists yet, and neither is scheduled before the runtime
+milestones that need it
 (see the [FORMATS.md milestone section](FORMATS.md#the-revised-first-ogfx-milestone-m4)).
 
 Labels follow FORMATS.md: **DECISION** is settled by the project owner;
@@ -46,9 +48,14 @@ a **consumer and front end** of that compiler — it invokes, schedules, and
 reports on it. It is **never a second writer**: the single-writer rule means
 no SDK code path serializes OGFx/OMFx on its own, however convenient a
 "quick save" path might look. No interchange format enters the runtime;
-external assets primarily enter through Blender and the one add-on/export
-path. The SDK may later expose an optional GLB importer, but only as a front
-end to the shared compiler, never as another OGFx writer. That adapter stays
+external assets primarily enter through Blender and the one export path. Its
+first landed front end is the headless Blender 5.1.x script
+[`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py): it extracts one
+explicitly named material-free static mesh into the private stdin-only `XRBM`
+exchange, while the C++ adapter performs coordinate/normal/winding conversion
+and the shared compiler alone writes OGFx. A later add-on UI can wrap that path
+but cannot fork it. The SDK may later expose an optional GLB importer, but only
+as a front end to the shared compiler, never as another OGFx writer. That adapter stays
 deferred until a concrete workflow justifies its additional input surface
 ([FORMATS.md](FORMATS.md#blender-and-external-assets)).
 
@@ -147,14 +154,19 @@ validation need, and no GUI precedes the CLI foundation it fronts. The
 compiler grows with the [FORMATS.md milestones](FORMATS.md#the-revised-first-ogfx-milestone-m4)
 (M4's shared OGFx writer is its seed), then M4a makes the first legacy path a
 direct CLI conversion of an externally supplied static OGF corpus asset. That
-path does not automate Blender: Blender import is a visual oracle or an
-intentional editing workflow, while batch migration parses OGF directly. The
-project model and CLI harden around that legacy conversion, Blender export,
+path does not use Blender: Blender import remains a visual oracle or an
+intentional editing workflow for legacy content, while batch migration parses
+OGF directly. The separate narrow headless Blender-to-OGFx path has now landed
+for the `test_pyramid` gallery probe and flat-shaded `test_sphere`
+dense-triangulation/UV-seam/corner-splitting fixture. The pyramid's manual gallery
+appearance and GPU validation remain pending. The project model and CLI harden
+around that legacy conversion, Blender export,
 and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own
 loader and renderer, with level tooling following the level-representation
-decisions. The first hierarchical/skeletal-rigid legacy acceptance target is
-the external SoC fuel barrel named in FORMATS.md; conversion must fail until
+decisions. The next source-profile milestone and first hierarchical/skeletal-rigid
+legacy acceptance target is the external SoC fuel barrel named in FORMATS.md;
+conversion must fail until
 all of its nested-visual, bone, and IK/physics semantics have mappings rather
 than silently flattening it. Committing to a finer schedule for the remaining
 formats would invent decisions the owner has deferred.

@@ -22,6 +22,13 @@
 > opaque base-color sampling landed first; the opaque/alpha SBT split remains the
 > next structural geometry item when a real alpha-tested consumer exists.
 
+> **Landed Blender opaque update (2026-07-18).** The primary modern-content
+> adapter now runs headlessly in Blender 5.1.x. It converts the material-free
+> `test_pyramid` gallery probe and the `test_sphere` dense-triangulation/UV-seam
+> regression fixture through the private stdin-only `XRBM` exchange and the
+> shared canonical writer. The pyramid's manual gallery appearance and GPU
+> validation remain pending; `bochka_fuel` is the next source-profile milestone.
+
 This is the implementation record for roadmap step 2 in
 [ARCHITECTURE.md](ARCHITECTURE.md). M1–M3b describe landed work; later
 format-independent sections remain design references, subject to the revised
@@ -60,8 +67,9 @@ convention:
   avoids painting it into a corner (see §8).
 - **Lighting / path tracing** — roadmap step 4. Closest-hit shading stays a
   debug visualization (baseColor × a world-space normal term).
-- **Alpha *blending*** — blend-mode (translucent) materials are compiled as
-  opaque with a conversion-time warning; order-independent transparency is a
+- **Alpha *blending*** — the landed Blender profile rejects all materials. A
+  later material-capable profile may map blend-mode materials to opaque only
+  under an explicit documented policy; order-independent transparency is a
   path-tracing-step (step 4) concern.
 - **Mipmaps / texture LOD** — textures upload a single mip and shaders sample
   `SampleLevel(uv, 0)`. LOD selection needs ray differentials or a cone
@@ -584,9 +592,9 @@ Every failure is loud and names its input; there is no silent degradation.
   `maxInstanceCount`, and each BLAS's summed triangle count against
   `maxPrimitiveCount`.
 
-**Probe model and placement fixture (deferred until multi-mesh content arrives
-via the FORMATS.md follow-ons):** one Blender project feeds deterministic,
-milestone-specific OGFx probe outputs through the same add-on/compiler writer;
+**Historical multi-mesh probe design (superseded in landing scope):** one
+Blender project feeds deterministic, milestone-specific OGFx probe outputs
+through the same export/compiler path;
 none contains world instances. The N-BLAS generalization adds a small
 file-private preview table mapping mesh indices to deterministic transforms.
 That table is temporary bring-up scene ownership, not another geometry path or
@@ -603,6 +611,16 @@ model-local geometry, proving offline hierarchy flattening. The sphere is
 load-bearing: axis-aligned normals under a diagonal scale cannot distinguish
 the plain inverse from the inverse-transpose after normalization, while its
 varying normals plus rotation can.
+
+The actually landed first Blender profile is deliberately narrower: one
+explicitly named material-free static mesh per invocation. `test_pyramid` is the
+genuinely three-dimensional optional gallery probe, while the flat-shaded
+`test_sphere` exercises dense triangulation, a UV seam, and corner splitting
+without expanding the initial file into a multi-object scene contract. The
+exporter accepts zero or one UV layer and rejects modifiers, materials,
+animation, shape keys, constraints, parenting, and color attributes. The broader
+multi-mesh/material/hierarchy fixture above remains design history rather than a
+claim about current support.
 
 The split-milestone output adds a mesh containing both opaque and alpha-tested
 geometry plus an alpha-cutout card, but still no texture references. The
@@ -1026,7 +1044,7 @@ v4 normal-model, direct chunk, header shader id `0`, FVF `0x112`, `u16`-index,
 and source shader `default` contracts against that corpus input. Map only that
 pinned id/name pair to v1 opaque semantics and reject every other shader id or
 name until its complete mapping exists; do not silently discard an
-untranslated selector. Keep the corpus asset outside the repository and use
+untranslated selector. Keep the corpus asset outside version control and use
 generated synthetic fixtures in committed tests. Validate geometry, bounds,
 material mapping, determinism, and loud rejection offline. At M4a's commit
 boundary its texture-referencing output was not runtime-ready, so that step made
@@ -1048,10 +1066,10 @@ nor a machine-specific path is committed. The opt-in
 the exact source/output hashes, invokes the production CLI, checks complete
 schema reconstruction plus byte-exact canonical reserialization, confirms
 runtime acceptance and exact logical-reference reconstruction, and writes the proven file to
-`build/<preset>/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx`. The legacy
+`build/<preset>/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`. The legacy
 source lives at the matching relative path under
-`build/<preset>/legacy-ogf-corpus/`, keeping canonical OGFx assets separate from
-their import sources.
+`original_game_files/soc/meshes/objects/dynamics/plitka/`, keeping canonical
+OGFx assets separate from their import sources.
 
 The OGFx-core prerequisite landed first: the canonical
 writer now emits deterministic, first-use-interned logical-texture string arenas,
@@ -1063,14 +1081,25 @@ removed the texture/string-arena gates with the image consumer; only the alpha
 capability gate remains. M4a starts at legacy OGF parsing and never forks the OGFx
 writer.
 
-**Blender opaque export probe — milestone number deferred.** Add the primary
-modern-content adapter from Blender to the same shared compiler and generate a
-texture-free, opaque, genuinely three-dimensional OGFx probe. This is an
-authoring/export path, not part of legacy OGF migration. Its runtime-ready output
-joins the already-generalized gallery and proves that a second source adapter
-feeds the same compiler/runtime path.
+**Blender opaque export probe — milestone number deferred. Landed; manual/GPU
+gallery validation pending.** Blender 5.1.x runs
+`tools/blender/export_ogfx.py` headlessly against one explicitly named source
+object. The Python side validates and extracts evaluated triangle corners into
+the private versioned `XRBM` stdin exchange; `src/blender_mesh.cpp` performs
+scene-unit/object-transform baking, maps `(x, y, z)` to `(x, z, y)`, applies the
+inverse transpose to normals, corrects winding from the complete transform's
+determinant, deduplicates vertices, and feeds the shared canonical writer. The
+accepted scope is one material-free static mesh with zero or one UV layer and no
+modifiers, materials, animation, shape keys, constraints, parenting, or color
+attributes. It produces the `test_pyramid` optional gallery probe and the
+flat-shaded `test_sphere` dense-triangulation/UV-seam/corner-splitting fixture
+beneath `build/<preset>/assets/blender/`; source `.blend` files remain in the
+ignored root `blender/` directory. The opt-in `xrPhotonBlenderOfflineProof`
+target drives both fixtures through cache-configured local inputs. This is an
+authoring/export path, not part of legacy OGF migration, and it adds neither a
+second writer nor a runtime format.
 
-**Legacy hierarchy / skeletal-rigid OGF proof — milestone number deferred.**
+**Legacy hierarchy / skeletal-rigid OGF proof — next source-profile milestone.**
 The external SoC `meshes/objects/dynamics/balon/bochka_fuel.ogf` is the first
 recognizable legacy acceptance target. Its embedded children, bone/bind data,
 and IK/physics chunks make it intentionally separate from M4a. Convert it
@@ -1083,7 +1112,7 @@ available.
 
 **Post-M4 N-BLAS / N-instance generalization — milestone number deferred.**
 
-> **Landed via GALLERY_PLAN Phase 3.** The generated wedge—not the still-future
+> **Landed via GALLERY_PLAN Phase 3.** The generated wedge—not the later-landed
 > Blender probe—drove this generalization. The implementation retained
 > `TMax = 100`; its gallery-specific acceptance oracles are recorded in
 > GALLERY_PLAN. The body below is preserved as the pre-landing reference design.
@@ -1217,9 +1246,9 @@ landed step (§10).
   engine-side list plus the FORMATS.md file-validation rules), the 24-bit cap (including
   the `RayTypeCount` multiplier), the scene-vs-device limit checks, and
   `MaxSceneTextures` overflow all report to `std::cerr` and abort startup —
-  never silently degrade. The **documented degradations** are exhaustive:
-  the offline compiler warns when mapping blend-mode materials to opaque or
-  non-repeat/non-linear sampler states to the shared sampler; a future scene
+  never silently degrade. The landed Blender profile has no material/sampler
+  degradation path: unsupported materials are errors. Any later documented
+  mapping of blend mode or sampler state must remain explicit; a future scene
   loader warns when skipping a zero-determinant instance (and errors if no
   renderable instance remains).
 
@@ -1249,12 +1278,13 @@ landed step (§10).
    configure time.
 6. **Asset-pipeline friction** — Blender export quirks (tangent-less normals,
    node scale, texture handling) move offline into the FORMATS.md
-   add-on/compiler path, which validates and reports at convert time rather
-   than at engine load. Open question: the exact export settings for the
-   probe asset — resolved empirically when it is authored and recorded next
-   to the asset.
-7. **Blend-mode (translucent) content** — deliberately compiled as opaque
-   with a conversion-time warning; no silent alpha-testing of blend materials.
+   export/compiler path, which validates and reports at convert time rather
+   than at engine load. The first profile resolves this narrowly: Blender 5.1.x,
+   one explicit material-free static mesh, zero or one UV layer, and no
+   modifiers, hierarchy, animation, shape keys, constraints, or colors.
+7. **Blend-mode (translucent) content** — the first Blender profile rejects all
+   materials, so it cannot silently reinterpret blend mode. A later material
+   profile must make its opaque/alpha policy explicit when it lands.
 8. **Scratch arena sizing — decided** (formerly an open question):
    `max(Σ aligned per-BLAS scratch, aligned TLAS scratch)`, the BLAS regions
    disjoint and aligned, the TLAS reusing the arena after barrier #1 (the
@@ -1326,4 +1356,5 @@ ledger (§9's resolutions) — and mirror the summary changes into
 ARCHITECTURE.md remains the source of truth for landed runtime architecture
 and status; FORMATS.md owns format contracts and asset-pipeline sequencing.
 GALLERY_PLAN.md records the landed N-BLAS/base-texture work; the Blender adapter
-and opaque/alpha split remain within roadmap step 2.
+has also landed within roadmap step 2, while its manual/GPU gallery validation
+and the opaque/alpha split remain outstanding.

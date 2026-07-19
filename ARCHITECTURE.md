@@ -25,12 +25,31 @@ texture appearance still require owner visual sign-off. Every entry uses the sam
 OGFx decoder, `SceneData`, GPU upload, acceleration-structure, material/texture, and
 shader path.
 
+The converted `test_pyramid.ogfx` is a second independent optional gallery asset.
+With plitka and the pyramid both configured, four models become five placements
+through four BLASes; the wedge remains the shared-BLAS probe. The pyramid's manual
+rendered appearance and GPU validation remain pending.
+
 The landed texture foundation validates strict DDS DXT1/DXT5 input, uploads BC1/BC3
 payloads directly, always supplies an opaque-white fallback at image zero, and
 exposes one fixed sampled-image descriptor array. The generated probes select the
 fallback; configured plitka selects a real nonzero image index. M1 through M4a and
 the gallery work that instantiated their consumers are recorded in the roadmap
 below.
+
+The first direct modern-content adapter is also landed as a narrow headless
+Blender 5.1.x path. [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py)
+validates and extracts one explicitly named material-free static mesh, then sends
+a private versioned `XRBM` stream over stdin to `xrPhotonAssetCompiler
+convert-blender`. [`src/blender_mesh.cpp`](src/blender_mesh.cpp) bakes scene units
+and the object transform, maps Blender `(x, y, z)` to engine `(x, z, y)`, applies
+inverse-transpose normal transformation, and reverses winding according to the
+combined object/axis-transform determinant before populating the ordinary compiler
+model. Only the shared canonical writer serializes OGFx. `test_pyramid` is the
+optional gallery probe and the flat-shaded `test_sphere` exercises dense
+triangulation, its UV seam, and corner splitting. The pyramid's manual gallery
+appearance and GPU validation remain pending; the sphere is an offline regression
+fixture.
 
 ## Goals and constraints
 
@@ -97,12 +116,14 @@ stage; the diagram shows the frame-path layering.)
 | [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU record types | Plain value state loaded from OGFx and owned by `main()` |
 | [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
 | [src/legacy_ogf.hpp](src/legacy_ogf.hpp) / [.cpp](src/legacy_ogf.cpp) | Transactional source decoder for the pinned M4a OGF v4 static profile; validates legacy framing/semantics and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build |
-| [tools/convert_ogf.cpp](tools/convert_ogf.cpp) | `xrPhotonAssetCompiler convert-ogf` dispatch, bounded source-file input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
+| [src/blender_mesh.hpp](src/blender_mesh.hpp) / [.cpp](src/blender_mesh.cpp) | Transactional decoder for the private versioned `XRBM` extraction stream; validates the narrow static profile, bakes units/transforms, converts axes, normals, and winding, deduplicates corners, and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build; no Blender or renderer dependency |
+| [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named material-free mesh; invokes `convert-blender` and supplies `XRBM` on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
+| [tools/asset_compiler.cpp](tools/asset_compiler.cpp) | `xrPhotonAssetCompiler convert-ogf` / `convert-blender` dispatch, bounded source input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5 framing and mip-0 decode, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
-| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/test_quad.ogfx` and `assets/test_wedge.ogfx` in each binary directory |
+| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/probes/test_quad.ogfx` and `assets/probes/test_wedge.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (N-instance buffer, vector of BLAS handles/backings, TLAS, and shared scratch arena) and `buildAccelerationStructures` over borrowed `GpuScene` geometry | Program lifetime — built once at startup |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
@@ -876,7 +897,8 @@ Decisions and contracts worth preserving:
 2. **Geometry + scene representation.** **Underway** — VMA, GLM transforms,
    staged device-local uploads, indexed BDA-fetched geometry, the complete OGFx
    round trip, generic multi-model scene assembly, N-BLAS/N-instance acceleration
-   structures, and opaque base-color DDS sampling have landed. CMake generates the
+   structures, opaque base-color DDS sampling, and the narrow headless Blender
+   5.1.x static-mesh adapter have landed. CMake generates the
    quad and permanent two-geometry wedge probe through the shared writer. The
    optional configured gallery additionally loads the verified legacy-converted
    `plitka1.ogfx`, resolves its BC1 texture, and carries it into the render loop
@@ -892,9 +914,14 @@ Decisions and contracts worth preserving:
    decoder, `SceneData`, GPU upload, BLAS/TLAS construction, material/texture
    system, and shaders. Source-specific work stays offline. The narrow M4a legacy
    adapter and `xrPhotonAssetCompiler convert-ogf` produced plitka; Blender is not
-   part of that conversion path and its direct opaque exporter/probe is the next
-   content milestone. The temporary code-owned tables supply placements until
-   scene/level data has a real owner; world instances never become OGFx chunks.
+   part of that conversion path. The separate landed `convert-blender` path produces
+   `test_pyramid.ogfx` for the optional gallery and `test_sphere.ogfx` as its
+   flat-shaded dense-triangulation/UV-seam/corner-splitting fixture beneath
+   `build/<preset>/assets/blender/`.
+   The pyramid's manual gallery appearance and GPU validation remain pending. The next
+   source-profile milestone is `bochka_fuel`. The temporary code-owned tables
+   supply placements until scene/level data has a real owner; world instances
+   never become OGFx chunks.
 
    This ordering explicitly supersedes the earlier plan in which the Blender probe
    drove N-BLAS generalization and the older GEOMETRY_PLAN sequence that placed the

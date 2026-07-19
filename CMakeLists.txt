@@ -29,11 +29,24 @@ target_include_directories(xrPhotonLegacyOgf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/
 target_compile_options(xrPhotonLegacyOgf PRIVATE -Wall -Wextra)
 target_link_libraries(xrPhotonLegacyOgf PUBLIC xrPhotonOgfx)
 
+# Blender performs only source extraction. This standard-library-only adapter owns
+# axis/normal/winding conversion and builds the same compiler model as every other
+# source path before the canonical writer runs.
+add_library(xrPhotonBlenderMesh STATIC
+    src/blender_mesh.cpp
+)
+target_include_directories(xrPhotonBlenderMesh PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_options(xrPhotonBlenderMesh PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonBlenderMesh PUBLIC xrPhotonOgfx)
+
 add_executable(xrPhotonAssetCompiler
-    tools/convert_ogf.cpp
+    tools/asset_compiler.cpp
 )
 target_compile_options(xrPhotonAssetCompiler PRIVATE -Wall -Wextra)
-target_link_libraries(xrPhotonAssetCompiler PRIVATE xrPhotonLegacyOgf)
+target_link_libraries(xrPhotonAssetCompiler PRIVATE
+    xrPhotonLegacyOgf
+    xrPhotonBlenderMesh
+)
 
 add_executable(xrPhotonProbeAssetCompiler EXCLUDE_FROM_ALL
     tools/compile_probe_assets.cpp
@@ -42,13 +55,21 @@ target_link_libraries(xrPhotonProbeAssetCompiler PRIVATE xrPhotonOgfx)
 target_compile_options(xrPhotonProbeAssetCompiler PRIVATE -Wall -Wextra)
 
 set(XRPHOTON_ASSET_DIR ${CMAKE_CURRENT_BINARY_DIR}/assets)
-set(XRPHOTON_TEST_QUAD_ASSET ${XRPHOTON_ASSET_DIR}/test_quad.ogfx)
-set(XRPHOTON_TEST_WEDGE_ASSET ${XRPHOTON_ASSET_DIR}/test_wedge.ogfx)
+set(XRPHOTON_PROBE_ASSET_DIR ${XRPHOTON_ASSET_DIR}/probes)
+set(XRPHOTON_SOC_ASSET_DIR ${XRPHOTON_ASSET_DIR}/soc)
+set(XRPHOTON_BLENDER_ASSET_DIR ${XRPHOTON_ASSET_DIR}/blender)
+set(XRPHOTON_TEST_QUAD_ASSET ${XRPHOTON_PROBE_ASSET_DIR}/test_quad.ogfx)
+set(XRPHOTON_TEST_WEDGE_ASSET ${XRPHOTON_PROBE_ASSET_DIR}/test_wedge.ogfx)
+set(XRPHOTON_TEST_PYRAMID_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_pyramid.ogfx)
+set(XRPHOTON_TEST_SPHERE_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_sphere.ogfx)
+# Reserve the modern-content namespace even before the first Blender exporter
+# output lands. Generated probe and SoC directories are created by their writers.
+file(MAKE_DIRECTORY ${XRPHOTON_BLENDER_ASSET_DIR})
 add_custom_command(
     OUTPUT
         ${XRPHOTON_TEST_QUAD_ASSET}
         ${XRPHOTON_TEST_WEDGE_ASSET}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_ASSET_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_PROBE_ASSET_DIR}
     COMMAND $<TARGET_FILE:xrPhotonProbeAssetCompiler>
         ${XRPHOTON_TEST_QUAD_ASSET}
         ${XRPHOTON_TEST_WEDGE_ASSET}
@@ -85,6 +106,16 @@ if(BUILD_TESTING)
     target_compile_options(xrPhotonLegacyOgfTests PRIVATE -Wall -Wextra)
     add_test(NAME legacy_ogf_adapter COMMAND xrPhotonLegacyOgfTests)
 
+    add_executable(xrPhotonBlenderMeshTests
+        tests/blender_mesh_tests.cpp
+    )
+    target_link_libraries(xrPhotonBlenderMeshTests PRIVATE
+        xrPhotonBlenderMesh
+        xrPhotonOgfx
+    )
+    target_compile_options(xrPhotonBlenderMeshTests PRIVATE -Wall -Wextra)
+    add_test(NAME blender_mesh_adapter COMMAND xrPhotonBlenderMeshTests)
+
     add_test(
         NAME legacy_ogf_cli
         COMMAND ${CMAKE_COMMAND}
@@ -94,12 +125,21 @@ if(BUILD_TESTING)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_ogf_cli_test.cmake
     )
 
+    add_test(
+        NAME blender_mesh_cli
+        COMMAND ${CMAKE_COMMAND}
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DFIXTURE_TOOL=$<TARGET_FILE:xrPhotonBlenderMeshTests>
+            -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/blender-cli
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/blender_cli_test.cmake
+    )
+
     set(XRPHOTON_M4A_CORPUS_OGF
-        "${CMAKE_SOURCE_DIR}/build/ogfx-core/legacy-ogf-corpus/meshes/objects/dynamics/plitka/plitka1.ogf"
+        "${CMAKE_SOURCE_DIR}/original_game_files/soc/meshes/objects/dynamics/plitka/plitka1.ogf"
         CACHE FILEPATH
         "Local plitka1.ogf used only by the opt-in M4a offline proof")
     set(XRPHOTON_M4A_PROOF_OUTPUT
-        "${CMAKE_CURRENT_BINARY_DIR}/corpus/meshes/objects/dynamics/plitka/plitka1.ogfx")
+        "${XRPHOTON_SOC_ASSET_DIR}/meshes/objects/dynamics/plitka/plitka1.ogfx")
     add_custom_target(xrPhotonM4aOfflineProof
         COMMAND ${CMAKE_COMMAND}
             -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
@@ -112,6 +152,37 @@ if(BUILD_TESTING)
             xrPhotonLegacyOgfTests
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/m4a_offline_proof.cmake
         COMMENT "Proving the pinned legacy OGF conversion offline"
+        VERBATIM
+        USES_TERMINAL
+    )
+
+    # Blender and the .blend inputs are owner-local tools/sources, so this proof is
+    # explicit and never enters the normal asset/build/test dependency graph.
+    set(XRPHOTON_BLENDER_EXECUTABLE "" CACHE FILEPATH
+        "Portable Blender 5.1.x executable used by the opt-in offline proof")
+    set(XRPHOTON_BLENDER_PYRAMID_BLEND
+        "${CMAKE_SOURCE_DIR}/blender/test_pyramid.blend" CACHE FILEPATH
+        "Local ignored pyramid .blend used by the opt-in Blender proof")
+    set(XRPHOTON_BLENDER_SPHERE_BLEND
+        "${CMAKE_SOURCE_DIR}/blender/test_sphere.blend" CACHE FILEPATH
+        "Local ignored sphere .blend used by the opt-in Blender proof")
+    add_custom_target(xrPhotonBlenderOfflineProof
+        COMMAND ${CMAKE_COMMAND}
+            -DBLENDER_EXECUTABLE=${XRPHOTON_BLENDER_EXECUTABLE}
+            -DEXPORT_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/blender/export_ogfx.py
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DVERIFIER=$<TARGET_FILE:xrPhotonBlenderMeshTests>
+            -DPYRAMID_BLEND=${XRPHOTON_BLENDER_PYRAMID_BLEND}
+            -DPYRAMID_OUTPUT=${XRPHOTON_TEST_PYRAMID_ASSET}
+            -DSPHERE_BLEND=${XRPHOTON_BLENDER_SPHERE_BLEND}
+            -DSPHERE_OUTPUT=${XRPHOTON_TEST_SPHERE_ASSET}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/blender_offline_proof.cmake
+        DEPENDS
+            xrPhotonAssetCompiler
+            xrPhotonBlenderMeshTests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/blender/export_ogfx.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/blender_offline_proof.cmake
+        COMMENT "Proving deterministic Blender-to-OGFx conversion offline"
         VERBATIM
         USES_TERMINAL
     )
@@ -128,6 +199,8 @@ endif()
 # error rather than a silently skipped integration probe.
 set(XRPHOTON_GALLERY_PLITKA_OGFX "" CACHE FILEPATH
     "Optional converted plitka1.ogfx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_BLENDER_OGFX "" CACHE FILEPATH
+    "Optional converted Blender pyramid OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_TEXTURE_ROOT "" CACHE PATH
     "Texture root containing the DDS paths referenced by configured gallery assets")
 
@@ -136,6 +209,12 @@ if(XRPHOTON_GALLERY_PLITKA_OGFX)
         "${XRPHOTON_GALLERY_PLITKA_OGFX}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 else()
     set(XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_BLENDER_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_BLENDER_OGFX}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE "")
 endif()
 if(XRPHOTON_GALLERY_TEXTURE_ROOT)
     get_filename_component(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE
@@ -258,6 +337,7 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
     XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
     XRPHOTON_GALLERY_PLITKA_OGFX=u8\"${XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"
 )
 
