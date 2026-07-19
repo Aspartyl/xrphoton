@@ -1,6 +1,10 @@
-// All three ray tracing stages live in this one module — Slang compiles every
+// All four ray tracing stages live in this one module — Slang compiles every
 // [shader(...)] entry point into a single SPIR-V module, so the pipeline creates
 // one VkShaderModule and selects stages by entry-point name.
+
+#if XRPHOTON_RAY_TYPE_COUNT != 1
+#error "The current shader module defines exactly one radiance ray type"
+#endif
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
 // swapchain-sized storage image at 1. The [format] attribute stamps the SPIR-V
@@ -129,10 +133,18 @@ void rayGenMain()
     Payload payload;
     payload.color = float3(0.0);
 
-    // The geometry was built OPAQUE; forcing opaque lets traversal skip any-hit
-    // consideration entirely. Mask 0xFF accepts every instance; the offsets and
-    // miss index are all zero with a single hit group and single miss shader.
-    TraceRay(topLevelAS, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 0, 0, ray, payload);
+    // Opaque BLAS ranges bypass any-hit through their geometry flag; alpha-tested
+    // ranges must remain eligible for their SBT-selected any-hit shader. Hit records
+    // are interleaved by ray type per geometry; this module currently traces type 0.
+    TraceRay(
+        topLevelAS,
+        RAY_FLAG_NONE,
+        0xFF,
+        0,
+        XRPHOTON_RAY_TYPE_COUNT,
+        0,
+        ray,
+        payload);
 
     outputImage[pixel] = float4(payload.color, 1.0);
 }
@@ -154,4 +166,16 @@ void closestHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes
               .SampleLevel(hit.uv, 0.0).rgb;
     payload.color = baseColor
         * (0.2 + 0.8 * abs(dot(hit.worldNormal, -WorldRayDirection())));
+}
+
+[shader("anyhit")]
+void anyHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes attribs)
+{
+    HitAttributes hit = fetchHitAttributes(attribs);
+    MaterialRecord material = materials[hit.materialIndex];
+    float alpha = material.baseColorFactor.a
+        * sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
+              .SampleLevel(hit.uv, 0.0).a;
+    if (alpha < material.alphaCutoff)
+        IgnoreHit();
 }

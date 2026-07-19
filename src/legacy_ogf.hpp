@@ -11,6 +11,7 @@ namespace xrphoton::legacy_ogf
 inline constexpr std::uint8_t SupportedVersion = 4;
 inline constexpr std::uint8_t SupportedModelType = 0;
 inline constexpr std::uint8_t SupportedRigidModelType = 10;
+inline constexpr std::uint8_t SupportedRigidProgressiveChildModelType = 4;
 inline constexpr std::uint8_t SupportedRigidChildModelType = 5;
 inline constexpr std::uint16_t SupportedShaderId = 0;
 inline constexpr std::uint32_t SupportedVertexFormat = 0x112;
@@ -33,9 +34,11 @@ inline constexpr std::uint32_t MaximumRigidBoneCount = 63;
 
 // Dispatches between the pinned flat-static profile above and the first rigid-
 // compound profile. The latter accepts an OGF v4 MT_SKELETON_RIGID root with
-// embedded MT_SKELETON_GEOMDEF_ST children, one-link vertices, rigid/nonbreakable
-// cylinder bones, and models\\model opaque materials. Its bind-pose render data is
-// flattened into the ordinary compiler mesh while the authored compound body is
+// embedded MT_SKELETON_GEOMDEF_ST or MT_SKELETON_GEOMDEF_PM children, one-link
+// vertices, rigid/nonbreakable cylinder or oriented-box bones, and the pinned
+// models\\model / models\\model_aref material mappings. Progressive children are
+// flattened at their first (maximum-detail) sliding window. The bind-pose render
+// data becomes an ordinary compiler mesh while the authored compound body is
 // retained through OGFx's engine-neutral rigid-physics records.
 [[nodiscard]] ogfx::DecodeResult decodeModel(
     std::span<const std::uint8_t> bytes,

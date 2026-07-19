@@ -440,7 +440,8 @@ int main()
         physicalDevice,
         ctx.device,
         ctx.allocator,
-        rayTracingFunctions);
+        rayTracingFunctions,
+        sceneData);
 
     if (sbtResult != VK_SUCCESS) {
         std::cerr << "Failed to build Vulkan shader binding table: "

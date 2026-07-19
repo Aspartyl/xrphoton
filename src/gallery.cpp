@@ -46,6 +46,7 @@ enum GalleryAssetIndex : uint32_t
     BlenderSphereAsset,
     BlenderSmoothSphereAsset,
     BarrelAsset,
+    PseudodogTailAsset,
 };
 
 struct LoadedGalleryAsset
@@ -101,50 +102,56 @@ constexpr std::array GalleryAssets{
         .optional = true,
         .configurationName = "XRPHOTON_GALLERY_BARREL_OGFX",
     },
+    GalleryAsset{
+        .name = "item_psevdodog_tail",
+        .ogfxPath = XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX",
+    },
 };
-static_assert(BarrelAsset + 1 == GalleryAssets.size());
+static_assert(PseudodogTailAsset + 1 == GalleryAssets.size());
 
 const std::array GalleryPlacements{
     // Place every preview's vertical center on the y=0 screen row and keep every
     // placement origin at z=7.25. These X positions come from the actual compiled
-    // vertices: at the startup 16:9 camera they center the complete eight-placement
-    // row and leave a 0.06-NDC gap between every adjacent silhouette.
+    // vertices: at the startup 16:9 camera they center the complete nine-placement
+    // row and leave a 0.048-NDC gap between every adjacent silhouette.
     GalleryPlacement{
         .assetIndex = QuadAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-8.820510f, 0.0f, 7.25f}),
+            glm::vec3{-8.820508f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = PlitkaAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-7.748027f, -1.431630f, 7.25f}),
+            glm::vec3{-7.861678f, -1.431630f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderPyramidAsset,
         // Perspective-center the source Y=[0, 2] bounds on the preview row.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-3.807765f, -0.942857f, 7.25f}),
+            glm::vec3{-4.035197f, -0.942857f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-1.210124f, 0.0f, 7.25f}),
+            glm::vec3{-1.544141f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSmoothSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{1.359527f, 0.0f, 7.25f}),
+            glm::vec3{0.911728f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{3.809424f, 0.0f, 7.25f}),
+            glm::vec3{3.222759f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
@@ -152,7 +159,7 @@ const std::array GalleryPlacements{
         // rotate around world-up, then move the result into the gallery row.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{6.329121f, -0.021602f, 7.25f})
+                         glm::vec3{5.577349f, -0.021602f, 7.25f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(30.0f),
@@ -166,7 +173,22 @@ const std::array GalleryPlacements{
         // Perspective-center the source Y=[0.001489, 1.090266] bounds on the row.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{8.792156f, -0.538824f, 7.25f}),
+            glm::vec3{7.880485f, -0.538824f, 7.25f}),
+    },
+    GalleryPlacement{
+        .assetIndex = PseudodogTailAsset,
+        // Turn the source's long Z axis into screen-up, scale the small pickup
+        // to barrel height, then perspective-center it on the preview row.
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{9.114088f, 0.015104f, 7.25f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(90.0f),
+                glm::vec3{1.0f, 0.0f, 0.0f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{2.0f}),
     },
 };
 

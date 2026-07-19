@@ -28,6 +28,7 @@ constexpr std::uint32_t HeaderChunkId = 0x1;
 constexpr std::uint32_t TextureChunkId = 0x2;
 constexpr std::uint32_t VerticesChunkId = 0x3;
 constexpr std::uint32_t IndicesChunkId = 0x4;
+constexpr std::uint32_t SlidingWindowChunkId = 0x6;
 constexpr std::uint32_t ChildrenChunkId = 0x9;
 constexpr std::uint32_t BoneNamesChunkId = 0xD;
 constexpr std::uint32_t IkDataChunkId = 0x10;
@@ -225,11 +226,22 @@ struct SyntheticRigidFixture
     std::size_t childSizeOffset = 4;
     std::size_t vertexBoneOffset = 0;
     std::size_t indexValueOffset = 0;
+    std::size_t slidingWindowPayloadOffset = 0;
+};
+
+struct SyntheticRigidFeatures
+{
+    bool boxRoot = false;
+    bool progressiveChild = false;
+    bool includeSlidingWindow = false;
+    bool alphaTested = false;
+    bool secondOpaqueChild = false;
 };
 
 SyntheticRigidFixture makeSyntheticRigidFixture(
     std::string_view rootParent = {},
-    std::string_view childParent = "root")
+    std::string_view childParent = "root",
+    SyntheticRigidFeatures features = {})
 {
     SyntheticRigidFixture fixture{};
 
@@ -293,16 +305,35 @@ SyntheticRigidFixture makeSyntheticRigidFixture(
 
         fixture.shapeOffsets[boneIndex] = ikData.payload.size();
         std::vector<std::uint8_t> shape(BoneShapeBytes, 0);
-        writeU16(&shape, 0, 3);
+        writeU16(&shape, 0, features.boxRoot && boneIndex == 0 ? 1 : 3);
         writeU16(&shape, 2, 0);
-        writeF32(&shape, 80, probe.cylinderCenter[0]);
-        writeF32(&shape, 84, probe.cylinderCenter[1]);
-        writeF32(&shape, 88, probe.cylinderCenter[2]);
-        writeF32(&shape, 92, probe.cylinderAxis[0]);
-        writeF32(&shape, 96, probe.cylinderAxis[1]);
-        writeF32(&shape, 100, probe.cylinderAxis[2]);
-        writeF32(&shape, 104, probe.height);
-        writeF32(&shape, 108, probe.radius);
+        if (features.boxRoot && boneIndex == 0) {
+            // Proper +90-degree Z row-vector rotation in the source OBB. Its
+            // transposed column-vector map becomes (0,0,-sqrt(.5),sqrt(.5)).
+            constexpr std::array boxRotation{
+                0.0f, -1.0f, 0.0f,
+                1.0f,  0.0f, 0.0f,
+                0.0f,  0.0f, 1.0f,
+            };
+            for (std::size_t component = 0; component < boxRotation.size(); ++component) {
+                writeF32(&shape, 4 + component * 4, boxRotation[component]);
+            }
+            writeF32(&shape, 40, probe.cylinderCenter[0]);
+            writeF32(&shape, 44, probe.cylinderCenter[1]);
+            writeF32(&shape, 48, probe.cylinderCenter[2]);
+            writeF32(&shape, 52, 0.5f);
+            writeF32(&shape, 56, 0.25f);
+            writeF32(&shape, 60, 0.75f);
+        } else {
+            writeF32(&shape, 80, probe.cylinderCenter[0]);
+            writeF32(&shape, 84, probe.cylinderCenter[1]);
+            writeF32(&shape, 88, probe.cylinderCenter[2]);
+            writeF32(&shape, 92, probe.cylinderAxis[0]);
+            writeF32(&shape, 96, probe.cylinderAxis[1]);
+            writeF32(&shape, 100, probe.cylinderAxis[2]);
+            writeF32(&shape, 104, probe.height);
+            writeF32(&shape, 108, probe.radius);
+        }
         ikData.payload.insert(ikData.payload.end(), shape.begin(), shape.end());
 
         fixture.jointOffsets[boneIndex] = ikData.payload.size();
@@ -327,50 +358,86 @@ SyntheticRigidFixture makeSyntheticRigidFixture(
             probe.centerOfMass[2]);
     }
 
-    RawChunk childTexture{.id = TextureChunkId, .payload = {}};
-    appendString(&childTexture.payload, RigidTextureName);
-    appendString(&childTexture.payload, "models\\model");
+    auto makeChildStream = [&](bool alphaTested) {
+        RawChunk childTexture{.id = TextureChunkId, .payload = {}};
+        appendString(&childTexture.payload, RigidTextureName);
+        appendString(
+            &childTexture.payload,
+            alphaTested ? "models\\model_aref" : "models\\model");
 
-    RawChunk childVertices{.id = VerticesChunkId, .payload = {}};
-    appendU32(
-        &childVertices.payload,
-        xrphoton::legacy_ogf::SupportedRigidVertexFormat);
-    appendU32(&childVertices.payload, 3);
-    constexpr float normalY = -0.3713906705379486f;
-    constexpr float normalZ = 0.9284766912460327f;
-    const std::array<std::array<float, 14>, 3> vertices{{
-        {-2.0f, -1.0f, 0.0f, 0.0f, normalY, normalZ,
-            1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.125f, 0.25f},
-        {3.0f, -1.0f, 0.0f, 0.0f, normalY, normalZ,
-            1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.75f, 0.5f},
-        {-2.0f, 4.0f, 2.0f, 0.0f, normalY, normalZ,
-            1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.375f, 0.875f},
-    }};
-    constexpr std::array<std::uint32_t, 3> boneIndices{0, 1, 1};
-    for (std::size_t vertexIndex = 0; vertexIndex < vertices.size(); ++vertexIndex) {
-        for (float value : vertices[vertexIndex]) {
-            appendF32(&childVertices.payload, value);
+        RawChunk childVertices{.id = VerticesChunkId, .payload = {}};
+        appendU32(
+            &childVertices.payload,
+            xrphoton::legacy_ogf::SupportedRigidVertexFormat);
+        appendU32(&childVertices.payload, 3);
+        constexpr float normalY = -0.3713906705379486f;
+        constexpr float normalZ = 0.9284766912460327f;
+        std::array<std::array<float, 14>, 3> vertices{{
+            {-2.0f, -1.0f, 0.0f, 0.0f, normalY, normalZ,
+                1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.125f, 0.25f},
+            {3.0f, -1.0f, 0.0f, 0.0f, normalY, normalZ,
+                1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.75f, 0.5f},
+            {-2.0f, 4.0f, 2.0f, 0.0f, normalY, normalZ,
+                1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.375f, 0.875f},
+        }};
+        if (features.progressiveChild) {
+            // This corner deliberately opposes the face. The other two normals
+            // dominate their sum, which is valid source smoothing on the tail.
+            vertices[0][4] = -normalY;
+            vertices[0][5] = -normalZ;
         }
-        appendU32(&childVertices.payload, boneIndices[vertexIndex]);
-    }
+        constexpr std::array<std::uint32_t, 3> boneIndices{0, 1, 1};
+        for (std::size_t vertexIndex = 0; vertexIndex < vertices.size(); ++vertexIndex) {
+            for (float value : vertices[vertexIndex]) {
+                appendF32(&childVertices.payload, value);
+            }
+            appendU32(&childVertices.payload, boneIndices[vertexIndex]);
+        }
 
-    RawChunk childIndices{.id = IndicesChunkId, .payload = {}};
-    appendU32(&childIndices.payload, 3);
-    appendU16(&childIndices.payload, 0);
-    appendU16(&childIndices.payload, 1);
-    appendU16(&childIndices.payload, 2);
+        RawChunk childIndices{.id = IndicesChunkId, .payload = {}};
+        appendU32(&childIndices.payload, features.progressiveChild ? 6 : 3);
+        if (features.progressiveChild) {
+            // A deliberately opposite, unused source triangle proves that SWI[0]
+            // selects an index subrange instead of copying the whole buffer.
+            appendU16(&childIndices.payload, 0);
+            appendU16(&childIndices.payload, 2);
+            appendU16(&childIndices.payload, 1);
+        }
+        appendU16(&childIndices.payload, 0);
+        appendU16(&childIndices.payload, 1);
+        appendU16(&childIndices.payload, 2);
 
-    const std::vector<RawChunk> childChunks{
-        makeRigidHeader(xrphoton::legacy_ogf::SupportedRigidChildModelType),
-        std::move(childTexture),
-        std::move(childVertices),
-        std::move(childIndices),
+        std::vector<RawChunk> childChunks{
+            makeRigidHeader(features.progressiveChild
+                ? xrphoton::legacy_ogf::SupportedRigidProgressiveChildModelType
+                : xrphoton::legacy_ogf::SupportedRigidChildModelType),
+            std::move(childTexture),
+            std::move(childVertices),
+            std::move(childIndices),
+        };
+        if (features.includeSlidingWindow) {
+            RawChunk slidingWindow{.id = SlidingWindowChunkId, .payload = {}};
+            appendU32(&slidingWindow.payload, 0);
+            appendU32(&slidingWindow.payload, 0);
+            appendU32(&slidingWindow.payload, 0);
+            appendU32(&slidingWindow.payload, 0);
+            appendU32(&slidingWindow.payload, 1);
+            appendU32(&slidingWindow.payload, 3);
+            appendU16(&slidingWindow.payload, 1);
+            appendU16(&slidingWindow.payload, 3);
+            childChunks.push_back(std::move(slidingWindow));
+        }
+        return assemble(childChunks);
     };
-    const std::vector<std::uint8_t> childStream = assemble(childChunks);
+
+    const std::vector<std::uint8_t> childStream =
+        makeChildStream(features.alphaTested);
     const std::size_t vertexPayloadOffset =
         directChunkPayloadOffset(childStream, VerticesChunkId);
     const std::size_t indexPayloadOffset =
         directChunkPayloadOffset(childStream, IndicesChunkId);
+    const std::size_t slidingWindowPayloadOffset =
+        directChunkPayloadOffset(childStream, SlidingWindowChunkId);
 
     RawChunk children{.id = ChildrenChunkId, .payload = {}};
     appendU32(&children.payload, 0);
@@ -381,6 +448,18 @@ SyntheticRigidFixture makeSyntheticRigidFixture(
         children.payload.end(), childStream.begin(), childStream.end());
     fixture.vertexBoneOffset = 8 + vertexPayloadOffset + 8 + 56;
     fixture.indexValueOffset = 8 + indexPayloadOffset + 4;
+    if (features.includeSlidingWindow) {
+        fixture.slidingWindowPayloadOffset = 8 + slidingWindowPayloadOffset;
+    }
+    if (features.secondOpaqueChild) {
+        const std::vector<std::uint8_t> secondChildStream = makeChildStream(false);
+        appendU32(&children.payload, 1);
+        appendU32(
+            &children.payload,
+            static_cast<std::uint32_t>(secondChildStream.size()));
+        children.payload.insert(
+            children.payload.end(), secondChildStream.begin(), secondChildStream.end());
+    }
 
     fixture.chunks = {
         makeRigidHeader(xrphoton::legacy_ogf::SupportedRigidModelType),
@@ -547,6 +626,11 @@ bool modelsEqual(const Model& left, const Model& right)
             || !positionsEqual(a.axis, b.axis)
             || a.height != b.height
             || a.radius != b.radius
+            || a.orientation.x != b.orientation.x
+            || a.orientation.y != b.orientation.y
+            || a.orientation.z != b.orientation.z
+            || a.orientation.w != b.orientation.w
+            || !positionsEqual(a.halfExtents, b.halfExtents)
             || a.mass != b.mass
             || !positionsEqual(a.centerOfMass, b.centerOfMass)) {
             return false;
@@ -724,6 +808,92 @@ void testAcceptedRigidProfile()
         "the generalized OGF entry point preserves the existing static profile");
 }
 
+void testAcceptedProgressiveAlphaBoxProfile()
+{
+    const SyntheticRigidFixture fixture = makeSyntheticRigidFixture(
+        {},
+        "root",
+        {
+            .boxRoot = true,
+            .progressiveChild = true,
+            .includeSlidingWindow = true,
+            .alphaTested = true,
+            .secondOpaqueChild = true,
+        });
+    const DecodeResult decoded =
+        decodeModel(assemble(fixture.chunks), "synthetic-progressive-alpha.ogf");
+    expect(static_cast<bool>(decoded),
+        "progressive rigid children, model_aref, and an OBB box decode together");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+
+    const Model& model = decoded.model;
+    expect(model.positions.size() == 6 && model.attributes.size() == 6,
+        "both progressive children retain their complete vertex streams");
+    expect(model.indices == std::vector<std::uint32_t>({0, 1, 2, 0, 1, 2}),
+        "each progressive child copies exactly its first sliding-window index range");
+    expect(model.attributes[0].ny > 0.0f && model.attributes[0].nz < 0.0f
+            && model.attributes[1].ny < 0.0f && model.attributes[1].nz > 0.0f,
+        "summed-corner winding accepts a valid smoothed face with one opposing normal");
+    expect(model.geometries.size() == 2
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == 3
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == 3
+            && model.geometries[0].materialIndex == 0
+            && model.geometries[0].alphaTested
+            && model.geometries[1].firstVertex == 3
+            && model.geometries[1].vertexCount == 3
+            && model.geometries[1].firstIndex == 3
+            && model.geometries[1].indexCount == 3
+            && model.geometries[1].materialIndex == 0
+            && !model.geometries[1].alphaTested,
+        "alpha-tested and opaque geometry flags share one texture material exactly");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorTexture == RigidTextureName
+            && model.materials[0].alphaCutoff == 128.0f / 255.0f,
+        "models/model_aref maps to the shipped 128 alpha reference");
+
+    expect(model.physicsColliders.size() == 2,
+        "the mixed box/cylinder fixture retains one collider per source bone");
+    if (model.physicsColliders.size() == 2) {
+        const auto& box = model.physicsColliders[0];
+        constexpr float halfSqrtTwo = 0.7071067690849304f;
+        expect(box.shapeType == xrphoton::ogfx::PhysicsShapeType::Box
+                && positionsEqual(box.center, {1.5f, 2.25f, 2.5f})
+                && box.orientation.x == 0.0f
+                && box.orientation.y == 0.0f
+                && std::fabs(box.orientation.z + halfSqrtTwo) <= 1.0e-7f
+                && std::fabs(box.orientation.w - halfSqrtTwo) <= 1.0e-7f
+                && positionsEqual(box.halfExtents, {0.5f, 0.25f, 0.75f}),
+            "the row-major OBB rotation becomes a canonical unit quaternion");
+        expect(model.physicsColliders[1].shapeType
+                == xrphoton::ogfx::PhysicsShapeType::Cylinder,
+            "the existing cylinder mapping remains valid beside a box");
+    }
+
+    const SerializeResult serialized = xrphoton::ogfx::serializeModel(
+        model, "synthetic-progressive-alpha.ogfx");
+    expect(static_cast<bool>(serialized),
+        "the canonical writer accepts progressive alpha geometry and box metadata");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+    const DecodeResult schema = xrphoton::ogfx::decodeModelSchema(
+        serialized.bytes, "synthetic-progressive-alpha-schema.ogfx");
+    expect(static_cast<bool>(schema) && modelsEqual(schema.model, model),
+        "schema decoding exactly reconstructs alpha flags and the oriented box");
+    if (schema) {
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            schema.model, "synthetic-progressive-alpha-round-trip.ogfx");
+        expect(static_cast<bool>(roundTrip) && roundTrip.bytes == serialized.bytes,
+            "progressive alpha/box writer-schema-writer round trip is byte exact");
+    }
+}
+
 void testRigidProfileRejections()
 {
     SyntheticRigidFixture fixture = makeSyntheticRigidFixture({}, "missing");
@@ -811,6 +981,87 @@ void testRigidProfileRejections()
         3);
     expectRigidRejected(
         assemble(fixture.chunks), "chunk 0x4", "indices[0].value");
+
+    fixture = makeSyntheticRigidFixture(
+        {}, "root", {.progressiveChild = true});
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x6", "presence");
+
+    fixture = makeSyntheticRigidFixture(
+        {}, "root", {.includeSlidingWindow = true});
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x6", "presence");
+
+    fixture = makeSyntheticRigidFixture(
+        {},
+        "root",
+        {.progressiveChild = true, .includeSlidingWindow = true});
+    writeU32(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.slidingWindowPayloadOffset,
+        1);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x6", "reserved[0]");
+
+    fixture = makeSyntheticRigidFixture(
+        {},
+        "root",
+        {.progressiveChild = true, .includeSlidingWindow = true});
+    writeU32(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.slidingWindowPayloadOffset + 16,
+        0);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x6", "windowCount");
+
+    fixture = makeSyntheticRigidFixture(
+        {},
+        "root",
+        {.progressiveChild = true, .includeSlidingWindow = true});
+    writeU32(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.slidingWindowPayloadOffset + 20,
+        6);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x6", "slidingWindows[0].indexRange");
+
+    fixture = makeSyntheticRigidFixture(
+        {},
+        "root",
+        {.progressiveChild = true, .includeSlidingWindow = true});
+    writeU16(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.slidingWindowPayloadOffset + 26,
+        2);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x6", "slidingWindows[0].indices[2]");
+
+    fixture = makeSyntheticRigidFixture(
+        {}, "root", {.boxRoot = true});
+    writeF32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.shapeOffsets[0] + 4,
+        2.0f);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[0].box.rotation");
+
+    fixture = makeSyntheticRigidFixture(
+        {}, "root", {.boxRoot = true});
+    writeF32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.shapeOffsets[0] + 8,
+        1.0f);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[0].box.rotation");
+
+    fixture = makeSyntheticRigidFixture(
+        {}, "root", {.boxRoot = true});
+    writeF32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.shapeOffsets[0] + 52,
+        0.0f);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[0].box");
 }
 
 void testAcceptedProfile()
@@ -1246,6 +1497,92 @@ void expectPinnedRigidBarrelModel(const Model& model)
         "the upper rim collider receives both parent bind translations");
 }
 
+void expectPinnedAlphaTailModel(const Model& model)
+{
+    expect(model.positions.size() == 930 && model.attributes.size() == 930,
+        "the pseudodog tail contains the pinned 930 complete render vertices");
+    expect(model.indices.size() == 1116,
+        "SWIDATA[0] selects the pinned 1116 maximum-detail tail indices");
+    expect(model.geometries.size() == 2
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == 856
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == 864
+            && model.geometries[0].materialIndex == 0
+            && model.geometries[0].alphaTested
+            && model.geometries[1].firstVertex == 856
+            && model.geometries[1].vertexCount == 74
+            && model.geometries[1].firstIndex == 864
+            && model.geometries[1].indexCount == 252
+            && model.geometries[1].materialIndex == 0
+            && !model.geometries[1].alphaTested,
+        "the two tail children preserve their distinct alpha routing and SWI ranges");
+    expect(model.meshes.size() == 1
+            && model.meshes[0].firstGeometry == 0
+            && model.meshes[0].geometryCount == 2,
+        "the flattened pseudodog tail owns both child geometries through one mesh");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorTexture == "act\\act_pseudodog_fur"
+            && model.materials[0].alphaCutoff == 128.0f / 255.0f,
+        "the children share one fur material with the shipped model_aref cutoff");
+
+    if (model.positions.size() == 930) {
+        xrphoton::ogfx::Position minimum = model.positions.front();
+        xrphoton::ogfx::Position maximum = minimum;
+        for (const auto& position : model.positions) {
+            minimum.x = std::min(minimum.x, position.x);
+            minimum.y = std::min(minimum.y, position.y);
+            minimum.z = std::min(minimum.z, position.z);
+            maximum.x = std::max(maximum.x, position.x);
+            maximum.y = std::max(maximum.y, position.y);
+            maximum.z = std::max(maximum.z, position.z);
+        }
+        expect(positionsNear(
+                    minimum,
+                    {-0.0880933702f, -0.00237991335f, -0.2729769945f})
+                && positionsNear(
+                    maximum,
+                    {0.1209595576f, 0.0729441866f, 0.2882094979f}),
+            "the tail retains the pinned model-space bounds from both children");
+    }
+
+    expect(model.physicsBodies.size() == 1
+            && model.physicsBodies[0].firstCollider == 0
+            && model.physicsBodies[0].colliderCount == 1
+            && model.physicsBodies[0].mass == 10.0f
+            && positionsNear(
+                model.physicsBodies[0].centerOfMass,
+                {-0.03501147032f, 0.03294775635f, 0.007787406445f}),
+        "the tail preserves its one 10-unit rigid body and center of mass");
+    expect(model.physicsColliders.size() == 1,
+        "the tail's single source bone becomes one oriented box collider");
+    if (model.physicsColliders.size() != 1) {
+        return;
+    }
+    const auto& box = model.physicsColliders[0];
+    const double orientationLengthSquared =
+        static_cast<double>(box.orientation.x) * box.orientation.x
+        + static_cast<double>(box.orientation.y) * box.orientation.y
+        + static_cast<double>(box.orientation.z) * box.orientation.z
+        + static_cast<double>(box.orientation.w) * box.orientation.w;
+    expect(box.shapeType == xrphoton::ogfx::PhysicsShapeType::Box
+            && box.flags == 0
+            && box.material == "objects\\dead_body"
+            && box.sourceNode == "link"
+            && positionsNear(
+                box.center,
+                {-0.03413343057f, 0.03528213128f, 0.03494462371f})
+            && positionsNear(
+                box.halfExtents,
+                {0.04332643002f, 0.02686204761f, 0.23019322753f})
+            && box.orientation.x > 0.99999f
+            && std::fabs(box.orientation.y) < 1.0e-5f
+            && std::fabs(box.orientation.z) < 1.0e-5f
+            && std::fabs(box.orientation.w) < 1.0e-5f
+            && std::fabs(orientationLengthSquared - 1.0) < 1.0e-6,
+        "the tail OBB becomes the pinned canonical unit-quaternion box");
+}
+
 void testLocalCorpus(const std::filesystem::path& path)
 {
     std::vector<std::uint8_t> bytes;
@@ -1384,6 +1721,55 @@ void verifyRigidCorpusOutput(
         "runtime decoding accepts the barrel texture and optional physics profile");
 }
 
+void verifyAlphaCorpusOutput(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& outputPath)
+{
+    std::vector<std::uint8_t> sourceBytes;
+    std::vector<std::uint8_t> outputBytes;
+    if (!readBytes(sourcePath, &sourceBytes)
+        || !readBytes(outputPath, &outputBytes)) {
+        ++failureCount;
+        return;
+    }
+
+    const DecodeResult source = decodeModel(sourceBytes, sourcePath.string());
+    expect(static_cast<bool>(source),
+        "the pinned pseudodog-tail source decodes through rigid OGF dispatch");
+    if (!source) {
+        std::cerr << source.error << '\n';
+        return;
+    }
+    expectPinnedAlphaTailModel(source.model);
+    expect(outputBytes.size() == 34921,
+        "the persisted pseudodog-tail output has the pinned canonical byte size");
+
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(outputBytes, outputPath.string());
+    expect(static_cast<bool>(schema),
+        "the persisted tail output passes complete OGFx schema decoding");
+    if (!schema) {
+        std::cerr << schema.error << '\n';
+        return;
+    }
+    expect(modelsEqual(schema.model, source.model),
+        "persisted OGFx reconstructs tail render, alpha, and box metadata exactly");
+
+    const SerializeResult canonical =
+        xrphoton::ogfx::serializeModel(source.model, "alpha-corpus-proof.ogfx");
+    expect(static_cast<bool>(canonical) && canonical.bytes == outputBytes,
+        "the pseudodog-tail output is byte-exact canonical writer output");
+    const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+        schema.model, "alpha-corpus-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip) && roundTrip.bytes == outputBytes,
+        "the tail writer-schema-writer round trip is byte exact");
+
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(outputBytes, outputPath.string());
+    expect(static_cast<bool>(runtime) && modelsEqual(runtime.model, source.model),
+        "runtime decoding accepts the tail texture and optional box-physics profile");
+}
+
 void verifyCliOutputs(
     const std::filesystem::path& firstPath,
     const std::filesystem::path& secondPath)
@@ -1456,6 +1842,17 @@ int main(int argumentCount, char** arguments)
         std::cout << "Rigid OGF offline corpus proof passed.\n";
         return 0;
     }
+    if (argumentCount == 4
+        && std::string_view(arguments[1]) == "--verify-alpha-corpus-output") {
+        verifyAlphaCorpusOutput(arguments[2], arguments[3]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " alpha OGF offline corpus proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Alpha OGF offline corpus proof passed.\n";
+        return 0;
+    }
 
     testAcceptedProfile();
     testFramingAndProfileRejections();
@@ -1463,6 +1860,7 @@ int main(int argumentCount, char** arguments)
     testTextureRejections();
     testGeometryRejections();
     testAcceptedRigidProfile();
+    testAcceptedProgressiveAlphaBoxProfile();
     testRigidProfileRejections();
 
     if (argumentCount == 2) {

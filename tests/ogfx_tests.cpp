@@ -180,6 +180,29 @@ Model makeRigidPhysicsQuad()
     return model;
 }
 
+Model makeBoxPhysicsQuad()
+{
+    Model model = makeQuad();
+    model.physicsBodies.push_back(PhysicsBody{
+        .firstCollider = 0,
+        .colliderCount = 1,
+        .mass = 10.0f,
+        .centerOfMass = {-0.03f, 0.03f, 0.01f},
+    });
+    model.physicsColliders.push_back(PhysicsCollider{
+        .shapeType = PhysicsShapeType::Box,
+        .flags = 0,
+        .material = "objects\\dead_body",
+        .sourceNode = "link",
+        .center = {-0.03f, 0.04f, 0.03f},
+        .orientation = {0.5f, 0.5f, 0.5f, 0.5f},
+        .halfExtents = {0.04f, 0.03f, 0.23f},
+        .mass = 10.0f,
+        .centerOfMass = {-0.03f, 0.03f, 0.01f},
+    });
+    return model;
+}
+
 std::size_t chunkHeaderOffset(
     const std::vector<std::uint8_t>& bytes,
     ChunkId id)
@@ -655,6 +678,73 @@ void testRigidPhysicsChunk()
     }
 }
 
+void testBoxPhysicsChunkVersion2()
+{
+    const Model model = makeBoxPhysicsQuad();
+    const SerializeResult first =
+        xrphoton::ogfx::serializeModel(model, "box-physics-first.ogfx");
+    const SerializeResult second =
+        xrphoton::ogfx::serializeModel(model, "box-physics-second.ogfx");
+    expect(static_cast<bool>(first) && static_cast<bool>(second),
+        "an oriented box rigid body serializes");
+    if (!first || !second) {
+        std::cerr << (!first ? first.error : second.error) << '\n';
+        return;
+    }
+    expect(first.bytes == second.bytes,
+        "version-2 box physics serialization is deterministic");
+
+    constexpr std::uint32_t MaterialEntryBytes = 2 + 17;
+    constexpr std::uint32_t NodeEntryBytes = 2 + 4;
+    constexpr std::uint32_t StringBytes = MaterialEntryBytes + NodeEntryBytes;
+    constexpr std::uint64_t PayloadBytes = xrphoton::ogfx::RigidPhysicsHeaderSize
+        + xrphoton::ogfx::PhysicsBodyRecordSize
+        + xrphoton::ogfx::PhysicsColliderRecordSizeV2
+        + StringBytes;
+    const std::size_t header = chunkHeaderOffset(first.bytes, ChunkId::RigidPhysics);
+    expect(readU32(first.bytes, header + 8)
+            == xrphoton::ogfx::RigidPhysicsChunkVersion2,
+        "a box selects rigid-physics chunk version 2 without changing core chunks");
+    expect(readU64(first.bytes, header + 16) == PayloadBytes,
+        "version-2 physics frames the 80-byte box record exactly");
+
+    const std::size_t collider = header + xrphoton::ogfx::ChunkHeaderSize
+        + xrphoton::ogfx::RigidPhysicsHeaderSize
+        + xrphoton::ogfx::PhysicsBodyRecordSize;
+    expect(readU32(first.bytes, collider) == 2,
+        "the version-2 collider records the box shape type");
+    expect(readU32(first.bytes, collider + 8) == 0
+            && readU32(first.bytes, collider + 12) == MaterialEntryBytes,
+        "box collider strings use canonical first-use arena offsets");
+    expect(readF32(first.bytes, collider + 28) == 0.5f
+            && readF32(first.bytes, collider + 40) == 0.5f,
+        "the box record preserves its orientation quaternion");
+    expect(readF32(first.bytes, collider + 44) == 0.04f
+            && readF32(first.bytes, collider + 52) == 0.23f,
+        "the box record preserves all half extents");
+    expect(readF32(first.bytes, collider + 56) == 10.0f,
+        "the version-2 record preserves collider mass at its pinned offset");
+    expect(readU32(first.bytes, collider + 72) == 0
+            && readU32(first.bytes, collider + 76) == 0,
+        "version-2 collider reserved words are zero");
+
+    const xrphoton::ogfx::DecodeResult decoded =
+        xrphoton::ogfx::decodeModelSchema(first.bytes, "box-physics-schema.ogfx");
+    expect(static_cast<bool>(decoded)
+            && decoded.model.physicsColliders.size() == 1
+            && decoded.model.physicsColliders[0].shapeType
+                == PhysicsShapeType::Box
+            && decoded.model.physicsColliders[0].orientation.x == 0.5f
+            && decoded.model.physicsColliders[0].halfExtents.z == 0.23f,
+        "the schema decoder reconstructs version-2 box physics");
+    if (decoded) {
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            decoded.model, "box-physics-round-trip.ogfx");
+        expect(static_cast<bool>(roundTrip) && roundTrip.bytes == first.bytes,
+            "writer-decoder-writer preserves every version-2 box byte");
+    }
+}
+
 void testValidation()
 {
     {
@@ -877,6 +967,22 @@ void testValidation()
         expectRejected(std::move(model), "colliders[0].radius");
     }
     {
+        Model model = makeBoxPhysicsQuad();
+        model.physicsColliders[0].orientation.w = 0.25f;
+        expectRejected(std::move(model), "orientation length squared");
+    }
+    {
+        Model model = makeBoxPhysicsQuad();
+        model.physicsColliders[0].orientation.x =
+            std::numeric_limits<float>::quiet_NaN();
+        expectRejected(std::move(model), "orientation length squared");
+    }
+    {
+        Model model = makeBoxPhysicsQuad();
+        model.physicsColliders[0].halfExtents.y = 0.0f;
+        expectRejected(std::move(model), "halfExtents.y");
+    }
+    {
         Model model = makeRigidPhysicsQuad();
         model.physicsColliders[0].mass = -1.0f;
         expectRejected(std::move(model), "colliders[0].mass");
@@ -909,6 +1015,7 @@ int main()
     testAsymmetricBoundsAndMaterialFraming();
     testTextureStringArena();
     testRigidPhysicsChunk();
+    testBoxPhysicsChunkVersion2();
     testValidation();
 
     if (failureCount != 0) {

@@ -10,17 +10,17 @@
 > as an offline front end to the shared compiler. The format-independent
 > designs below — the N-BLAS generalization, opaque/alpha-tested hit-group
 > split, `RayTypeCount` SBT scheme, and texture design — remain reference
-> designs whose new milestone numbers are deliberately unassigned. Check
-> FORMATS.md before implementing any post-M3b milestone.
+> designs. All four have now landed in the revised additive sequence recorded
+> by FORMATS.md; their old milestone numbers remain deliberately unassigned.
 
-> **Landed gallery update (2026-07-18).** [GALLERY_PLAN.md](GALLERY_PLAN.md)
-> Phases 2–5 instantiated generic scene assembly, the N-BLAS/N-instance design,
+> **Landed gallery update (2026-07-18).** Gallery phases 2–5 instantiated
+> generic scene assembly, the N-BLAS/N-instance design,
 > the fixed texture table, DDS-backed opaque base-color sampling, and the first
 > converted legacy model's configured end-to-end runtime path. Final on-screen
 > visual sign-off remains pending. The detailed sections below remain decision
-> history. D7's split-before-textures ordering is superseded only in sequence:
-> opaque base-color sampling landed first; the opaque/alpha SBT split remains the
-> next structural geometry item when a real alpha-tested consumer exists.
+> history. D7's split-before-textures ordering was superseded in sequence:
+> opaque base-color sampling landed first, followed by the opaque/alpha SBT split
+> when a real mixed-class consumer arrived.
 
 > **Landed Blender opaque update (2026-07-18).** The primary modern-content
 > adapter now runs headlessly in Blender 5.1.x. It converts the material-free
@@ -34,6 +34,14 @@
 > profile. It flattens bind-pose render geometry, preserves one generic body and
 > three cylinder records in optional OGFx metadata, resolves the existing barrel
 > DDS in the gallery, and deliberately adds no live physics backend.
+
+> **Landed mixed-alpha tail update (2026-07-19).** The pinned SoC
+> `meshes/equipments/item_psevdodog_tail.ogf` now supplies one mesh containing
+> both an alpha-tested and an opaque geometry range. It drove the four-group
+> pipeline, per-geometry SBT records and BLAS opacity flags, shared
+> `RayTypeCount == 1` C++/Slang ABI, removal of `RAY_FLAG_FORCE_OPAQUE`, and real
+> texture-alpha any-hit sampling. Its shipped DXT1 mip 0 selects no transparent
+> texels, so it proves mixed routing but not a visible `IgnoreHit` cutout.
 
 This is the implementation record for roadmap step 2 in
 [ARCHITECTURE.md](ARCHITECTURE.md). M1–M3b describe landed work; later
@@ -382,14 +390,14 @@ already covers the new group.
 
 **The scaling constant — defined once, in the build**, because its consumers
 span three domains: `rt_pipeline.cpp` (SBT layout), `acceleration_structure.cpp`
-(instance `sbtOffset`), the loader's 24-bit assert, and the shader's `TraceRay`
+(instance `sbtOffset`), scene assembly's 24-bit cap, and the shader's `TraceRay`
 multiplier. `CMakeLists.txt` sets `XRPHOTON_RAY_TYPE_COUNT` to `1` and feeds
 the same value to both sides: `target_compile_definitions` for C++ — surfaced
-as the project-facing constant in `rt_pipeline.hpp` — and a `-D` define on the
+as the project-facing constant in `ray_types.hpp` — and a `-D` define on the
 `slangc` custom command for the shader.
 
 ```cpp
-// rt_pipeline.hpp — number of ray types traced against the SBT. Step 4 (NEE
+// ray_types.hpp — number of ray types traced against the SBT. Step 4 (NEE
 // shadow rays) flips the one CMake definition to 2 and adds the new shaders;
 // every offset formula, instance sbtOffset, and TraceRay multiplier is written
 // against this — nothing else moves.
@@ -461,15 +469,17 @@ split exists for); *per-geometry records with embedded data* (rejected in D5);
 *"append the shadow miss record later"* (leaves offset math to re-derive in
 step 4 — parameterizing by `RayTypeCount` now costs nothing).
 
-### D7. Alpha testing: structural split first (one-milestone procedural alpha), textures as the final milestone
+### D7. Alpha testing: structural split and real texture alpha
 
-> **Partially landed via GALLERY_PLAN Phases 4–5.** Phase 4 implemented the
-> fallback/table/shared-sampler design with direct BC1/BC3 DDS uploads, and Phase 5
-> exercised a nonzero texture index with plitka. Any-hit alpha sampling and the SBT
-> class split remain future work. The original ordering argument below is retained
-> as history, not as the current milestone order.
+> **Landed in the revised order.** Gallery phases 4–5 implemented the
+> fallback/table/shared-sampler design, direct BC1/BC3 uploads, and a nonzero
+> texture index first. The pseudodog-tail milestone then landed the SBT class
+> split and pointed any-hit directly at real texture alpha. Because the image
+> machinery already existed, the planned one-milestone procedural checkerboard
+> was never needed. The original ordering argument below remains design history.
 
-**Decision:** both land this step, sequenced split-before-textures. The
+**Historical pre-landing decision:** both land this step, sequenced
+split-before-textures. The
 hit-group/SBT split lands in its own later milestone with a file-private
 procedural alpha function in the any-hit (a UV checkerboard tested against
 `alphaCutoff`); the following texture milestone replaces that function's body
@@ -1054,7 +1064,7 @@ untranslated selector. Keep the corpus asset outside version control and use
 generated synthetic fixtures in committed tests. Validate geometry, bounds,
 material mapping, determinism, and loud rejection offline. At M4a's commit
 boundary its texture-referencing output was not runtime-ready, so that step made
-no premature visual-equivalence claim. GALLERY_PLAN Phases 4–5 subsequently
+no premature visual-equivalence claim. Gallery phases 4–5 subsequently
 landed the consumer; the same canonical output now reaches the render loop through
 its BC1/nonzero-descriptor path, with final visual-equivalence sign-off still
 pending.
@@ -1081,11 +1091,11 @@ The OGFx-core prerequisite landed first: the canonical
 writer now emits deterministic, first-use-interned logical-texture string arenas,
 and the offline schema decoder reconstructs them for byte-exact canonical
 writer/decoder/writer checks. At M4a's boundary the runtime decoder still rejected
-textures, alpha-tested geometry, and expanded record counts. GALLERY_PLAN Phase 3
-later removed the record-count gates with N-BLAS/N-instance consumers, and Phase 4
-removed the texture/string-arena gates with the image consumer; only the alpha
-capability gate remains. M4a starts at legacy OGF parsing and never forks the OGFx
-writer.
+textures, alpha-tested geometry, and expanded record counts. Later gallery work
+removed the record-count gates with N-BLAS/N-instance consumers and then removed
+the texture/string-arena gates with the image consumer. The mixed-tail milestone
+subsequently removed the final alpha capability gate. M4a starts at legacy OGF
+parsing and never forks the OGFx writer.
 
 **Blender opaque export probe — milestone number deferred. Landed and gallery
 validated.** Blender 5.1.x runs
@@ -1128,10 +1138,11 @@ backend, or implement the later per-frame TLAS-refit work.
 
 **Post-M4 N-BLAS / N-instance generalization — milestone number deferred.**
 
-> **Landed via GALLERY_PLAN Phase 3.** The generated wedge—not the later-landed
+> **Landed during gallery phase 3.** The generated wedge—not the later-landed
 > Blender probe—drove this generalization. The implementation retained
-> `TMax = 100`; its gallery-specific acceptance oracles are recorded in
-> GALLERY_PLAN. The body below is preserved as the pre-landing reference design.
+> `TMax = 100`; its gallery-specific acceptance oracles remain summarized in
+> this plan and ARCHITECTURE.md. The body below is preserved as the pre-landing
+> reference design.
 
 The original plan had this riding the runtime-ready Blender opaque probe. The
 format-independent engineering record was instantiated with the generated wedge:
@@ -1167,45 +1178,44 @@ format-independent engineering record was instantiated with the generated wedge:
   builds + TLAS scratch reuse); release preset built and run for a perf
   sanity check.
 
-**Later — opaque/alpha-tested split: hit groups, per-geometry SBT, any-hit
-(procedural alpha); milestone number deferred.**
-Pipeline grows to 4 groups; the SBT hit region becomes per-geometry records
+**Landed — opaque/alpha-tested split: hit groups, per-geometry SBT, and
+real-texture any-hit; milestone number deferred.**
+The pipeline has 4 groups; the SBT hit region contains per-geometry records
 selected by class, all math via `RayTypeCount` (D6, including the
 parameterized miss region); instances set
 `instanceShaderBindingTableRecordOffset = firstGeometry * RayTypeCount`;
-TraceRay multiplier = `RayTypeCount`; `RAY_FLAG_FORCE_OPAQUE` removed;
+TraceRay multiplier = `RayTypeCount`; `RAY_FLAG_FORCE_OPAQUE` is absent;
 per-geometry `VK_GEOMETRY_OPAQUE_BIT_KHR` only for the opaque class; the
-24-bit assert per D5. `anyHitMain` tests a UV-checkerboard alpha against
-`alphaCutoff` — the one-milestone placeholder D7 justifies, deleted by the
-following texture milestone.
+24-bit assert is scaled per D5. `anyHitMain` samples the resolved base-color
+texture and rejects alpha below `alphaCutoff`; the procedural D7 placeholder
+was skipped because texture support had already landed.
 Files: `src/rt_pipeline.{hpp,cpp}`, `src/acceleration_structure.cpp`,
 `src/scene.hpp`, `shaders/raytrace.slang`, `CMakeLists.txt` (the
 `XRPHOTON_RAY_TYPE_COUNT` definition feeding both compilers — D6).
-Exit: checkerboard cutout — the box and miss background visible *through* the
-card's rejected texels; the mixed mesh's opaque primitive unaffected (proves
-`GeometryIndex()`-based SBT selection — the case per-instance schemes get
-wrong); the opaque-only parts of the frame unchanged vs. the preceding
-generalization milestone. Validation clean
-**including a GPU-assisted validation run** (SBT record contents and
-misrouting are invisible to plain layers). **Grep gate:**
+The pseudodog tail is the real mixed consumer: one BLAS contains both an
+alpha-tested and an opaque geometry using the same material/texture, proving
+that selection follows `GeometryIndex()` rather than instance class. Its
+shipped mip 0 has no transparent selected texels, so a visible background
+through rejected holes remains a separate acceptance probe rather than a claim
+for this asset. **Grep gate:**
 `grep -rn FORCE_OPAQUE shaders/ src/` returns nothing.
 
-**Later — textures + descriptor indexing and real alpha testing; milestone
-number deferred.**
+**Landed earlier — textures + descriptor indexing; milestone number
+deferred.**
 `VkPhysicalDeviceVulkan12Features` consolidation per §4.3 (standalone BDA
 struct removed in the same commit) + rejection-report and
 `maxPerStageDescriptorSampledImages` gating; binding 4 fixed-size array with
 the 1×1 white fallback in slot 0 and every unused slot (D7); shared sampler;
 image staging uploads with layout transitions ending at
 `SHADER_READ_ONLY_OPTIMAL` / `RAY_TRACING_SHADER`; closest-hit samples
-baseColor, any-hit samples texture alpha (checkerboard deleted).
+baseColor, and the later mixed-class milestone added any-hit sampling of the
+same texture alpha.
 Files: `src/vulkan_context.cpp`, `src/rt_pipeline.{hpp,cpp}`,
 `src/scene.hpp`, `src/ogfx_loader.{hpp,cpp}`, `src/gpu_scene.{hpp,cpp}`,
 `shaders/raytrace.slang`.
-Exit: textured scene; the card's cutout silhouette follows its texture's alpha
-channel exactly; the two boxes show different textures (proves
-`NonUniformResourceIndex` indexing). Validation clean **including GPU-assisted
-validation** (descriptor-array misindexing class); release preset run.
+Exit: the textured gallery and plitka's nonzero texture index prove the table,
+resolver, upload, and `NonUniformResourceIndex` path. A transparent-texture
+probe remains the visual oracle for an actual cutout silhouette.
 ARCHITECTURE.md status/roadmap and the CLAUDE.md summary updated for the
 landed step (§10).
 
@@ -1371,6 +1381,7 @@ ledger (§9's resolutions) — and mirror the summary changes into
 `libglm-dev`, and the Next-step pointer moving to roadmap step 3).
 ARCHITECTURE.md remains the source of truth for landed runtime architecture
 and status; FORMATS.md owns format contracts and asset-pipeline sequencing.
-GALLERY_PLAN.md records the landed N-BLAS/base-texture work; the Blender adapter
-has also landed within roadmap step 2, while its manual/GPU gallery validation
-and the opaque/alpha split remain outstanding.
+The landed gallery work records the N-BLAS/base-texture implementation; the
+Blender adapter and opaque/alpha split have also landed within roadmap step 2. A dedicated
+acceptance asset whose selected texels visibly exercise `IgnoreHit` remains
+outstanding because the shipped tail texture's mip 0 is fully opaque.

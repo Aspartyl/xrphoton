@@ -40,9 +40,12 @@ inline constexpr std::uint32_t AttributeRecordSize = 20;
 inline constexpr std::uint32_t IndexRecordSize = 4;
 inline constexpr std::uint32_t RigidPhysicsHeaderSize = 32;
 inline constexpr std::uint32_t PhysicsBodyRecordSize = 32;
+inline constexpr std::uint32_t RigidPhysicsChunkVersion1 = 1;
+inline constexpr std::uint32_t RigidPhysicsChunkVersion2 = 2;
 inline constexpr std::uint32_t PhysicsColliderRecordSize = 64;
-// Version 1 reserves the collider flag word. Source-specific flag meanings must
-// be mapped deliberately in a later schema version rather than copied through.
+inline constexpr std::uint32_t PhysicsColliderRecordSizeV2 = 80;
+// Both supported versions reserve the collider flag word. Source-specific flag
+// meanings must be mapped deliberately rather than copied through.
 inline constexpr std::uint32_t PhysicsColliderAllowedFlags = 0;
 
 enum class ChunkId : std::uint32_t
@@ -105,6 +108,15 @@ struct Material
 enum class PhysicsShapeType : std::uint32_t
 {
     Cylinder = 1,
+    Box = 2,
+};
+
+struct Orientation
+{
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
 };
 
 // Rigid-physics records are an engine-neutral recipe owned by a reusable model.
@@ -127,6 +139,8 @@ struct PhysicsCollider
     Position axis{0.0f, 1.0f, 0.0f};
     float height = 0.0f;
     float radius = 0.0f;
+    Orientation orientation{};
+    Position halfExtents{};
     float mass = 0.0f;
     Position centerOfMass{};
 };
@@ -165,13 +179,15 @@ struct DecodeResult
     }
 };
 
-// Produces the canonical version-1 byte stream. diagnosticName is carried only into
-// errors; it is never serialized, so identical models always produce identical bytes.
+// Produces the canonical container-v1 byte stream. Required chunks and cylinder-only
+// rigid physics remain chunk-v1; a model containing a box uses the optional rigid-
+// physics chunk-v2 record. diagnosticName is carried only into errors, so identical
+// models always produce identical bytes.
 [[nodiscard]] SerializeResult serializeModel(
     const Model& model,
     std::string_view diagnosticName = "<memory>");
 
-// Decodes and validates the complete version-1 static schema within its published
+// Decodes and validates the complete container-v1 static schema within its published
 // resource caps, including logical texture references and alpha-tested geometry
 // beyond the current runtime capability gates. This is the offline round-trip /
 // inspection entry point; it does not make the model runtime-ready.
@@ -180,10 +196,9 @@ struct DecodeResult
     std::string_view diagnosticName = "<memory>");
 
 // Decodes the staged runtime profile transactionally: failure returns one diagnostic
-// and no partially populated model. Logical texture references are reconstructed for
-// the scene resolver; alpha-tested geometry remains gated until the opaque/alpha
-// split. The returned model deliberately has no instance concept because OGFx stores
-// reusable model data, not world placement.
+// and no partially populated model. Logical texture references and alpha-tested
+// geometry are reconstructed for the scene resolver. The returned model deliberately
+// has no instance concept because OGFx stores reusable model data, not world placement.
 [[nodiscard]] DecodeResult decodeModel(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");

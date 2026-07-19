@@ -181,6 +181,33 @@ if(BUILD_TESTING)
         USES_TERMINAL
     )
 
+    set(XRPHOTON_ALPHA_TAIL_CORPUS_OGF
+        "${CMAKE_SOURCE_DIR}/original_game_files/soc/meshes/equipments/item_psevdodog_tail.ogf"
+        CACHE FILEPATH
+        "Local item_psevdodog_tail.ogf used only by the opt-in alpha OGF proof")
+    set(XRPHOTON_ALPHA_TAIL_TEXTURE_DDS
+        "${CMAKE_SOURCE_DIR}/original_game_files/soc/textures/act/act_pseudodog_fur.dds"
+        CACHE FILEPATH
+        "Local act_pseudodog_fur.dds pinned by the opt-in alpha OGF proof")
+    set(XRPHOTON_ALPHA_TAIL_PROOF_OUTPUT
+        "${XRPHOTON_SOC_ASSET_DIR}/meshes/equipments/item_psevdodog_tail.ogfx")
+    add_custom_target(xrPhotonAlphaOgfOfflineProof
+        COMMAND ${CMAKE_COMMAND}
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DVERIFIER=$<TARGET_FILE:xrPhotonLegacyOgfTests>
+            -DSOURCE_OGF=${XRPHOTON_ALPHA_TAIL_CORPUS_OGF}
+            -DTEXTURE_DDS=${XRPHOTON_ALPHA_TAIL_TEXTURE_DDS}
+            -DOUTPUT_OGFX=${XRPHOTON_ALPHA_TAIL_PROOF_OUTPUT}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/alpha_ogf_offline_proof.cmake
+        DEPENDS
+            xrPhotonAssetCompiler
+            xrPhotonLegacyOgfTests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/alpha_ogf_offline_proof.cmake
+        COMMENT "Proving deterministic mixed opaque/alpha-tested SoC tail conversion offline"
+        VERBATIM
+        USES_TERMINAL
+    )
+
     # Blender and the .blend inputs are owner-local tools/sources, so this proof is
     # explicit and never enters the normal asset/build/test dependency graph.
     set(XRPHOTON_BLENDER_EXECUTABLE "" CACHE FILEPATH
@@ -237,6 +264,8 @@ set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX "" CACHE FILEPATH
     "Optional converted Blender smooth sphere OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_BARREL_OGFX "" CACHE FILEPATH
     "Optional converted SoC closed barrel OGFx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX "" CACHE FILEPATH
+    "Optional converted SoC pseudodog tail OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_TEXTURE_ROOT "" CACHE PATH
     "Texture root containing the DDS paths referenced by configured gallery assets")
 
@@ -272,6 +301,13 @@ if(XRPHOTON_GALLERY_BARREL_OGFX)
         ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 else()
     set(XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX}"
+        ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX_ABSOLUTE "")
 endif()
 if(XRPHOTON_GALLERY_TEXTURE_ROOT)
     get_filename_component(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE
@@ -310,6 +346,11 @@ add_library(xrPhotonOgfxRuntime STATIC
 target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
 target_link_libraries(xrPhotonOgfxRuntime PUBLIC xrPhotonOgfx ${XRPHOTON_GLM_TARGET})
+# This single value is also passed to slangc below. It is a routing ABI rather than a
+# tunable: changing it requires adding the corresponding miss/hit shader variants.
+set(XRPHOTON_RAY_TYPE_COUNT 1)
+target_compile_definitions(xrPhotonOgfxRuntime PUBLIC
+    XRPHOTON_RAY_TYPE_COUNT=${XRPHOTON_RAY_TYPE_COUNT})
 
 if(BUILD_TESTING)
     add_executable(xrPhotonOgfxLoaderTests
@@ -351,6 +392,7 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
     COMMAND ${XRPHOTON_SLANGC}
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytrace.slang
+            -DXRPHOTON_RAY_TYPE_COUNT=${XRPHOTON_RAY_TYPE_COUNT}
             -target spirv
             -fvk-use-entrypoint-name
             -source-embed-style u32
@@ -398,6 +440,7 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BARREL_OGFX=u8\"${XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=u8\"${XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"
 )
 

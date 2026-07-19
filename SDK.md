@@ -4,8 +4,9 @@ This document is the plan for the modern successor to the X-Ray SDK. It is the
 SDK counterpart to [FORMATS.md](FORMATS.md) — read that first for the
 asset-format direction and the shared asset compiler the SDK is built around.
 The SDK described here remains a plan; its shared compiler foundation, including
-the flat-static and rigid-compound legacy adapters plus the first headless
-Blender source adapter, already exists. No SDK GUI
+the flat-static and narrow rigid-compound legacy adapters, the mixed
+opaque/alpha-tested pseudodog-tail conversion, and the first headless Blender
+source adapter, already exists. No SDK GUI
 or project model exists yet, and neither is scheduled before the runtime
 milestones that need it
 (see the [FORMATS.md milestone section](FORMATS.md#the-revised-first-ogfx-milestone-m4)).
@@ -62,9 +63,11 @@ deferred until a concrete workflow justifies its additional input surface
 
 Legacy batch conversion is a separate direct front end to the same writer. In
 addition to the M4a flat-static slice, it now accepts the pinned SoC regular
-barrel, flattens its safe rigid bind-pose render hierarchy, and preserves its
-generic body/cylinder recipe. Blender is neither required nor invoked by that
-path.
+barrel and pseudodog tail. It flattens their narrowly validated rigid bind-pose
+render hierarchies, preserves the tail's `models\model_aref` versus
+`models\model` geometry classification and exact 128/255 material cutoff, and
+retains backend-neutral body metadata: three cylinders for the barrel and one
+box for the tail. Blender is neither required nor invoked by that path.
 
 ## Capabilities
 
@@ -172,12 +175,22 @@ around that legacy conversion, Blender export,
 and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own
 loader and renderer, with level tooling following the level-representation
-decisions. The first hierarchical/skeletal-rigid source slice is now landed for
-SoC `bochka_close_1`: flattening is explicit and safe only for its validated
-rigid/nonbreakable zero-rotation bind profile, while collider, mass, material,
-center-of-mass, and source-node semantics remain in backend-neutral OGFx
-metadata. A future SDK inspector may visualize or edit those records, but this
-milestone neither supplies such a UI nor integrates a physics backend. Broader
-source profiles must continue to fail until all of their semantics have mappings
-rather than being silently flattened. Committing to a finer schedule for the
-remaining formats would invent decisions the owner has deferred.
+decisions. The hierarchical/skeletal-rigid source adapter is now landed for SoC
+`bochka_close_1` and the narrowly pinned `item_psevdodog_tail`. Barrel flattening
+remains restricted to its validated rigid/nonbreakable zero-rotation bind
+profile. The tail adds validated progressive/static child forms and produces one
+mesh with two geometries sharing `act\act_pseudodog_fur`: alpha-tested first,
+opaque second. Collider, mass, material, center-of-mass, and source-node
+semantics remain in backend-neutral OGFx metadata; the tail contributes one box
+body, not simulation state. Its opt-in compiler proof is
+`xrPhotonAlphaOgfOfflineProof`, with the source selected by
+`XRPHOTON_ALPHA_TAIL_CORPUS_OGF` and the pinned texture selected by
+`XRPHOTON_ALPHA_TAIL_TEXTURE_DDS`; the separate runtime gallery cache is
+`XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`. A future SDK inspector may visualize or
+edit these render/physics records, but this milestone neither supplies such a UI
+nor integrates a physics backend. The shipped tail DDS also has no transparent mip-0
+texels, so the runtime milestone proves mixed routing and sampled-alpha any-hit
+execution, not a visible cutout. Broader source profiles must continue to fail
+until all of their semantics have mappings rather than being silently flattened.
+Committing to a finer schedule for the remaining formats would invent decisions
+the owner has deferred.

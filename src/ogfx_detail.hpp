@@ -151,13 +151,19 @@ struct CanonicalModelCounts
     std::uint32_t indexCount = 0;
     std::uint32_t physicsBodyCount = 0;
     std::uint32_t physicsColliderCount = 0;
+    std::uint32_t physicsColliderRecordSize = PhysicsColliderRecordSize;
     std::uint32_t physicsStringBytes = 0;
 };
 
 // The canonical writer and bounded source adapters share this one size formula.
-// Every count is u32, so the pinned v1 record products and their sum fit u64.
+// Every count and the selected rigid-collider stride are u32, so their products
+// and sum fit u64 within the published caps.
 inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
 {
+    if (counts.physicsColliderRecordSize != PhysicsColliderRecordSize
+        && counts.physicsColliderRecordSize != PhysicsColliderRecordSizeV2) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
     auto addChunk = [](std::uint64_t payloadBytes, std::uint64_t* fileBytes) {
         const std::uint64_t remainder = *fileBytes % ChunkAlignment;
         if (remainder != 0) {
@@ -182,7 +188,7 @@ inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
     const std::uint64_t rigidPhysicsBytes = RigidPhysicsHeaderSize
         + static_cast<std::uint64_t>(counts.physicsBodyCount) * PhysicsBodyRecordSize
         + static_cast<std::uint64_t>(counts.physicsColliderCount)
-            * PhysicsColliderRecordSize
+            * counts.physicsColliderRecordSize
         + counts.physicsStringBytes;
 
     std::uint64_t fileBytes = FileHeaderSize;

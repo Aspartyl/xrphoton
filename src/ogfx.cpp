@@ -45,6 +45,8 @@ struct PreparedModel
     std::vector<std::uint8_t> materialStringArena;
     std::vector<PhysicsStringOffsets> physicsStringOffsets;
     std::vector<std::uint8_t> physicsStringArena;
+    std::uint32_t physicsChunkVersion = RigidPhysicsChunkVersion1;
+    std::uint32_t physicsColliderRecordSize = PhysicsColliderRecordSize;
 };
 
 SerializeResult failure(
@@ -432,14 +434,27 @@ SerializeResult prepareModel(
         return true;
     };
 
+    prepared->physicsChunkVersion = RigidPhysicsChunkVersion1;
+    prepared->physicsColliderRecordSize = PhysicsColliderRecordSize;
+    if (std::any_of(
+            model.physicsColliders.begin(),
+            model.physicsColliders.end(),
+            [](const PhysicsCollider& collider) {
+                return collider.shapeType == PhysicsShapeType::Box;
+            })) {
+        prepared->physicsChunkVersion = RigidPhysicsChunkVersion2;
+        prepared->physicsColliderRecordSize = PhysicsColliderRecordSizeV2;
+    }
+
     for (std::size_t index = 0; index < model.physicsColliders.size(); ++index) {
         const PhysicsCollider& collider = model.physicsColliders[index];
-        if (collider.shapeType != PhysicsShapeType::Cylinder) {
+        if (collider.shapeType != PhysicsShapeType::Cylinder
+            && collider.shapeType != PhysicsShapeType::Box) {
             return failure(
                 diagnosticName,
                 ChunkId::RigidPhysics,
                 indexedField("colliders", index, "shapeType"),
-                "1 (cylinder)",
+                "1 (cylinder) or 2 (box)",
                 std::to_string(static_cast<std::uint32_t>(collider.shapeType)));
         }
         if ((collider.flags & ~PhysicsColliderAllowedFlags) != 0) {
@@ -447,7 +462,7 @@ SerializeResult prepareModel(
                 diagnosticName,
                 ChunkId::RigidPhysics,
                 indexedField("colliders", index, "flags"),
-                "0 (reserved in version 1)",
+                "0 (reserved)",
                 std::to_string(collider.flags));
         }
         if (!positionIsFinite(collider.center)) {
@@ -457,27 +472,6 @@ SerializeResult prepareModel(
                 indexedField("colliders", index, "center"),
                 "finite f32 values",
                 "a non-finite value");
-        }
-        if (!positionIsFinite(collider.axis)) {
-            return failure(
-                diagnosticName,
-                ChunkId::RigidPhysics,
-                indexedField("colliders", index, "axis"),
-                "finite f32 values",
-                "a non-finite value");
-        }
-        const double axisX = collider.axis.x;
-        const double axisY = collider.axis.y;
-        const double axisZ = collider.axis.z;
-        const double axisLengthSquared =
-            axisX * axisX + axisY * axisY + axisZ * axisZ;
-        if (!std::isfinite(axisLengthSquared) || axisLengthSquared <= 0.0) {
-            return failure(
-                diagnosticName,
-                ChunkId::RigidPhysics,
-                indexedField("colliders", index, "axis length squared"),
-                "finite and greater than 0",
-                std::to_string(axisLengthSquared));
         }
         auto requirePositive = [&](float value, std::string_view member) {
             if (std::isfinite(value) && value > 0.0f) {
@@ -491,10 +485,65 @@ SerializeResult prepareModel(
                 std::to_string(value));
             return false;
         };
-        if (!requirePositive(collider.height, "height")
-            || !requirePositive(collider.radius, "radius")
-            || !requirePositive(collider.mass, "mass")) {
+        if (!requirePositive(collider.mass, "mass")) {
             return physicsStringFailure;
+        }
+        if (collider.shapeType == PhysicsShapeType::Cylinder) {
+            if (!positionIsFinite(collider.axis)) {
+                return failure(
+                    diagnosticName,
+                    ChunkId::RigidPhysics,
+                    indexedField("colliders", index, "axis"),
+                    "finite f32 values",
+                    "a non-finite value");
+            }
+            const double axisX = collider.axis.x;
+            const double axisY = collider.axis.y;
+            const double axisZ = collider.axis.z;
+            const double axisLengthSquared =
+                axisX * axisX + axisY * axisY + axisZ * axisZ;
+            if (!std::isfinite(axisLengthSquared) || axisLengthSquared <= 0.0) {
+                return failure(
+                    diagnosticName,
+                    ChunkId::RigidPhysics,
+                    indexedField("colliders", index, "axis length squared"),
+                    "finite and greater than 0",
+                    std::to_string(axisLengthSquared));
+            }
+            if (!requirePositive(collider.height, "height")
+                || !requirePositive(collider.radius, "radius")) {
+                return physicsStringFailure;
+            }
+        } else {
+            const Orientation& orientation = collider.orientation;
+            const double orientationLengthSquared =
+                static_cast<double>(orientation.x) * orientation.x
+                + static_cast<double>(orientation.y) * orientation.y
+                + static_cast<double>(orientation.z) * orientation.z
+                + static_cast<double>(orientation.w) * orientation.w;
+            if (!std::isfinite(orientationLengthSquared)
+                || std::abs(orientationLengthSquared - 1.0) > 1.0e-4) {
+                return failure(
+                    diagnosticName,
+                    ChunkId::RigidPhysics,
+                    indexedField("colliders", index, "orientation length squared"),
+                    "finite and within 1e-4 of 1",
+                    std::to_string(orientationLengthSquared));
+            }
+            if (!positionIsFinite(collider.halfExtents)
+                || !requirePositive(collider.halfExtents.x, "halfExtents.x")
+                || !requirePositive(collider.halfExtents.y, "halfExtents.y")
+                || !requirePositive(collider.halfExtents.z, "halfExtents.z")) {
+                if (!physicsStringFailure.error.empty()) {
+                    return physicsStringFailure;
+                }
+                return failure(
+                    diagnosticName,
+                    ChunkId::RigidPhysics,
+                    indexedField("colliders", index, "halfExtents"),
+                    "finite positive f32 values",
+                    "a non-finite value");
+            }
         }
         if (!positionIsFinite(collider.centerOfMass)) {
             return failure(
@@ -768,12 +817,13 @@ void appendChunkHeader(
     std::vector<std::uint8_t>* bytes,
     ChunkId id,
     std::uint64_t payloadBytes,
-    std::uint32_t flags = RequiredChunkFlags)
+    std::uint32_t flags = RequiredChunkFlags,
+    std::uint32_t version = ChunkVersion)
 {
     alignOutput(bytes);
     appendU32(bytes, static_cast<std::uint32_t>(id));
     appendU32(bytes, flags);
-    appendU32(bytes, ChunkVersion);
+    appendU32(bytes, version);
     appendU32(bytes, 0);
     appendU64(bytes, payloadBytes);
     appendU64(bytes, 0);
@@ -788,9 +838,9 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         return validation;
     }
 
-    // prepareModel has bounded every collection count to u32. Widening before
-    // applying the pinned v1 strides keeps each payload and their sum below 2^40,
-    // so these formulas cannot overflow u64.
+    // prepareModel has bounded every collection count and selected a bounded rigid-
+    // collider stride. Widening before multiplication keeps each payload and their
+    // sum below 2^40, so these formulas cannot overflow u64.
     const std::uint64_t geometryBytes =
         static_cast<std::uint64_t>(model.geometries.size()) * GeometryRecordSize;
     const std::uint64_t meshBytes =
@@ -810,7 +860,7 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         + static_cast<std::uint64_t>(model.physicsBodies.size())
             * PhysicsBodyRecordSize
         + static_cast<std::uint64_t>(model.physicsColliders.size())
-            * PhysicsColliderRecordSize
+            * prepared.physicsColliderRecordSize
         + prepared.physicsStringArena.size();
 
     const std::uint64_t fileBytes = detail::canonicalModelFileBytes({
@@ -825,6 +875,7 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         .physicsBodyCount = static_cast<std::uint32_t>(model.physicsBodies.size()),
         .physicsColliderCount =
             static_cast<std::uint32_t>(model.physicsColliders.size()),
+        .physicsColliderRecordSize = prepared.physicsColliderRecordSize,
         .physicsStringBytes =
             static_cast<std::uint32_t>(prepared.physicsStringArena.size()),
     });
@@ -914,7 +965,8 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
             &result.bytes,
             ChunkId::RigidPhysics,
             rigidPhysicsBytes,
-            0);
+            0,
+            prepared.physicsChunkVersion);
         appendU32(
             &result.bytes,
             static_cast<std::uint32_t>(model.physicsBodies.size()));
@@ -945,11 +997,31 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
             appendU32(&result.bytes, offsets.material);
             appendU32(&result.bytes, offsets.sourceNode);
             appendPosition(&result.bytes, collider.center);
-            appendPosition(&result.bytes, collider.axis);
-            appendF32(&result.bytes, collider.height);
-            appendF32(&result.bytes, collider.radius);
-            appendF32(&result.bytes, collider.mass);
-            appendPosition(&result.bytes, collider.centerOfMass);
+            if (prepared.physicsChunkVersion == RigidPhysicsChunkVersion1) {
+                appendPosition(&result.bytes, collider.axis);
+                appendF32(&result.bytes, collider.height);
+                appendF32(&result.bytes, collider.radius);
+                appendF32(&result.bytes, collider.mass);
+                appendPosition(&result.bytes, collider.centerOfMass);
+            } else {
+                if (collider.shapeType == PhysicsShapeType::Cylinder) {
+                    appendPosition(&result.bytes, collider.axis);
+                    appendF32(&result.bytes, collider.height);
+                    appendF32(&result.bytes, collider.radius);
+                    appendU32(&result.bytes, 0);
+                    appendU32(&result.bytes, 0);
+                } else {
+                    appendF32(&result.bytes, collider.orientation.x);
+                    appendF32(&result.bytes, collider.orientation.y);
+                    appendF32(&result.bytes, collider.orientation.z);
+                    appendF32(&result.bytes, collider.orientation.w);
+                    appendPosition(&result.bytes, collider.halfExtents);
+                }
+                appendF32(&result.bytes, collider.mass);
+                appendPosition(&result.bytes, collider.centerOfMass);
+                appendU32(&result.bytes, 0);
+                appendU32(&result.bytes, 0);
+            }
         }
         result.bytes.insert(
             result.bytes.end(),

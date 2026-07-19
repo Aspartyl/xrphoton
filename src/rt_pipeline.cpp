@@ -2,6 +2,7 @@
 
 #include "camera.hpp"
 #include "gpu_scene.hpp"
+#include "scene.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
@@ -13,7 +14,7 @@
 
 #include <vulkan/vulkan.h>
 
-// Build-generated: the embedded SPIR-V module holding all three ray tracing entry
+// Build-generated: the embedded SPIR-V module holding all four ray tracing entry
 // points (see the shader custom command in CMakeLists.txt).
 #include "raytrace_spv.h"
 
@@ -21,9 +22,16 @@ namespace xrphoton
 {
 namespace
 {
-// One shader group per pipeline stage, in the group order createRtPipeline fixed:
-// raygen, miss, hit.
-constexpr uint32_t GroupCount = 3;
+// Group order is a serialized-in-memory contract with the SBT builder below.
+constexpr uint32_t RaygenGroup = 0;
+constexpr uint32_t MissGroup = 1;
+constexpr uint32_t OpaqueHitGroup = 2;
+constexpr uint32_t AlphaTestedHitGroup = 3;
+constexpr uint32_t GroupCount = 4;
+
+// This pipeline currently supplies one miss shader and one radiance variant of each
+// hit class. Raising the build-owned constant must add the shadow variants atomically.
+static_assert(RayTypeCount == 1);
 
 // Round a value up to the next multiple of alignment, valid for any alignment. The
 // AS build's bit-mask alignUp is only correct for powers of two — spec-guaranteed for
@@ -279,9 +287,9 @@ VkResult createRtPipeline(
         return result;
     }
 
-    // All three stages reference the one module; the entry-point names are the ones
+    // All four stages reference the one module; the entry-point names are the ones
     // the shader compile preserved (-fvk-use-entrypoint-name).
-    VkPipelineShaderStageCreateInfo stages[3]{};
+    VkPipelineShaderStageCreateInfo stages[4]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     stages[0].module = rt->shaderModule;
@@ -294,11 +302,16 @@ VkResult createRtPipeline(
     stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
     stages[2].module = rt->shaderModule;
     stages[2].pName = "closestHitMain";
+    stages[3].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[3].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    stages[3].module = rt->shaderModule;
+    stages[3].pName = "anyHitMain";
 
-    // Group order is the SBT contract: 0 raygen, 1 miss, 2 hit. Every shader index a
+    // Group order is the SBT contract: 0 raygen, 1 miss, 2 opaque hit, 3 alpha-tested
+    // hit. Every shader index a
     // group does not use must be VK_SHADER_UNUSED_KHR explicitly — zero-init would
     // leave 0, which is a valid stage index (the raygen stage).
-    VkRayTracingShaderGroupCreateInfoKHR groups[3]{};
+    VkRayTracingShaderGroupCreateInfoKHR groups[GroupCount]{};
     for (VkRayTracingShaderGroupCreateInfoKHR& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         group.generalShader = VK_SHADER_UNUSED_KHR;
@@ -306,20 +319,25 @@ VkResult createRtPipeline(
         group.anyHitShader = VK_SHADER_UNUSED_KHR;
         group.intersectionShader = VK_SHADER_UNUSED_KHR;
     }
-    groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-    groups[0].generalShader = 0;
-    groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-    groups[1].generalShader = 1;
-    // Triangles-hit group with closest hit only: the geometry is OPAQUE, so an any-hit
-    // shader would never run, and triangle intersection is fixed-function.
-    groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[2].closestHitShader = 2;
+    groups[RaygenGroup].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[RaygenGroup].generalShader = 0;
+    groups[MissGroup].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[MissGroup].generalShader = 1;
+    groups[OpaqueHitGroup].type =
+        VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[OpaqueHitGroup].closestHitShader = 2;
+    // Both classes share closest-hit shading. Only alpha-tested ranges pay for the
+    // any-hit stage, selected through their per-geometry SBT records.
+    groups[AlphaTestedHitGroup].type =
+        VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[AlphaTestedHitGroup].closestHitShader = 2;
+    groups[AlphaTestedHitGroup].anyHitShader = 3;
 
     VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo{};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-    pipelineCreateInfo.stageCount = 3;
+    pipelineCreateInfo.stageCount = 4;
     pipelineCreateInfo.pStages = stages;
-    pipelineCreateInfo.groupCount = 3;
+    pipelineCreateInfo.groupCount = GroupCount;
     pipelineCreateInfo.pGroups = groups;
     // Primary rays only; 1 is the spec-guaranteed minimum for
     // maxRayRecursionDepth, so no limit query is needed.
@@ -354,7 +372,8 @@ VkResult buildShaderBindingTable(
     VkPhysicalDevice physicalDevice,
     VkDevice device,
     VmaAllocator allocator,
-    const RayTracingFunctions& functions)
+    const RayTracingFunctions& functions,
+    const SceneData& scene)
 {
     // Adopt before the first VMA allocation so a later failure can bare-return and
     // still release the SBT through ~RtPipeline.
@@ -370,9 +389,21 @@ VkResult buildShaderBindingTable(
 
     vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
 
-    // One record per region, so the record stride doubles as each region's size.
-    // Every region's device address must additionally be baseAlignment-aligned, hence
-    // the rounded region offsets.
+    if (scene.geometries.empty()) {
+        std::cerr << "Cannot build a shader binding table for an empty geometry set.\n";
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    constexpr uint64_t MaximumGeometryCount =
+        ((uint64_t{1} << 24) - 1) / RayTypeCount + 1;
+    if (scene.geometries.size() > MaximumGeometryCount) {
+        std::cerr << "Scene geometry count " << scene.geometries.size()
+                  << " exceeds the RayTypeCount-scaled 24-bit SBT offset limit "
+                  << MaximumGeometryCount << ".\n";
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    // Records contain handles only. Every region's device address must additionally
+    // be baseAlignment-aligned, hence the rounded region offsets.
     const VkDeviceSize handleSize = rtProperties.shaderGroupHandleSize;
     const VkDeviceSize recordStride =
         roundUpToMultiple(handleSize, rtProperties.shaderGroupHandleAlignment);
@@ -380,8 +411,13 @@ VkResult buildShaderBindingTable(
 
     const VkDeviceSize raygenOffset = 0;
     const VkDeviceSize missOffset = roundUpToMultiple(recordStride, baseAlignment);
-    const VkDeviceSize hitOffset = missOffset + roundUpToMultiple(recordStride, baseAlignment);
-    const VkDeviceSize tableSize = hitOffset + recordStride;
+    const VkDeviceSize missSize = RayTypeCount * recordStride;
+    const VkDeviceSize hitOffset =
+        missOffset + roundUpToMultiple(missSize, baseAlignment);
+    const VkDeviceSize hitRecordCount =
+        static_cast<VkDeviceSize>(scene.geometries.size()) * RayTypeCount;
+    const VkDeviceSize hitSize = hitRecordCount * recordStride;
+    const VkDeviceSize tableSize = hitOffset + hitSize;
 
     std::vector<uint8_t> handles(GroupCount * handleSize);
 
@@ -432,23 +468,41 @@ VkResult buildShaderBindingTable(
     }
 
     uint8_t* table = static_cast<uint8_t*>(allocationInfo.pMappedData) + alignmentDelta;
-    std::memcpy(table + raygenOffset, handles.data(), handleSize);
-    std::memcpy(table + missOffset, handles.data() + handleSize, handleSize);
-    std::memcpy(table + hitOffset, handles.data() + 2 * handleSize, handleSize);
+    std::memcpy(
+        table + raygenOffset,
+        handles.data() + RaygenGroup * handleSize,
+        handleSize);
+    for (uint32_t rayType = 0; rayType < RayTypeCount; ++rayType) {
+        std::memcpy(
+            table + missOffset + static_cast<VkDeviceSize>(rayType) * recordStride,
+            handles.data() + MissGroup * handleSize,
+            handleSize);
+    }
+    for (VkDeviceSize recordIndex = 0; recordIndex < hitRecordCount; ++recordIndex) {
+        const std::size_t geometryIndex =
+            static_cast<std::size_t>(recordIndex / RayTypeCount);
+        const uint32_t groupIndex = scene.geometries[geometryIndex].alphaTested
+            ? AlphaTestedHitGroup
+            : OpaqueHitGroup;
+        std::memcpy(
+            table + hitOffset + recordIndex * recordStride,
+            handles.data() + static_cast<VkDeviceSize>(groupIndex) * handleSize,
+            handleSize);
+    }
 
     // Persistent coherent mapping: no explicit flush or unmap is needed.
 
-    // The raygen region's size must equal its stride (spec requirement); miss and hit
-    // hold one record each, so size = stride falls out naturally for them too.
+    // The raygen region's size must equal its stride. Miss records are indexed by ray
+    // type; hit records interleave ray types inside each flat geometry index.
     rt->raygenRegion.deviceAddress = tableAddress + raygenOffset;
     rt->raygenRegion.stride = recordStride;
     rt->raygenRegion.size = recordStride;
     rt->missRegion.deviceAddress = tableAddress + missOffset;
     rt->missRegion.stride = recordStride;
-    rt->missRegion.size = recordStride;
+    rt->missRegion.size = missSize;
     rt->hitRegion.deviceAddress = tableAddress + hitOffset;
     rt->hitRegion.stride = recordStride;
-    rt->hitRegion.size = recordStride;
+    rt->hitRegion.size = hitSize;
     // Empty, but pointing at the table base: the current VUID (03692) unconditionally
     // requires a valid SBT-buffer address with no zero-region exception, and reusing
     // the existing buffer satisfies the strict reading for free (the common {0,0,0}

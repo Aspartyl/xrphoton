@@ -1,5 +1,6 @@
 #include "scene_assembly.hpp"
 
+#include "ray_types.hpp"
 #include "scene_assembly_detail.hpp"
 
 #include <cmath>
@@ -18,9 +19,12 @@ namespace xrphoton
 namespace
 {
 constexpr uint64_t MaximumUint32 = std::numeric_limits<uint32_t>::max();
-// instanceCustomIndex is 24-bit. The opaque/alpha SBT split will tighten this
-// further by its RayTypeCount multiplier when that consumer lands.
-constexpr uint64_t MaximumGeometryCount = uint64_t{1} << 24;
+constexpr uint64_t SbtOffsetLimit = uint64_t{1} << 24;
+// Both instanceCustomIndex and instanceShaderBindingTableRecordOffset are 24-bit.
+// The latter addresses the first of RayTypeCount interleaved records per geometry.
+constexpr uint64_t MaximumGeometryCount =
+    (SbtOffsetLimit - 1) / RayTypeCount + 1;
+static_assert((MaximumGeometryCount - 1) * RayTypeCount < SbtOffsetLimit);
 
 bool reject(std::string* error, std::string diagnostic)
 {
@@ -194,7 +198,7 @@ bool validateSceneAppendCounts(
                 destination.geometries,
                 source.geometries,
                 MaximumGeometryCount,
-                true,
+                false,
                 "geometry",
                 error)
             && checkedTotal(

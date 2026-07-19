@@ -1,6 +1,7 @@
 #include "acceleration_structure.hpp"
 
 #include "gpu_scene.hpp"
+#include "ray_types.hpp"
 #include "scene.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
@@ -446,9 +447,11 @@ VkResult buildAccelerationStructures(
                 blasGeometry.sType =
                     VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
                 blasGeometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-                // The runtime decoder still rejects alpha-tested geometry until the
-                // any-hit/SBT-class consumer lands, so every accepted range is opaque.
-                blasGeometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+                // Opaque ranges bypass any-hit in hardware. Alpha-tested ranges must
+                // leave the flag clear so their selected any-hit group can reject texels.
+                blasGeometry.flags = geometry.alphaTested
+                    ? 0
+                    : VK_GEOMETRY_OPAQUE_BIT_KHR;
                 blasGeometry.geometry.triangles.sType =
                     VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
                 blasGeometry.geometry.triangles.vertexFormat = BlasVertexFormat;
@@ -562,13 +565,27 @@ VkResult buildAccelerationStructures(
             VkAccelerationStructureInstanceKHR& destination =
                 vkInstances[instanceIndex];
             destination.transform = toVkTransformMatrix(source.transform);
+            const uint64_t sbtOffset =
+                static_cast<uint64_t>(mesh.firstGeometry) * RayTypeCount;
+            if (sbtOffset >= (uint64_t{1} << 24)) {
+                std::cerr << "Scene instance[" << instanceIndex
+                          << "] first SBT record offset " << sbtOffset
+                          << " exceeds the 24-bit Vulkan instance field.\n";
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
             // The BLAS geometry list follows the mesh's contiguous flat range, so
             // InstanceID() + GeometryIndex() reconstructs the global geometry record.
+            // The scaled check above also proves this unscaled 24-bit field fits before
+            // assigning either C bitfield (assignment itself would silently truncate).
             destination.instanceCustomIndex = mesh.firstGeometry;
             destination.mask = 0xFF;
-            // Load-bearing interim SBT contract: every geometry routes to the one hit
-            // record until the opaque/alpha split lands atomically with SBT routing.
-            destination.instanceShaderBindingTableRecordOffset = 0;
+            // Hit records are interleaved by ray type for each flat geometry. Combined
+            // with TraceRay's RayTypeCount multiplier, GeometryIndex() selects the same
+            // flat geometry that InstanceID() addresses in geometryRecords.
+            destination.instanceShaderBindingTableRecordOffset =
+                static_cast<uint32_t>(sbtOffset);
+            // Opacity is a per-geometry property; never force it at instance scope because
+            // a single foliage BLAS may contain an opaque stem and alpha-tested cards.
             destination.flags = 0;
             destination.accelerationStructureReference =
                 as->blases[source.meshIndex].address;

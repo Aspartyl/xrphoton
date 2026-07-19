@@ -38,18 +38,30 @@ The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`, and
 placements. The converted regular `bochka_close_1.ogfx` is a seventh gallery
 model: its `mtl\mtl_barrel_01` reference uses the same DDS path, while its
 backend-neutral compound-collider metadata is preserved but not simulated yet.
-With every optional asset enabled, the gallery contains seven BLASes and eight
-TLAS instances; the wedge remains the shared-BLAS probe. The two
+The converted `item_psevdodog_tail.ogfx` is the eighth model. Its one mesh keeps
+two geometries in source order: a `models\model_aref` alpha-tested range and a
+`models\model` opaque range, both using `act\act_pseudodog_fur` through one
+shared material with the source cutoff of 128/255. Its single rigid box-body
+recipe is also preserved as backend-neutral metadata and is not simulated.
+With every optional asset enabled, the gallery contains eight BLASes, nine TLAS
+instances, and ten geometries; the wedge remains the shared-BLAS probe. The two
 spheres have identical geometry and UV corner streams but deliberately different
-normal sharing, making flat-versus-smooth shading directly observable.
+normal sharing, making flat-versus-smooth shading directly observable. The
+shipped tail DDS has no transparent texels in mip 0, so this asset proves mixed
+opaque/alpha-tested routing and real texture sampling through the any-hit stage,
+but it does not yet demonstrate a visible `IgnoreHit` cutout.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
 perspective camera fed to the shader via push constants, writes a storage image
 and blits it to the swapchain, with two frames in flight and proper resize
-handling. Shaders are written in [Slang](https://shader-slang.org/) and compiled
-into the runtime binary at build time, so shader deployment is self-contained
-and needs no runtime shader files.
+handling. The four-stage/four-group pipeline selects an opaque or alpha-tested
+hit record per geometry, marks only opaque BLAS ranges opaque, and lets the
+alpha-tested any-hit shader compare sampled texture alpha against the material
+cutoff. The shared C++/Slang routing ABI currently has `RayTypeCount = 1`, and
+rays are no longer forced opaque. Shaders are written in
+[Slang](https://shader-slang.org/) and compiled into the runtime binary at build
+time, so shader deployment is self-contained and needs no runtime shader files.
 
 The first complete OGFx round trip, the narrow M4a legacy-static converter, and
 the first headless Blender-to-OGFx path have landed. Every normal engine build
@@ -75,7 +87,10 @@ positions share smooth normals while UV seams remain split. All three use the
 optional gallery path. The regular barrel adds the first narrow type-`0xA`
 rigid-compound legacy profile: its bind/model-space child mesh is flattened to
 ordinary render geometry and its three cylinder records, masses, centers of
-mass, source material, and source-node names enter optional OGFx metadata.
+mass, source material, and source-node names enter optional OGFx metadata. The
+pseudodog tail extends that same narrow adapter with its validated progressive
+and static child forms, mixed opaque/alpha-tested render semantics, shared
+material cutoff, and one box collider.
 Dynamic scenes
 (TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
 and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -120,11 +135,11 @@ It also builds the narrow legacy OGF converter:
 ```
 
 The command intentionally dispatches between only two documented profiles: the
-M4a flat-static slice and the exact SoC rigid-compound slice used by
-`bochka_close_1`. It is not general skeletal support. Both outputs preserve a
-logical texture name that the runtime reconstructs for scene-global DDS
-resolution and can be supplied directly to the optional gallery configuration
-below.
+M4a flat-static slice and the narrowly validated SoC rigid-compound slices used
+by `bochka_close_1` and `item_psevdodog_tail`. It is not general skeletal
+support. Their outputs preserve a logical texture name that the runtime
+reconstructs for scene-global DDS resolution and can be supplied directly to
+the optional gallery configuration below.
 
 ### Converting the Blender probes
 
@@ -208,12 +223,36 @@ the ignored local source path with
 `-DXRPHOTON_RIGID_BARREL_CORPUS_OGF=/path/to/bochka_close_1.ogf` if needed.
 No physics backend is selected or run by this proof.
 
+### Proving the mixed pseudodog-tail conversion
+
+With the local source at
+`original_game_files/soc/meshes/equipments/item_psevdodog_tail.ogf`, run:
+
+```sh
+cmake --build --preset ogfx-core --target xrPhotonAlphaOgfOfflineProof
+```
+
+This opt-in proof pins the source identity, runs the real conversion twice,
+checks deterministic canonical output, and pins the 34,921-byte result: 930
+vertices and 1,116 retained indices across one mesh and two geometries. The
+alpha-tested range has 856 vertices/864 indices; the opaque range has 74
+vertices and the 252 max-detail indices selected from its 1,209-index progressive
+source. The proof also verifies the shared `act\act_pseudodog_fur` material with
+its exact 128/255 cutoff and single rigid box-body metadata, pins the 21,992-byte
+`act/act_pseudodog_fur.dds`, and thereby fixes the exact shipped texture whose
+mip 0 has no transparent texels. It persists
+`build/ogfx-core/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`.
+Override the ignored local inputs with
+`-DXRPHOTON_ALPHA_TAIL_CORPUS_OGF=/path/to/item_psevdodog_tail.ogf` and
+`-DXRPHOTON_ALPHA_TAIL_TEXTURE_DDS=/path/to/act_pseudodog_fur.dds` if needed.
+The proof selects no physics backend and performs no simulation.
+
 ### Configuring the optional gallery entries
 
 The generated quad and wedge need no local source files. To add the verified
-plitka and regular-barrel outputs, their original textures, and all three
-converted Blender assets to the debug gallery, configure the owner-local paths
-once, then build normally:
+plitka, regular-barrel, and pseudodog-tail outputs, their original textures, and
+all three converted Blender assets to the debug gallery, configure the
+owner-local paths once, then build normally:
 
 ```sh
 cmake --preset debug \
@@ -222,20 +261,25 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_smooth_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BARREL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/physics/balon/bochka_close_1.ogfx" \
+  -DXRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx" \
   -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
 cmake --build --preset debug
 ./build/debug/xrPhoton
 ```
 
 The texture root must preserve the exact-case relative paths
-`ston/ston_stena_marbl_m_03_back.dds` and `mtl/mtl_barrel_01.dds`. CMake
-remembers these values separately in each build tree, so configure the `release`
-preset the same way when needed. With
+`ston/ston_stena_marbl_m_03_back.dds`, `mtl/mtl_barrel_01.dds`, and
+`act/act_pseudodog_fur.dds`. The shipped tail texture's mip 0 is fully opaque;
+its configured gallery entry therefore exercises the alpha-tested any-hit path
+without producing a visible rejected-texel cutout. CMake remembers these values
+separately in each build tree, so configure the `release` preset the same way
+when needed. With
 an empty `XRPHOTON_GALLERY_PLITKA_OGFX`,
 `XRPHOTON_GALLERY_BLENDER_OGFX`, or
 `XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX`, or
 `XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX`, or
-`XRPHOTON_GALLERY_BARREL_OGFX`, xrPhoton skips that optional entry. Once
+`XRPHOTON_GALLERY_BARREL_OGFX`, or
+`XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`, xrPhoton skips that optional entry. Once
 an entry is configured, a missing/broken OGFx—or referenced texture root/DDS—is a
 loud startup failure rather than a silent fallback. The original game files,
 Blender sources, and generated proof outputs remain Git-ignored local inputs.

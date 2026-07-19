@@ -2,12 +2,14 @@
 
 #include <vulkan/vulkan.h>
 
+#include "ray_types.hpp"
 #include "vma_fwd.hpp"
 
 namespace xrphoton
 {
 struct RayTracingFunctions;
 struct GpuScene;
+struct SceneData;
 
 // Owns the ray tracing pipeline machinery: the descriptor set layout binding the TLAS,
 // storage image, and scene records; the pipeline layout plus camera push constants;
@@ -30,7 +32,7 @@ struct RtPipeline
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 
-    // The one shader module holding all three entry points (Slang compiles them into
+    // The one shader module holding all four entry points (Slang compiles them into
     // a single SPIR-V module). Parked here — the scratch-buffer pattern from the AS
     // build, not local RAII — so a failure between module and pipeline creation can
     // bare-return and rely on the destructor; on success it is destroyed immediately
@@ -85,9 +87,9 @@ void writeSceneDescriptorSet(
     const GpuScene& gpuScene);
 
 // Create the pipeline layout (the one descriptor set plus raygen camera push
-// constants) and the ray tracing pipeline: three stages sharing the single embedded
-// shader module, three groups in the order the SBT build relies on — 0 raygen,
-// 1 miss, 2 triangles-hit (closest hit only; the geometry is OPAQUE, so no any-hit).
+// constants) and the ray tracing pipeline: four stages sharing the single embedded
+// shader module, four groups in the SBT-contract order — 0 raygen, 1 miss, 2 opaque
+// triangles-hit (closest hit), 3 alpha-tested triangles-hit (closest + any hit).
 // Primary rays only, so maxPipelineRayRecursionDepth is 1, which the spec guarantees
 // supported. Requires createRtDescriptorSet to have succeeded (uses the set layout
 // and the adopted device); on failure *rt again holds whatever was created and the
@@ -97,9 +99,9 @@ VkResult createRtPipeline(
     VkDevice device,
     const RayTracingFunctions& functions);
 
-// Build the shader binding table: fetch the three group handles from the pipeline,
-// lay them out one record per region (raygen, miss, hit — each region starting
-// baseAlignment-aligned from the table's aligned base), and store the four
+// Build the shader binding table: fetch the four group handles from the pipeline,
+// lay out raygen, RayTypeCount miss records, and one class-selected hit record per
+// scene geometry per ray type (each region starts baseAlignment-aligned), and store the four
 // VkStridedDeviceAddressRegionKHRs the trace consumes. The buffer is host-visible +
 // coherent and written once here (see the plan's scope decisions: no staging). The
 // callable region is empty but points at the table base — the VUIDs require a valid
@@ -111,5 +113,6 @@ VkResult buildShaderBindingTable(
     VkPhysicalDevice physicalDevice,
     VkDevice device,
     VmaAllocator allocator,
-    const RayTracingFunctions& functions);
+    const RayTracingFunctions& functions,
+    const SceneData& scene);
 }

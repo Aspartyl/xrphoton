@@ -51,6 +51,7 @@ struct ModelMetadata
 struct ChunkView
 {
     std::uint32_t id = 0;
+    std::uint32_t version = 0;
     std::size_t payloadOffset = 0;
     std::uint64_t payloadSize = 0;
 };
@@ -335,7 +336,11 @@ private:
                 if (flags != 0) {
                     return reject(id, "flags", "0 (optional)", hexadecimal(flags));
                 }
-                if (version != ChunkVersion) {
+                const bool supportedRigidPhysicsVersion =
+                    id == static_cast<std::uint32_t>(ChunkId::RigidPhysics)
+                    && (version == RigidPhysicsChunkVersion1
+                        || version == RigidPhysicsChunkVersion2);
+                if (!supportedRigidPhysicsVersion) {
                     // The header and framing are still validated, but an older
                     // reader must not interpret an optional payload using the
                     // wrong record schema.
@@ -352,6 +357,7 @@ private:
             if (retainChunk) {
                 chunks_.push_back({
                     .id = id,
+                    .version = version,
                     .payloadOffset = static_cast<std::size_t>(payloadOffset),
                     .payloadSize = payloadSize,
                 });
@@ -847,8 +853,12 @@ private:
 
         const std::uint64_t bodyBytes =
             static_cast<std::uint64_t>(bodyCount) * PhysicsBodyRecordSize;
+        const std::uint32_t colliderRecordSize =
+            chunk.version == RigidPhysicsChunkVersion1
+            ? PhysicsColliderRecordSize
+            : PhysicsColliderRecordSizeV2;
         const std::uint64_t colliderBytes =
-            static_cast<std::uint64_t>(colliderCount) * PhysicsColliderRecordSize;
+            static_cast<std::uint64_t>(colliderCount) * colliderRecordSize;
         const std::uint64_t expectedBytes = RigidPhysicsHeaderSize
             + bodyBytes + colliderBytes + stringByteSize;
         if (expectedBytes != chunk.payloadSize) {
@@ -944,16 +954,23 @@ private:
         materialOffsets.reserve(colliderCount);
         sourceNodeOffsets.reserve(colliderCount);
         model_.physicsColliders.reserve(colliderCount);
+        bool hasBoxCollider = false;
         for (std::uint32_t index = 0; index < colliderCount; ++index) {
             const std::size_t recordOffset = colliderArrayOffset
-                + static_cast<std::size_t>(index) * PhysicsColliderRecordSize;
+                + static_cast<std::size_t>(index) * colliderRecordSize;
             const std::uint32_t rawShapeType = readU32(bytes_, recordOffset);
-            if (rawShapeType
-                != static_cast<std::uint32_t>(PhysicsShapeType::Cylinder)) {
+            const bool cylinder = rawShapeType
+                == static_cast<std::uint32_t>(PhysicsShapeType::Cylinder);
+            const bool box = rawShapeType
+                == static_cast<std::uint32_t>(PhysicsShapeType::Box);
+            if (!cylinder
+                && !(box && chunk.version == RigidPhysicsChunkVersion2)) {
                 return reject(
                     chunk.id,
                     indexedField("colliders", index, "shapeType"),
-                    "1 (cylinder)",
+                    chunk.version == RigidPhysicsChunkVersion1
+                        ? "1 (cylinder)"
+                        : "1 (cylinder) or 2 (box)",
                     std::to_string(rawShapeType));
             }
             const std::uint32_t flags = readU32(bytes_, recordOffset + 4);
@@ -961,43 +978,19 @@ private:
                 return reject(
                     chunk.id,
                     indexedField("colliders", index, "flags"),
-                    "0 (reserved in version 1)",
+                    "0 (reserved)",
                     hexadecimal(flags));
             }
             materialOffsets.push_back(readU32(bytes_, recordOffset + 8));
             sourceNodeOffsets.push_back(readU32(bytes_, recordOffset + 12));
 
             const Position center = readPosition(bytes_, recordOffset + 16);
-            const Position axis = readPosition(bytes_, recordOffset + 28);
-            const float height = readF32(bytes_, recordOffset + 40);
-            const float radius = readF32(bytes_, recordOffset + 44);
-            const float mass = readF32(bytes_, recordOffset + 48);
-            const Position centerOfMass = readPosition(bytes_, recordOffset + 52);
             if (!positionIsFinite(center)) {
                 return reject(
                     chunk.id,
                     indexedField("colliders", index, "center"),
                     "finite f32 values",
                     "a non-finite value");
-            }
-            if (!positionIsFinite(axis)) {
-                return reject(
-                    chunk.id,
-                    indexedField("colliders", index, "axis"),
-                    "finite f32 values",
-                    "a non-finite value");
-            }
-            const double axisX = axis.x;
-            const double axisY = axis.y;
-            const double axisZ = axis.z;
-            const double axisLengthSquared =
-                axisX * axisX + axisY * axisY + axisZ * axisZ;
-            if (!std::isfinite(axisLengthSquared) || axisLengthSquared <= 0.0) {
-                return reject(
-                    chunk.id,
-                    indexedField("colliders", index, "axis length squared"),
-                    "finite and greater than 0",
-                    std::to_string(axisLengthSquared));
             }
             auto requirePositive = [&](float value, std::string_view member) {
                 if (std::isfinite(value) && value > 0.0f) {
@@ -1009,9 +1002,12 @@ private:
                     "a finite positive f32",
                     std::to_string(value));
             };
-            if (!requirePositive(height, "height")
-                || !requirePositive(radius, "radius")
-                || !requirePositive(mass, "mass")) {
+            const std::size_t massOffset = chunk.version == RigidPhysicsChunkVersion1
+                ? recordOffset + 48
+                : recordOffset + 56;
+            const float mass = readF32(bytes_, massOffset);
+            const Position centerOfMass = readPosition(bytes_, massOffset + 4);
+            if (!requirePositive(mass, "mass")) {
                 return false;
             }
             if (!positionIsFinite(centerOfMass)) {
@@ -1022,18 +1018,105 @@ private:
                     "a non-finite value");
             }
 
-            model_.physicsColliders.push_back({
-                .shapeType = PhysicsShapeType::Cylinder,
+            PhysicsCollider collider{
+                .shapeType = cylinder
+                    ? PhysicsShapeType::Cylinder
+                    : PhysicsShapeType::Box,
                 .flags = flags,
                 .material = {},
                 .sourceNode = {},
                 .center = center,
-                .axis = axis,
-                .height = height,
-                .radius = radius,
                 .mass = mass,
                 .centerOfMass = centerOfMass,
-            });
+            };
+            if (cylinder) {
+                collider.axis = readPosition(bytes_, recordOffset + 28);
+                collider.height = readF32(bytes_, recordOffset + 40);
+                collider.radius = readF32(bytes_, recordOffset + 44);
+                if (!positionIsFinite(collider.axis)) {
+                    return reject(
+                        chunk.id,
+                        indexedField("colliders", index, "axis"),
+                        "finite f32 values",
+                        "a non-finite value");
+                }
+                const double axisLengthSquared =
+                    static_cast<double>(collider.axis.x) * collider.axis.x
+                    + static_cast<double>(collider.axis.y) * collider.axis.y
+                    + static_cast<double>(collider.axis.z) * collider.axis.z;
+                if (!std::isfinite(axisLengthSquared)
+                    || axisLengthSquared <= 0.0) {
+                    return reject(
+                        chunk.id,
+                        indexedField("colliders", index, "axis length squared"),
+                        "finite and greater than 0",
+                        std::to_string(axisLengthSquared));
+                }
+                if (!requirePositive(collider.height, "height")
+                    || !requirePositive(collider.radius, "radius")) {
+                    return false;
+                }
+                if (chunk.version == RigidPhysicsChunkVersion2
+                    && (readU32(bytes_, recordOffset + 48) != 0
+                        || readU32(bytes_, recordOffset + 52) != 0)) {
+                    return reject(
+                        chunk.id,
+                        indexedField("colliders", index, "shape reserved"),
+                        "0",
+                        "a nonzero value");
+                }
+            } else {
+                hasBoxCollider = true;
+                collider.orientation = {
+                    readF32(bytes_, recordOffset + 28),
+                    readF32(bytes_, recordOffset + 32),
+                    readF32(bytes_, recordOffset + 36),
+                    readF32(bytes_, recordOffset + 40),
+                };
+                collider.halfExtents = readPosition(bytes_, recordOffset + 44);
+                const double orientationLengthSquared =
+                    static_cast<double>(collider.orientation.x) * collider.orientation.x
+                    + static_cast<double>(collider.orientation.y) * collider.orientation.y
+                    + static_cast<double>(collider.orientation.z) * collider.orientation.z
+                    + static_cast<double>(collider.orientation.w) * collider.orientation.w;
+                if (!std::isfinite(orientationLengthSquared)
+                    || std::abs(orientationLengthSquared - 1.0) > 1.0e-4) {
+                    return reject(
+                        chunk.id,
+                        indexedField("colliders", index, "orientation length squared"),
+                        "finite and within 1e-4 of 1",
+                        std::to_string(orientationLengthSquared));
+                }
+                if (!positionIsFinite(collider.halfExtents)) {
+                    return reject(
+                        chunk.id,
+                        indexedField("colliders", index, "halfExtents"),
+                        "finite f32 values",
+                        "a non-finite value");
+                }
+                if (!requirePositive(collider.halfExtents.x, "halfExtents.x")
+                    || !requirePositive(collider.halfExtents.y, "halfExtents.y")
+                    || !requirePositive(collider.halfExtents.z, "halfExtents.z")) {
+                    return false;
+                }
+            }
+            if (chunk.version == RigidPhysicsChunkVersion2
+                && (readU32(bytes_, recordOffset + 72) != 0
+                    || readU32(bytes_, recordOffset + 76) != 0)) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "reserved"),
+                    "0",
+                    "a nonzero value");
+            }
+            model_.physicsColliders.push_back(std::move(collider));
+        }
+        if (chunk.version == RigidPhysicsChunkVersion2 && !hasBoxCollider) {
+            return reject(
+                chunk.id,
+                "collider shape composition",
+                "at least one box collider in canonical version 2",
+                "cylinders only");
         }
 
         std::vector<std::uint32_t> requestedOffsets;
@@ -1400,16 +1483,8 @@ private:
 
     bool validateRuntimeProfile()
     {
-        for (std::size_t index = 0; index < model_.geometries.size(); ++index) {
-            if (model_.geometries[index].alphaTested) {
-                return reject(
-                    static_cast<std::uint32_t>(ChunkId::Geometries),
-                    indexedField("geometries", index, "geometryFlags"),
-                    "opaque geometry required by the runtime profile "
-                    "(alpha-tested consumer not yet implemented)",
-                    "alpha-tested bit 0 set");
-            }
-        }
+        // Every currently decoded v1 render concept has a runtime consumer. Keep
+        // this profile hook so later schema-only additions have one explicit gate.
         return true;
     }
 

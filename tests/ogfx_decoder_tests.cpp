@@ -194,6 +194,29 @@ Model makeRigidPhysicsQuad()
     return model;
 }
 
+Model makeBoxPhysicsQuad()
+{
+    Model model = makeQuad();
+    model.physicsBodies.push_back(PhysicsBody{
+        .firstCollider = 0,
+        .colliderCount = 1,
+        .mass = 10.0f,
+        .centerOfMass = {-0.03f, 0.03f, 0.01f},
+    });
+    model.physicsColliders.push_back(PhysicsCollider{
+        .shapeType = PhysicsShapeType::Box,
+        .flags = 0,
+        .material = "objects\\dead_body",
+        .sourceNode = "link",
+        .center = {-0.03f, 0.04f, 0.03f},
+        .orientation = {0.5f, 0.5f, 0.5f, 0.5f},
+        .halfExtents = {0.04f, 0.03f, 0.23f},
+        .mass = 10.0f,
+        .centerOfMass = {-0.03f, 0.03f, 0.01f},
+    });
+    return model;
+}
+
 std::vector<std::uint8_t> serialize(const Model& model)
 {
     const SerializeResult result = xrphoton::ogfx::serializeModel(model, "test-source");
@@ -457,7 +480,15 @@ bool modelsEqual(const Model& left, const Model& right)
             || a.center.x != b.center.x || a.center.y != b.center.y
             || a.center.z != b.center.z || a.axis.x != b.axis.x
             || a.axis.y != b.axis.y || a.axis.z != b.axis.z
-            || a.height != b.height || a.radius != b.radius || a.mass != b.mass
+            || a.height != b.height || a.radius != b.radius
+            || a.orientation.x != b.orientation.x
+            || a.orientation.y != b.orientation.y
+            || a.orientation.z != b.orientation.z
+            || a.orientation.w != b.orientation.w
+            || a.halfExtents.x != b.halfExtents.x
+            || a.halfExtents.y != b.halfExtents.y
+            || a.halfExtents.z != b.halfExtents.z
+            || a.mass != b.mass
             || a.centerOfMass.x != b.centerOfMass.x
             || a.centerOfMass.y != b.centerOfMass.y
             || a.centerOfMass.z != b.centerOfMass.z) {
@@ -584,11 +615,9 @@ void testSchemaProfile()
     } else {
         std::cerr << broadDecoded.error << '\n';
     }
-    expectRejected(
-        broadBytes,
-        "OGFX_GEOMETRIES",
-        "geometries[1].geometryFlags",
-        "alpha-tested consumer not yet implemented");
+    expectRuntimeMatchesSchema(
+        broad,
+        "runtime decoding accepts the complete textured mixed-alpha schema");
 
     const Model allOpaqueTwoMeshes = makeAllOpaqueTwoGeometryModel();
     expectRuntimeMatchesSchema(
@@ -669,12 +698,73 @@ void testRigidPhysicsSchemaAndValidation()
             && modelsEqual(emptyDecoded.model, emptyStrings),
         "UINT32_MAX preserves optional empty collider strings");
 
+    const Model boxSource = makeBoxPhysicsQuad();
+    const std::vector<std::uint8_t> boxCanonical = serialize(boxSource);
+    const DecodeResult boxSchema = xrphoton::ogfx::decodeModelSchema(
+        boxCanonical, "box-physics-schema.ogfx");
+    const DecodeResult boxRuntime = xrphoton::ogfx::decodeModel(
+        boxCanonical, "box-physics-runtime.ogfx");
+    expect(static_cast<bool>(boxSchema) && modelsEqual(boxSchema.model, boxSource)
+            && static_cast<bool>(boxRuntime)
+            && modelsEqual(boxRuntime.model, boxSource),
+        "schema and runtime decoding reconstruct version-2 oriented boxes");
+
+    constexpr std::size_t BoxColliderOffset =
+        xrphoton::ogfx::RigidPhysicsHeaderSize
+        + xrphoton::ogfx::PhysicsBodyRecordSize;
+    std::vector<RawChunk> boxChunks = splitChunks(boxCanonical);
+    writeF32(
+        &chunkById(&boxChunks, ChunkId::RigidPhysics).payload,
+        BoxColliderOffset + 28,
+        std::numeric_limits<float>::quiet_NaN());
+    expectRejected(
+        assembleFile(boxChunks),
+        "OGFX_RIGID_PHYSICS",
+        "orientation length squared");
+    boxChunks = splitChunks(boxCanonical);
+    writeF32(
+        &chunkById(&boxChunks, ChunkId::RigidPhysics).payload,
+        BoxColliderOffset + 48,
+        0.0f);
+    expectRejected(
+        assembleFile(boxChunks),
+        "OGFX_RIGID_PHYSICS",
+        "halfExtents.y");
+    boxChunks = splitChunks(boxCanonical);
+    writeU32(
+        &chunkById(&boxChunks, ChunkId::RigidPhysics).payload,
+        BoxColliderOffset + 72,
+        1);
+    expectRejected(
+        assembleFile(boxChunks),
+        "OGFX_RIGID_PHYSICS",
+        "colliders[0].reserved");
+    boxChunks = splitChunks(boxCanonical);
+    RawChunk& cylinderOnlyV2 = chunkById(&boxChunks, ChunkId::RigidPhysics);
+    writeU32(
+        &cylinderOnlyV2.payload,
+        BoxColliderOffset,
+        static_cast<std::uint32_t>(PhysicsShapeType::Cylinder));
+    writeU32(&cylinderOnlyV2.payload, BoxColliderOffset + 48, 0);
+    writeU32(&cylinderOnlyV2.payload, BoxColliderOffset + 52, 0);
+    const std::vector<std::uint8_t> noncanonicalCylinderOnlyV2 =
+        assembleFile(boxChunks);
+    expectRejected(
+        noncanonicalCylinderOnlyV2,
+        "OGFX_RIGID_PHYSICS",
+        "collider shape composition",
+        "at least one box collider in canonical version 2");
+    expectSchemaRejected(
+        noncanonicalCylinderOnlyV2,
+        "OGFX_RIGID_PHYSICS",
+        "collider shape composition");
+
     auto freshChunks = [&]() { return splitChunks(canonical); };
     chunks = freshChunks();
     chunkById(&chunks, ChunkId::RigidPhysics).flags = 1;
     expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "flags");
     chunks = freshChunks();
-    chunkById(&chunks, ChunkId::RigidPhysics).version = 2;
+    chunkById(&chunks, ChunkId::RigidPhysics).version = 3;
     Model renderOnly = source;
     renderOnly.physicsBodies.clear();
     renderOnly.physicsColliders.clear();
@@ -1067,25 +1157,20 @@ void testRangesBoundsAndRuntimeGates()
 
     Model alpha = makeQuad();
     alpha.geometries[0].alphaTested = true;
-    expectRejected(
-        serialize(alpha),
-        "OGFX_GEOMETRIES",
-        "geometries[0].geometryFlags",
-        "alpha-tested consumer not yet implemented");
+    expectRuntimeMatchesSchema(
+        alpha,
+        "runtime decoding accepts one alpha-tested geometry");
 
-    const std::vector<std::uint8_t> twoGeometry = serialize(makeTwoGeometryModel());
-    expectRejected(
-        twoGeometry,
-        "OGFX_GEOMETRIES",
-        "geometries[1].geometryFlags",
-        "alpha-tested consumer not yet implemented");
+    const Model twoGeometryModel = makeTwoGeometryModel();
+    const std::vector<std::uint8_t> twoGeometry = serialize(twoGeometryModel);
+    expectRuntimeMatchesSchema(
+        twoGeometryModel,
+        "runtime decoding accepts separate opaque and alpha-tested meshes");
     Model oneMeshTwoGeometries = makeTwoGeometryModel();
     oneMeshTwoGeometries.meshes = {Mesh{0, 2}};
-    expectRejected(
-        serialize(oneMeshTwoGeometries),
-        "OGFX_GEOMETRIES",
-        "geometries[1].geometryFlags",
-        "alpha-tested consumer not yet implemented");
+    expectRuntimeMatchesSchema(
+        oneMeshTwoGeometries,
+        "runtime decoding accepts mixed geometry classes in one mesh");
     chunks = splitChunks(twoGeometry);
     RawChunk& meshes = chunkById(&chunks, ChunkId::Meshes);
     writeU32(&meshes.payload, 4, 0);

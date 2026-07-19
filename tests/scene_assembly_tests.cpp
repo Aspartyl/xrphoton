@@ -2,6 +2,7 @@
 #include "ogfx_loader.hpp"
 #include "scene_assembly.hpp"
 #include "scene_assembly_detail.hpp"
+#include "ray_types.hpp"
 
 #include <array>
 #include <cstdint>
@@ -768,23 +769,30 @@ void testCountBoundaries()
             std::string(name) + " total above UINT32_MAX is rejected");
     }
 
-    constexpr std::uint64_t geometryLimit = std::uint64_t{1} << 24;
+    constexpr std::uint64_t geometryLimit =
+        ((std::uint64_t{1} << 24) - 1) / xrphoton::RayTypeCount + 1;
     Counts destination{};
     Counts source{};
-    destination.geometries = geometryLimit - 2;
+    destination.geometries = geometryLimit - 1;
     source.geometries = 1;
     std::string error;
     expect(
         xrphoton::scene_assembly_detail::validateSceneAppendCounts(
             destination, source, &error),
-        "geometry total one below 24-bit limit is accepted");
+        "the largest geometry total whose RayTypeCount-scaled SBT offset fits is accepted");
 
     source.geometries = 2;
     expectCountRejected(
-        destination, source, "geometry", "geometry total at 1 << 24 is rejected");
+        destination,
+        source,
+        "geometry",
+        "the first geometry total whose RayTypeCount-scaled SBT offset does not fit is rejected");
     source.geometries = 3;
     expectCountRejected(
-        destination, source, "geometry", "geometry total above 1 << 24 is rejected");
+        destination,
+        source,
+        "geometry",
+        "larger geometry totals beyond the scaled 24-bit SBT limit are rejected");
 
     destination = {};
     source = {};
