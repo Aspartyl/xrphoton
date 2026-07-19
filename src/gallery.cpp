@@ -44,6 +44,7 @@ enum GalleryAssetIndex : uint32_t
     PlitkaAsset,
     BlenderPyramidAsset,
     BlenderSphereAsset,
+    BlenderSmoothSphereAsset,
 };
 
 struct LoadedGalleryAsset
@@ -87,44 +88,56 @@ constexpr std::array GalleryAssets{
         .optional = true,
         .configurationName = "XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX",
     },
+    GalleryAsset{
+        .name = "test_smooth_sphere",
+        .ogfxPath = XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX",
+    },
 };
-static_assert(BlenderSphereAsset + 1 == GalleryAssets.size());
+static_assert(BlenderSmoothSphereAsset + 1 == GalleryAssets.size());
 
 const std::array GalleryPlacements{
     // Place every preview's vertical center on the y=0 screen row and keep every
-    // placement origin at z=5.5. These X positions come from the actual compiled
-    // vertices: at the startup 16:9 camera they center the complete six-placement
+    // placement origin at z=7.25. These X positions come from the actual compiled
+    // vertices: at the startup 16:9 camera they center the complete seven-placement
     // row and leave a 0.06-NDC gap between every adjacent silhouette.
     GalleryPlacement{
         .assetIndex = QuadAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-6.469370f, 0.0f, 5.5f}),
+            glm::vec3{-8.076615f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = PlitkaAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-5.505742f, -1.431630f, 5.5f}),
+            glm::vec3{-7.004972f, -1.431630f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderPyramidAsset,
         // Perspective-center the source Y=[0, 2] bounds on the preview row.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-1.673251f, -0.928571f, 5.5f}),
+            glm::vec3{-3.064710f, -0.942857f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{0.788628f, 0.0f, 5.5f}),
+            glm::vec3{-0.482741f, 0.0f, 7.25f}),
+    },
+    GalleryPlacement{
+        .assetIndex = BlenderSmoothSphereAsset,
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{2.090619f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{3.123528f, 0.0f, 5.5f}),
+            glm::vec3{4.583659f, 0.0f, 7.25f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
@@ -132,7 +145,7 @@ const std::array GalleryPlacements{
         // rotate around world-up, then move the result into the gallery row.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{5.548693f, -0.026433f, 5.5f})
+                         glm::vec3{7.156454f, -0.021602f, 7.25f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(30.0f),

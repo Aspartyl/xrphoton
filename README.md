@@ -33,12 +33,12 @@ textured legacy `plitka1.ogfx` as a fourth placement through the same runtime pa
 That plitka configuration reaches the interactive render loop and passes plain,
 GPU-assisted, and synchronization validation; its final on-screen orientation,
 scale, winding, and texture appearance still require owner visual sign-off.
-The converted `test_pyramid.ogfx` and flat-shaded `test_sphere.ogfx` can be
-configured independently as Blender gallery placements. With plitka and both
-Blender assets enabled, the gallery contains five BLASes and six TLAS instances;
-the wedge remains the shared-BLAS probe. The pyramid has received manual visual
-sign-off, while the sphere is also the dense-triangulation, UV-seam, and
-corner-splitting fixture.
+The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`, and
+`test_smooth_sphere.ogfx` can be configured independently as Blender gallery
+placements. With plitka and all three enabled, the gallery contains six BLASes
+and seven TLAS instances; the wedge remains the shared-BLAS probe. The two
+spheres have identical geometry and UV corner streams but deliberately different
+normal sharing, making flat-versus-smooth shading directly observable.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
@@ -66,10 +66,11 @@ runtime path, with final visual sign-off pending. The Blender slice uses Blender
 one explicitly named, material-free static mesh. A private `XRBM` stream crosses
 stdin to the C++ adapter, which performs coordinate/normal/winding conversion and
 feeds the same canonical writer used by every other source. `test_pyramid` is the
-first gallery probe and the flat-shaded `test_sphere` exercises dense
-triangulation, its UV seam, and corner splitting. Both now use the optional
-gallery path; the pyramid has manual visual sign-off, while the sphere's visual
-and GPU sign-off remain pending. The next
+first gallery probe; the flat-shaded `test_sphere` exercises dense triangulation,
+its UV seam, and corner splitting; and `test_smooth_sphere` proves that equal
+positions share smooth normals while UV seams remain split. All three use the
+optional gallery path. The pyramid and flat sphere have manual visual sign-off;
+the smooth comparison remains pending. The next
 source-profile milestone is `bochka_fuel`, once its hierarchy, bone, and IK/physics
 contracts exist. Dynamic scenes
 (TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
@@ -147,20 +148,21 @@ sends a bounded private `XRBM` extraction stream to
 `xrPhotonAssetCompiler convert-blender`, and the shared C++ writer publishes the
 canonical file.
 
-For the two local regression sources, configure their ignored paths once and run
+For the three local regression sources, configure their ignored paths once and run
 the opt-in end-to-end proof:
 
 ```sh
 cmake --preset ogfx-core \
   -DXRPHOTON_BLENDER_EXECUTABLE=/path/to/blender \
   -DXRPHOTON_BLENDER_PYRAMID_BLEND="$PWD/blender/test_pyramid.blend" \
-  -DXRPHOTON_BLENDER_SPHERE_BLEND="$PWD/blender/test_sphere.blend"
+  -DXRPHOTON_BLENDER_SPHERE_BLEND="$PWD/blender/test_sphere.blend" \
+  -DXRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND="$PWD/blender/test_smooth_sphere.blend"
 cmake --build --preset ogfx-core --target xrPhotonBlenderOfflineProof
 ```
 
 It runs the real Blender extractor and compiler twice for each fixture, verifies
 deterministic canonical schema reconstruction, and persists
-`test_pyramid.ogfx` and `test_sphere.ogfx` under
+`test_pyramid.ogfx`, `test_sphere.ogfx`, and `test_smooth_sphere.ogfx` under
 `build/ogfx-core/assets/blender/`. Normal builds do not depend on Blender or the
 ignored `.blend` files.
 
@@ -185,7 +187,7 @@ untracked and normal builds do not depend on it.
 ### Configuring the optional gallery entries
 
 The generated quad and wedge need no local source files. To add the verified
-plitka output, its original texture, and both converted Blender assets to the
+plitka output, its original texture, and all three converted Blender assets to the
 debug gallery, configure the owner-local paths once, then build normally:
 
 ```sh
@@ -193,6 +195,7 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_PLITKA_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_OGFX="$PWD/build/ogfx-core/assets/blender/test_pyramid.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_sphere.ogfx" \
+  -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_smooth_sphere.ogfx" \
   -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
 cmake --build --preset debug
 ./build/debug/xrPhoton
@@ -203,7 +206,8 @@ The texture root must preserve the exact-case relative path
 each build tree, so configure the `release` preset the same way when needed. With
 an empty `XRPHOTON_GALLERY_PLITKA_OGFX`,
 `XRPHOTON_GALLERY_BLENDER_OGFX`, or
-`XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX`, xrPhoton skips that optional entry. Once
+`XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX`, or
+`XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX`, xrPhoton skips that optional entry. Once
 an entry is configured, a missing/broken OGFx—or plitka texture root/DDS—is a
 loud startup failure rather than a silent fallback. The original game files,
 Blender sources, and generated proof outputs remain Git-ignored local inputs.

@@ -62,6 +62,8 @@ set(XRPHOTON_TEST_QUAD_ASSET ${XRPHOTON_PROBE_ASSET_DIR}/test_quad.ogfx)
 set(XRPHOTON_TEST_WEDGE_ASSET ${XRPHOTON_PROBE_ASSET_DIR}/test_wedge.ogfx)
 set(XRPHOTON_TEST_PYRAMID_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_pyramid.ogfx)
 set(XRPHOTON_TEST_SPHERE_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_sphere.ogfx)
+set(XRPHOTON_TEST_SMOOTH_SPHERE_ASSET
+    ${XRPHOTON_BLENDER_ASSET_DIR}/test_smooth_sphere.ogfx)
 # Reserve the modern-content namespace even before the first Blender exporter
 # output lands. Generated probe and SoC directories are created by their writers.
 file(MAKE_DIRECTORY ${XRPHOTON_BLENDER_ASSET_DIR})
@@ -166,6 +168,9 @@ if(BUILD_TESTING)
     set(XRPHOTON_BLENDER_SPHERE_BLEND
         "${CMAKE_SOURCE_DIR}/blender/test_sphere.blend" CACHE FILEPATH
         "Local ignored sphere .blend used by the opt-in Blender proof")
+    set(XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND
+        "${CMAKE_SOURCE_DIR}/blender/test_smooth_sphere.blend" CACHE FILEPATH
+        "Local ignored smooth sphere .blend used by the opt-in Blender proof")
     add_custom_target(xrPhotonBlenderOfflineProof
         COMMAND ${CMAKE_COMMAND}
             -DBLENDER_EXECUTABLE=${XRPHOTON_BLENDER_EXECUTABLE}
@@ -176,6 +181,8 @@ if(BUILD_TESTING)
             -DPYRAMID_OUTPUT=${XRPHOTON_TEST_PYRAMID_ASSET}
             -DSPHERE_BLEND=${XRPHOTON_BLENDER_SPHERE_BLEND}
             -DSPHERE_OUTPUT=${XRPHOTON_TEST_SPHERE_ASSET}
+            -DSMOOTH_SPHERE_BLEND=${XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND}
+            -DSMOOTH_SPHERE_OUTPUT=${XRPHOTON_TEST_SMOOTH_SPHERE_ASSET}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/blender_offline_proof.cmake
         DEPENDS
             xrPhotonAssetCompiler
@@ -203,6 +210,8 @@ set(XRPHOTON_GALLERY_BLENDER_OGFX "" CACHE FILEPATH
     "Optional converted Blender pyramid OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX "" CACHE FILEPATH
     "Optional converted Blender sphere OGFx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX "" CACHE FILEPATH
+    "Optional converted Blender smooth sphere OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_TEXTURE_ROOT "" CACHE PATH
     "Texture root containing the DDS paths referenced by configured gallery assets")
 
@@ -224,6 +233,13 @@ if(XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX)
         ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 else()
     set(XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX}"
+        ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE "")
 endif()
 if(XRPHOTON_GALLERY_TEXTURE_ROOT)
     get_filename_component(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE
@@ -348,6 +364,7 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_GALLERY_PLITKA_OGFX=u8\"${XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"
 )
 

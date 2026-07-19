@@ -25,12 +25,12 @@ texture appearance still require owner visual sign-off. Every entry uses the sam
 OGFx decoder, `SceneData`, GPU upload, acceleration-structure, material/texture, and
 shader path.
 
-The converted `test_pyramid.ogfx` and `test_sphere.ogfx` are independent optional
-gallery assets. With plitka and both Blender assets configured, five models become
-six placements through five BLASes; the wedge remains the shared-BLAS probe. The
-pyramid has received manual visual sign-off, while the flat-shaded sphere makes
-dense triangulation, its UV seam, and corner splitting visible through the same
-runtime path. The sphere's visual and GPU sign-off remain pending.
+The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`, and
+`test_smooth_sphere.ogfx` are independent optional gallery assets. With plitka and
+all three configured, six models become seven placements through six BLASes; the
+wedge remains the shared-BLAS probe. The sphere pair has identical indexed
+position/UV corner streams but deliberately different normals: flat-face splits
+versus shared smooth normals that remain split only at the UV seam.
 
 The landed texture foundation validates strict DDS DXT1/DXT5 input, uploads BC1/BC3
 payloads directly, always supplies an opaque-white fallback at image zero, and
@@ -47,9 +47,10 @@ convert-blender`. [`src/blender_mesh.cpp`](src/blender_mesh.cpp) bakes scene uni
 and the object transform, maps Blender `(x, y, z)` to engine `(x, z, y)`, applies
 inverse-transpose normal transformation, and reverses winding according to the
 combined object/axis-transform determinant before populating the ordinary compiler
-model. Only the shared canonical writer serializes OGFx. `test_pyramid` and the
-flat-shaded `test_sphere` are optional gallery probes; the sphere also exercises
-dense triangulation, its UV seam, and corner splitting.
+model. Only the shared canonical writer serializes OGFx. `test_pyramid`, the
+flat-shaded `test_sphere`, and `test_smooth_sphere` are optional gallery probes.
+The sphere pair exercises dense triangulation, UV seams, corner splitting, and
+flat-versus-smooth normal preservation.
 
 ## Goals and constraints
 
@@ -915,11 +916,11 @@ Decisions and contracts worth preserving:
    system, and shaders. Source-specific work stays offline. The narrow M4a legacy
    adapter and `xrPhotonAssetCompiler convert-ogf` produced plitka; Blender is not
    part of that conversion path. The separate landed `convert-blender` path produces
-   `test_pyramid.ogfx` and the flat-shaded dense-triangulation/UV-seam/corner-
-   splitting `test_sphere.ogfx` for the optional gallery beneath
-   `build/<preset>/assets/blender/`.
-   The pyramid has received manual gallery sign-off; the sphere now travels through
-   the same runtime path, with its visual and GPU sign-off still pending. The next
+   `test_pyramid.ogfx`, the flat-shaded dense-triangulation/UV-seam/corner-
+   splitting `test_sphere.ogfx`, and its smooth-normal comparison
+   `test_smooth_sphere.ogfx` for the optional gallery beneath
+   `build/<preset>/assets/blender/`. The pyramid and flat sphere have received
+   manual gallery sign-off; the smooth comparison remains pending. The next
    source-profile milestone is `bochka_fuel`.
    The temporary code-owned tables
    supply placements until scene/level data has a real owner; world instances

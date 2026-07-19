@@ -14,6 +14,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
@@ -1055,6 +1056,8 @@ void verifyPyramidOutput(const std::filesystem::path& path)
 }
 
 using PositionKey = std::array<std::uint32_t, 3>;
+using NormalKey = std::array<std::uint32_t, 3>;
+using UvKey = std::array<std::uint32_t, 2>;
 
 PositionKey positionKey(const xrphoton::ogfx::Position& position)
 {
@@ -1065,6 +1068,34 @@ PositionKey positionKey(const xrphoton::ogfx::Position& position)
     };
 }
 
+NormalKey normalKey(const xrphoton::ogfx::VertexAttributes& attributes)
+{
+    return {
+        std::bit_cast<std::uint32_t>(attributes.nx),
+        std::bit_cast<std::uint32_t>(attributes.ny),
+        std::bit_cast<std::uint32_t>(attributes.nz),
+    };
+}
+
+UvKey uvKey(const xrphoton::ogfx::VertexAttributes& attributes)
+{
+    return {
+        std::bit_cast<std::uint32_t>(attributes.u),
+        std::bit_cast<std::uint32_t>(attributes.v),
+    };
+}
+
+bool hasApproximateUnitSphereBounds(const Model& model)
+{
+    const Bounds bounds = calculateBounds(model);
+    return near(bounds.minimum.x, -1.0f, 1.0e-5f)
+        && near(bounds.maximum.x, 1.0f, 1.0e-5f)
+        && near(bounds.minimum.y, -1.0f, 1.0e-5f)
+        && near(bounds.maximum.y, 1.0f, 1.0e-5f)
+        && near(bounds.minimum.z, -1.0f, 1.0e-5f)
+        && near(bounds.maximum.z, 1.0f, 1.0e-5f);
+}
+
 void verifySphereOutput(const std::filesystem::path& path)
 {
     Model model{};
@@ -1073,37 +1104,123 @@ void verifySphereOutput(const std::filesystem::path& path)
         return;
     }
 
-    const Bounds bounds = calculateBounds(model);
-    expect(near(bounds.minimum.x, -1.0f, 1.0e-5f)
-            && near(bounds.maximum.x, 1.0f, 1.0e-5f)
-            && near(bounds.minimum.y, -1.0f, 1.0e-5f)
-            && near(bounds.maximum.y, 1.0f, 1.0e-5f)
-            && near(bounds.minimum.z, -1.0f, 1.0e-5f)
-            && near(bounds.maximum.z, 1.0f, 1.0e-5f),
+    expect(hasApproximateUnitSphereBounds(model),
         "test_sphere retains approximate unit bounds after the engine axis map");
 
-    using AttributeTuple = std::array<float, 5>;
-    std::map<PositionKey, AttributeTuple> firstAttributesByPosition;
-    bool hasSplitPosition = false;
+    std::map<PositionKey, std::pair<NormalKey, UvKey>> firstAttributesByPosition;
+    bool hasNormalSplit = false;
+    bool hasUvSplit = false;
     for (std::size_t index = 0; index < model.positions.size(); ++index) {
         const auto& attributes = model.attributes[index];
-        const AttributeTuple attributeTuple{
-            attributes.nx,
-            attributes.ny,
-            attributes.nz,
-            attributes.u,
-            attributes.v,
-        };
+        const std::pair attributeTuple{normalKey(attributes), uvKey(attributes)};
         const auto [found, inserted] = firstAttributesByPosition.emplace(
             positionKey(model.positions[index]), attributeTuple);
-        if (!inserted && found->second != attributeTuple) {
-            hasSplitPosition = true;
+        if (!inserted) {
+            hasNormalSplit |= found->second.first != attributeTuple.first;
+            hasUvSplit |= found->second.second != attributeTuple.second;
         }
     }
-    expect(firstAttributesByPosition.size() < model.positions.size(),
-        "test_sphere has fewer unique positions than unified corner vertices");
-    expect(hasSplitPosition,
-        "test_sphere splits at least one equal position by UV or normal attributes");
+    expect(firstAttributesByPosition.size() == 482,
+        "test_sphere retains the source UV sphere's 482 geometric positions");
+    expect(hasNormalSplit,
+        "test_sphere splits equal positions across flat face normals");
+    expect(hasUvSplit,
+        "test_sphere also preserves its UV seam splits");
+}
+
+void verifySmoothSphereOutput(const std::filesystem::path& path)
+{
+    Model model{};
+    if (!verifyCommonBlenderProofOutput(
+            path, "test_smooth_sphere", 559, 2880, &model)) {
+        return;
+    }
+
+    expect(hasApproximateUnitSphereBounds(model),
+        "test_smooth_sphere retains approximate unit bounds after the engine axis map");
+
+    std::map<PositionKey, std::pair<NormalKey, UvKey>> firstAttributesByPosition;
+    bool hasNormalSplit = false;
+    bool hasUvSplit = false;
+    for (std::size_t index = 0; index < model.positions.size(); ++index) {
+        const auto& attributes = model.attributes[index];
+        const std::pair attributeTuple{normalKey(attributes), uvKey(attributes)};
+        const auto [found, inserted] = firstAttributesByPosition.emplace(
+            positionKey(model.positions[index]), attributeTuple);
+        if (!inserted) {
+            hasNormalSplit |= found->second.first != attributeTuple.first;
+            hasUvSplit |= found->second.second != attributeTuple.second;
+        }
+    }
+    expect(firstAttributesByPosition.size() == 482,
+        "test_smooth_sphere retains the source UV sphere's 482 geometric positions");
+    expect(!hasNormalSplit,
+        "test_smooth_sphere shares one smooth normal across every equal position");
+    expect(hasUvSplit,
+        "test_smooth_sphere preserves UV seam splits without splitting its normals");
+}
+
+void verifySpherePairOutputs(
+    const std::filesystem::path& flatPath,
+    const std::filesystem::path& smoothPath)
+{
+    std::vector<std::uint8_t> flatBytes;
+    std::vector<std::uint8_t> smoothBytes;
+    if (!readBytes(flatPath, &flatBytes) || !readBytes(smoothPath, &smoothBytes)) {
+        ++failureCount;
+        return;
+    }
+    const DecodeResult flat =
+        xrphoton::ogfx::decodeModelSchema(flatBytes, flatPath.string());
+    const DecodeResult smooth =
+        xrphoton::ogfx::decodeModelSchema(smoothBytes, smoothPath.string());
+    expect(static_cast<bool>(flat) && static_cast<bool>(smooth),
+        "flat/smooth sphere comparison inputs pass schema decoding");
+    if (!flat || !smooth) {
+        if (!flat) {
+            std::cerr << flat.error << '\n';
+        }
+        if (!smooth) {
+            std::cerr << smooth.error << '\n';
+        }
+        return;
+    }
+
+    const bool matchingCornerCounts =
+        flat.model.indices.size() == smooth.model.indices.size();
+    expect(matchingCornerCounts,
+        "flat and smooth spheres have the same triangle-corner count");
+    if (!matchingCornerCounts) {
+        return;
+    }
+
+    bool positionsMatch = true;
+    bool uvsMatch = true;
+    bool normalDiffers = false;
+    for (std::size_t corner = 0; corner < flat.model.indices.size(); ++corner) {
+        const std::size_t flatIndex = flat.model.indices[corner];
+        const std::size_t smoothIndex = smooth.model.indices[corner];
+        if (flatIndex >= flat.model.positions.size()
+            || flatIndex >= flat.model.attributes.size()
+            || smoothIndex >= smooth.model.positions.size()
+            || smoothIndex >= smooth.model.attributes.size()) {
+            positionsMatch = false;
+            uvsMatch = false;
+            break;
+        }
+        positionsMatch &= positionKey(flat.model.positions[flatIndex])
+            == positionKey(smooth.model.positions[smoothIndex]);
+        uvsMatch &= uvKey(flat.model.attributes[flatIndex])
+            == uvKey(smooth.model.attributes[smoothIndex]);
+        normalDiffers |= normalKey(flat.model.attributes[flatIndex])
+            != normalKey(smooth.model.attributes[smoothIndex]);
+    }
+    expect(positionsMatch,
+        "flat and smooth spheres have the same indexed geometric corner stream");
+    expect(uvsMatch,
+        "flat and smooth spheres have the same indexed UV corner stream");
+    expect(normalDiffers,
+        "flat and smooth spheres differ in their exported corner normals");
 }
 }
 
@@ -1121,6 +1238,17 @@ int main(int argumentCount, char** arguments)
                       << " Blender asset compiler CLI assertion(s) failed.\n";
             return 1;
         }
+        return 0;
+    }
+    if (argumentCount == 4
+        && std::string_view(arguments[1]) == "--verify-sphere-pair") {
+        verifySpherePairOutputs(arguments[2], arguments[3]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " flat/smooth sphere comparison assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Flat/smooth sphere OGFx comparison passed.\n";
         return 0;
     }
     if (argumentCount == 3
@@ -1145,13 +1273,26 @@ int main(int argumentCount, char** arguments)
         std::cout << "test_sphere OGFx output verification passed.\n";
         return 0;
     }
+    if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-smooth-sphere-output") {
+        verifySmoothSphereOutput(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " test_smooth_sphere offline proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "test_smooth_sphere OGFx output verification passed.\n";
+        return 0;
+    }
     if (argumentCount != 1) {
         std::cerr
             << "Usage: xrPhotonBlenderMeshTests\n"
             << "       xrPhotonBlenderMeshTests --write-cli-fixture <path|->\n"
             << "       xrPhotonBlenderMeshTests --verify-cli-outputs <first> <second>\n"
             << "       xrPhotonBlenderMeshTests --verify-pyramid-output <ogfx>\n"
-            << "       xrPhotonBlenderMeshTests --verify-sphere-output <ogfx>\n";
+            << "       xrPhotonBlenderMeshTests --verify-sphere-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-smooth-sphere-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-sphere-pair <flat> <smooth>\n";
         return 1;
     }
 

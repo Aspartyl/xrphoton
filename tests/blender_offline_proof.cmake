@@ -8,7 +8,9 @@ set(required_variables
     PYRAMID_BLEND
     PYRAMID_OUTPUT
     SPHERE_BLEND
-    SPHERE_OUTPUT)
+    SPHERE_OUTPUT
+    SMOOTH_SPHERE_BLEND
+    SMOOTH_SPHERE_OUTPUT)
 foreach(required_variable IN LISTS required_variables)
     if(NOT DEFINED ${required_variable}
         OR "${${required_variable}}" STREQUAL "")
@@ -22,13 +24,19 @@ set(pyramid_candidate_1 "${PYRAMID_OUTPUT}.proof-candidate-1")
 set(pyramid_candidate_2 "${PYRAMID_OUTPUT}.proof-candidate-2")
 set(sphere_candidate_1 "${SPHERE_OUTPUT}.proof-candidate-1")
 set(sphere_candidate_2 "${SPHERE_OUTPUT}.proof-candidate-2")
+set(smooth_sphere_candidate_1
+    "${SMOOTH_SPHERE_OUTPUT}.proof-candidate-1")
+set(smooth_sphere_candidate_2
+    "${SMOOTH_SPHERE_OUTPUT}.proof-candidate-2")
 
 function(cleanup_proof_candidates)
     file(REMOVE
         "${pyramid_candidate_1}"
         "${pyramid_candidate_2}"
         "${sphere_candidate_1}"
-        "${sphere_candidate_2}")
+        "${sphere_candidate_2}"
+        "${smooth_sphere_candidate_1}"
+        "${smooth_sphere_candidate_2}")
 endfunction()
 
 function(proof_failure)
@@ -42,6 +50,8 @@ cmake_path(ABSOLUTE_PATH PYRAMID_OUTPUT NORMALIZE
     OUTPUT_VARIABLE pyramid_output_absolute)
 cmake_path(ABSOLUTE_PATH SPHERE_OUTPUT NORMALIZE
     OUTPUT_VARIABLE sphere_output_absolute)
+cmake_path(ABSOLUTE_PATH SMOOTH_SPHERE_OUTPUT NORMALIZE
+    OUTPUT_VARIABLE smooth_sphere_output_absolute)
 set(candidate_path "${pyramid_candidate_1}")
 cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
     OUTPUT_VARIABLE pyramid_candidate_1_absolute)
@@ -54,13 +64,22 @@ cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
 set(candidate_path "${sphere_candidate_2}")
 cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
     OUTPUT_VARIABLE sphere_candidate_2_absolute)
+set(candidate_path "${smooth_sphere_candidate_1}")
+cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
+    OUTPUT_VARIABLE smooth_sphere_candidate_1_absolute)
+set(candidate_path "${smooth_sphere_candidate_2}")
+cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
+    OUTPUT_VARIABLE smooth_sphere_candidate_2_absolute)
 set(mutable_paths
     "${pyramid_output_absolute}"
     "${sphere_output_absolute}"
+    "${smooth_sphere_output_absolute}"
     "${pyramid_candidate_1_absolute}"
     "${pyramid_candidate_2_absolute}"
     "${sphere_candidate_1_absolute}"
-    "${sphere_candidate_2_absolute}")
+    "${sphere_candidate_2_absolute}"
+    "${smooth_sphere_candidate_1_absolute}"
+    "${smooth_sphere_candidate_2_absolute}")
 set(unique_mutable_paths ${mutable_paths})
 list(REMOVE_DUPLICATES unique_mutable_paths)
 list(LENGTH mutable_paths mutable_path_count)
@@ -73,7 +92,7 @@ endif()
 
 foreach(input_variable
         BLENDER_EXECUTABLE EXPORT_SCRIPT ASSET_COMPILER VERIFIER
-        PYRAMID_BLEND SPHERE_BLEND)
+        PYRAMID_BLEND SPHERE_BLEND SMOOTH_SPHERE_BLEND)
     set(input_path "${${input_variable}}")
     cmake_path(ABSOLUTE_PATH input_path NORMALIZE
         OUTPUT_VARIABLE input_path_absolute)
@@ -86,7 +105,7 @@ endforeach()
 
 foreach(input_variable
         BLENDER_EXECUTABLE EXPORT_SCRIPT ASSET_COMPILER VERIFIER
-        PYRAMID_BLEND SPHERE_BLEND)
+        PYRAMID_BLEND SPHERE_BLEND SMOOTH_SPHERE_BLEND)
     if(NOT EXISTS "${${input_variable}}")
         proof_failure(
             "${input_variable} does not exist: ${${input_variable}}")
@@ -97,7 +116,7 @@ foreach(input_variable
     endif()
 endforeach()
 
-foreach(output_variable PYRAMID_OUTPUT SPHERE_OUTPUT)
+foreach(output_variable PYRAMID_OUTPUT SPHERE_OUTPUT SMOOTH_SPHERE_OUTPUT)
     if(IS_DIRECTORY "${${output_variable}}")
         proof_failure(
             "${output_variable} must not identify a directory: ${${output_variable}}")
@@ -187,6 +206,16 @@ export_candidate(
     "${SPHERE_BLEND}"
     "test_sphere"
     "${sphere_candidate_2}")
+export_candidate(
+    "test_smooth_sphere first pass"
+    "${SMOOTH_SPHERE_BLEND}"
+    "test_smooth_sphere"
+    "${smooth_sphere_candidate_1}")
+export_candidate(
+    "test_smooth_sphere second pass"
+    "${SMOOTH_SPHERE_BLEND}"
+    "test_smooth_sphere"
+    "${smooth_sphere_candidate_2}")
 
 function(require_identical asset_label first_candidate second_candidate)
     execute_process(
@@ -206,6 +235,10 @@ require_identical(
     "test_pyramid" "${pyramid_candidate_1}" "${pyramid_candidate_2}")
 require_identical(
     "test_sphere" "${sphere_candidate_1}" "${sphere_candidate_2}")
+require_identical(
+    "test_smooth_sphere"
+    "${smooth_sphere_candidate_1}"
+    "${smooth_sphere_candidate_2}")
 
 function(verify_candidate asset_label verifier_flag candidate_path)
     execute_process(
@@ -229,15 +262,36 @@ verify_candidate(
     "test_sphere"
     "--verify-sphere-output"
     "${sphere_candidate_1}")
+verify_candidate(
+    "test_smooth_sphere"
+    "--verify-smooth-sphere-output"
+    "${smooth_sphere_candidate_1}")
+
+execute_process(
+    COMMAND "${VERIFIER}" --verify-sphere-pair
+        "${sphere_candidate_1}" "${smooth_sphere_candidate_1}"
+    RESULT_VARIABLE sphere_pair_result
+    OUTPUT_VARIABLE sphere_pair_output
+    ERROR_VARIABLE sphere_pair_error)
+if(NOT "${sphere_pair_result}" STREQUAL "0")
+    proof_failure(
+        "flat/smooth sphere comparison failed with exit ${sphere_pair_result}\n"
+        "stdout: ${sphere_pair_output}\nstderr: ${sphere_pair_error}")
+endif()
 
 file(SIZE "${pyramid_candidate_1}" pyramid_size)
 file(SHA256 "${pyramid_candidate_1}" pyramid_hash)
 file(SIZE "${sphere_candidate_1}" sphere_size)
 file(SHA256 "${sphere_candidate_1}" sphere_hash)
+file(SIZE "${smooth_sphere_candidate_1}" smooth_sphere_size)
+file(SHA256 "${smooth_sphere_candidate_1}" smooth_sphere_hash)
 
 # The duplicate candidates are no longer needed. Each remaining candidate is
 # replaced into its destination with one same-directory atomic rename.
-file(REMOVE "${pyramid_candidate_2}" "${sphere_candidate_2}")
+file(REMOVE
+    "${pyramid_candidate_2}"
+    "${sphere_candidate_2}"
+    "${smooth_sphere_candidate_2}")
 file(RENAME
     "${pyramid_candidate_1}" "${PYRAMID_OUTPUT}"
     RESULT pyramid_publish_result)
@@ -254,6 +308,14 @@ if(NOT sphere_publish_result STREQUAL "0")
         "test_sphere proof succeeded but publishing its output failed: "
         "${sphere_publish_result}")
 endif()
+file(RENAME
+    "${smooth_sphere_candidate_1}" "${SMOOTH_SPHERE_OUTPUT}"
+    RESULT smooth_sphere_publish_result)
+if(NOT smooth_sphere_publish_result STREQUAL "0")
+    proof_failure(
+        "test_smooth_sphere proof succeeded but publishing its output failed: "
+        "${smooth_sphere_publish_result}")
+endif()
 
 message(STATUS
     "Blender offline proof passed: test_pyramid ${pyramid_size} bytes / "
@@ -262,4 +324,8 @@ message(STATUS
     "Blender offline proof passed: test_sphere ${sphere_size} bytes / "
     "SHA-256 ${sphere_hash}")
 message(STATUS
-    "Persistent Blender proof outputs: ${PYRAMID_OUTPUT}; ${SPHERE_OUTPUT}")
+    "Blender offline proof passed: test_smooth_sphere ${smooth_sphere_size} "
+    "bytes / SHA-256 ${smooth_sphere_hash}")
+message(STATUS
+    "Persistent Blender proof outputs: ${PYRAMID_OUTPUT}; ${SPHERE_OUTPUT}; "
+    "${SMOOTH_SPHERE_OUTPUT}")

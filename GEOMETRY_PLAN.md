@@ -24,11 +24,10 @@
 
 > **Landed Blender opaque update (2026-07-18).** The primary modern-content
 > adapter now runs headlessly in Blender 5.1.x. It converts the material-free
-> `test_pyramid` and `test_sphere` gallery probes through the private stdin-only
-> `XRBM` exchange and the shared canonical writer; the sphere remains the dense-
-> triangulation/UV-seam regression fixture. The pyramid has manual visual sign-off,
-> while the sphere's visual and GPU sign-off remain pending. `bochka_fuel` is the
-> next source-profile milestone.
+> `test_pyramid`, `test_sphere`, and `test_smooth_sphere` gallery probes through
+> the private stdin-only `XRBM` exchange and shared canonical writer. The sphere
+> pair pins identical geometry/UV corner streams with flat-face splits versus
+> shared smooth normals. `bochka_fuel` is the next source-profile milestone.
 
 This is the implementation record for roadmap step 2 in
 [ARCHITECTURE.md](ARCHITECTURE.md). M1–M3b describe landed work; later
@@ -1082,8 +1081,8 @@ removed the texture/string-arena gates with the image consumer; only the alpha
 capability gate remains. M4a starts at legacy OGF parsing and never forks the OGFx
 writer.
 
-**Blender opaque export probe — milestone number deferred. Landed; sphere
-manual/GPU gallery validation pending.** Blender 5.1.x runs
+**Blender opaque export probe — milestone number deferred. Landed; smooth
+comparison gallery validation pending.** Blender 5.1.x runs
 `tools/blender/export_ogfx.py` headlessly against one explicitly named source
 object. The Python side validates and extracts evaluated triangle corners into
 the private versioned `XRBM` stdin exchange; `src/blender_mesh.cpp` performs
@@ -1092,12 +1091,13 @@ inverse transpose to normals, corrects winding from the complete transform's
 determinant, deduplicates vertices, and feeds the shared canonical writer. The
 accepted scope is one material-free static mesh with zero or one UV layer and no
 modifiers, materials, animation, shape keys, constraints, parenting, or color
-attributes. It produces the `test_pyramid` and flat-shaded `test_sphere` optional
-gallery probes beneath `build/<preset>/assets/blender/`; the sphere remains the
-dense-triangulation/UV-seam/corner-splitting fixture, and source `.blend` files
-remain in the ignored root `blender/` directory. The opt-in
+attributes. It produces the `test_pyramid`, flat-shaded `test_sphere`, and
+`test_smooth_sphere` optional gallery probes beneath
+`build/<preset>/assets/blender/`; the sphere pair pins normal sharing independently
+of geometry and UVs, and source `.blend` files remain in the ignored root
+`blender/` directory. The opt-in
 `xrPhotonBlenderOfflineProof`
-target drives both fixtures through cache-configured local inputs. This is an
+target drives all three fixtures through cache-configured local inputs. This is an
 authoring/export path, not part of legacy OGF migration, and it adds neither a
 second writer nor a runtime format.
 
