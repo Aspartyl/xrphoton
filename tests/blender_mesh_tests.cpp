@@ -12,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -35,6 +36,11 @@ constexpr std::size_t FirstReservedOffset = 36;
 constexpr std::size_t MatrixOffset = 40;
 constexpr std::size_t SecondReservedOffset = 88;
 constexpr std::size_t ThirdReservedOffset = 92;
+constexpr std::size_t MaterialFlagsOffset = 96;
+constexpr std::size_t MaterialAlphaCutoffOffset = 100;
+constexpr std::size_t TextureReferenceByteCountOffset = 104;
+constexpr std::size_t MaterialReservedOffset = 108;
+constexpr std::size_t V2TextureReferenceOffset = 112;
 constexpr std::size_t FirstCornerOffset = 96;
 constexpr std::size_t PositionOffsetInCorner = 0;
 constexpr std::size_t NormalOffsetInCorner = 12;
@@ -107,7 +113,7 @@ std::vector<std::uint8_t> makeStream(
     float unitScale = 1.0f)
 {
     std::vector<std::uint8_t> bytes;
-    const std::size_t expectedSize = xrphoton::blender_mesh::StreamHeaderSize
+    const std::size_t expectedSize = xrphoton::blender_mesh::StreamHeaderSizeV1
         + triangles.size()
             * xrphoton::blender_mesh::CornersPerTriangle
             * xrphoton::blender_mesh::CornerRecordSize;
@@ -116,8 +122,8 @@ std::vector<std::uint8_t> makeStream(
         bytes.end(),
         xrphoton::blender_mesh::StreamMagic.begin(),
         xrphoton::blender_mesh::StreamMagic.end());
-    appendU32(&bytes, xrphoton::blender_mesh::StreamVersion);
-    appendU32(&bytes, xrphoton::blender_mesh::StreamHeaderSize);
+    appendU32(&bytes, xrphoton::blender_mesh::StreamVersion1);
+    appendU32(&bytes, xrphoton::blender_mesh::StreamHeaderSizeV1);
     appendU32(&bytes, flags);
     appendU32(&bytes, static_cast<std::uint32_t>(triangles.size()));
     appendU32(&bytes, 5);
@@ -145,6 +151,63 @@ std::vector<std::uint8_t> makeStream(
     }
     expect(bytes.size() == expectedSize,
         "synthetic XRBM builder emits its declared byte size");
+    return bytes;
+}
+
+std::vector<std::uint8_t> makeAlphaTestedStream(
+    const std::vector<Triangle>& triangles,
+    std::string_view textureReference = "trees\\trees_new_vetka_green",
+    float alphaCutoff = 0.5f,
+    std::uint32_t materialFlags =
+        xrphoton::blender_mesh::MaterialFlagAlphaTested,
+    std::uint32_t streamFlags = xrphoton::blender_mesh::StreamFlagHasUvs)
+{
+    std::vector<std::uint8_t> bytes;
+    const std::size_t expectedSize =
+        xrphoton::blender_mesh::StreamHeaderSizeV2
+        + textureReference.size()
+        + triangles.size()
+            * xrphoton::blender_mesh::CornersPerTriangle
+            * xrphoton::blender_mesh::CornerRecordSize;
+    bytes.reserve(expectedSize);
+    bytes.insert(
+        bytes.end(),
+        xrphoton::blender_mesh::StreamMagic.begin(),
+        xrphoton::blender_mesh::StreamMagic.end());
+    appendU32(&bytes, xrphoton::blender_mesh::StreamVersion2);
+    appendU32(&bytes, xrphoton::blender_mesh::StreamHeaderSizeV2);
+    appendU32(&bytes, streamFlags);
+    appendU32(&bytes, static_cast<std::uint32_t>(triangles.size()));
+    appendU32(&bytes, 5);
+    appendU32(&bytes, 1);
+    appendU32(&bytes, 2);
+    appendF32(&bytes, 1.0f);
+    appendU32(&bytes, 0);
+    for (float value : IdentityTransform) {
+        appendF32(&bytes, value);
+    }
+    appendU32(&bytes, 0);
+    appendU32(&bytes, 0);
+    appendU32(&bytes, materialFlags);
+    appendF32(&bytes, alphaCutoff);
+    appendU32(&bytes, static_cast<std::uint32_t>(textureReference.size()));
+    appendU32(&bytes, 0);
+    bytes.insert(bytes.end(), textureReference.begin(), textureReference.end());
+
+    for (const Triangle& triangle : triangles) {
+        for (const Corner& corner : triangle) {
+            for (float value : corner.position) {
+                appendF32(&bytes, value);
+            }
+            for (float value : corner.normal) {
+                appendF32(&bytes, value);
+            }
+            appendF32(&bytes, corner.u);
+            appendF32(&bytes, corner.v);
+        }
+    }
+    expect(bytes.size() == expectedSize,
+        "synthetic alpha-tested XRBM builder emits its declared byte size");
     return bytes;
 }
 
@@ -265,6 +328,36 @@ void expectOneOpaqueGeometry(const Model& model, std::size_t indexCount)
             && model.materials[0].alphaCutoff == 0.5f
             && model.materials[0].baseColorTexture.empty(),
         "material-free Blender input receives one canonical opaque material");
+}
+
+void expectOneAlphaTestedGeometry(
+    const Model& model,
+    std::size_t indexCount,
+    std::string_view textureReference,
+    float alphaCutoff)
+{
+    expect(model.positions.size() == model.attributes.size(),
+        "textured Blender positions and attributes remain parallel streams");
+    expect(model.indices.size() == indexCount,
+        "textured Blender model contains the expected triangle indices");
+    expect(model.geometries.size() == 1
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == model.positions.size()
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == indexCount
+            && model.geometries[0].materialIndex == 0
+            && model.geometries[0].alphaTested,
+        "textured Blender mesh maps to one complete alpha-tested geometry");
+    expect(model.meshes.size() == 1
+            && model.meshes[0].firstGeometry == 0
+            && model.meshes[0].geometryCount == 1,
+        "textured Blender extraction maps to one reusable mesh");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorFactor
+                == std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}
+            && model.materials[0].alphaCutoff == alphaCutoff
+            && model.materials[0].baseColorTexture == textureReference,
+        "textured Blender input retains its logical DDS reference and cutoff");
 }
 
 void expectRejected(
@@ -402,6 +495,64 @@ void testUvPreservationAndVertexDeduplication()
                 && seamed.model.attributes[4].v == 0.75f,
             "the split vertex preserves its distinct UV exactly");
     }
+}
+
+void testAlphaTestedMaterialAndTextureVNormalization()
+{
+    constexpr std::string_view textureReference =
+        "trees\\trees_new_vetka_green";
+    const std::vector<std::uint8_t> source = makeAlphaTestedStream(
+        makeQuadTriangles(), textureReference, 128.0f / 255.0f);
+    const DecodeResult decoded = decodeStaticMesh(source, "leaf-card.blend");
+    expect(static_cast<bool>(decoded),
+        "alpha-tested Blender leaf-card stream decodes");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+
+    const Model& model = decoded.model;
+    expectOneAlphaTestedGeometry(
+        model, 6, textureReference, 128.0f / 255.0f);
+    expect(model.positions.size() == 4,
+        "alpha-tested quad deduplicates to four vertices");
+    if (model.attributes.size() == 4) {
+        expect(model.attributes[0].u == 0.0f
+                && model.attributes[0].v == 1.0f
+                && model.attributes[1].u == 1.0f
+                && model.attributes[1].v == 0.0f
+                && model.attributes[2].u == 1.0f
+                && model.attributes[2].v == 1.0f
+                && model.attributes[3].u == 0.0f
+                && model.attributes[3].v == 0.0f,
+            "textured v2 flips Blender V for DDS/Vulkan top-row sampling");
+    }
+
+    const SerializeResult serialized =
+        xrphoton::ogfx::serializeModel(model, "leaf-card.ogfx");
+    expect(static_cast<bool>(serialized),
+        "alpha-tested Blender model passes through the canonical writer");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+    const DecodeResult schema = xrphoton::ogfx::decodeModelSchema(
+        serialized.bytes, "leaf-card-schema.ogfx");
+    const DecodeResult runtime = xrphoton::ogfx::decodeModel(
+        serialized.bytes, "leaf-card-runtime.ogfx");
+    expect(static_cast<bool>(schema) && modelsEqual(schema.model, model),
+        "schema decoder exactly reconstructs textured Blender output");
+    expect(static_cast<bool>(runtime) && modelsEqual(runtime.model, model),
+        "runtime decoder exactly reconstructs textured Blender output");
+    if (!schema) {
+        std::cerr << schema.error << '\n';
+        return;
+    }
+    const SerializeResult roundTrip =
+        xrphoton::ogfx::serializeModel(schema.model, "leaf-card-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip)
+            && roundTrip.bytes == serialized.bytes,
+        "textured Blender writer/schema/writer round trip is byte exact");
 }
 
 void testNonuniformTransformAndUnitScale()
@@ -549,7 +700,7 @@ void testFramingAndHeaderRejections()
     expectRejected(
         std::vector<std::uint8_t>(
             valid.begin(),
-            valid.begin() + xrphoton::blender_mesh::StreamHeaderSize - 1),
+            valid.begin() + xrphoton::blender_mesh::StreamHeaderSizeV1 - 1),
         "byte size");
 
     std::vector<std::uint8_t> bytes = valid;
@@ -557,11 +708,14 @@ void testFramingAndHeaderRejections()
     expectRejected(bytes, "magic");
 
     bytes = valid;
-    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion + 1);
+    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion2 + 1);
     expectRejected(bytes, "version");
 
     bytes = valid;
-    writeU32(&bytes, HeaderSizeOffset, xrphoton::blender_mesh::StreamHeaderSize + 4);
+    writeU32(
+        &bytes,
+        HeaderSizeOffset,
+        xrphoton::blender_mesh::StreamHeaderSizeV1 + 4);
     expectRejected(bytes, "header byte size");
 
     bytes = valid;
@@ -621,6 +775,80 @@ void testFramingAndHeaderRejections()
     bytes = valid;
     writeF32(&bytes, MatrixOffset, std::numeric_limits<float>::infinity());
     expectRejected(bytes, "object transform");
+}
+
+void testAlphaTestedHeaderRejections()
+{
+    const std::vector<std::uint8_t> valid =
+        makeAlphaTestedStream(makeQuadTriangles());
+    std::vector<std::uint8_t> bytes(
+        valid.begin(),
+        valid.begin() + xrphoton::blender_mesh::StreamHeaderSizeV2 - 1);
+    expectRejected(bytes, "byte size");
+
+    bytes = valid;
+    writeU32(
+        &bytes,
+        HeaderSizeOffset,
+        xrphoton::blender_mesh::StreamHeaderSizeV1);
+    expectRejected(bytes, "header byte size");
+
+    bytes = valid;
+    writeU32(&bytes, FlagsOffset, 0);
+    expectRejected(bytes, "flags");
+
+    for (const std::uint32_t materialFlags : {0u, 2u, 3u}) {
+        bytes = valid;
+        writeU32(&bytes, MaterialFlagsOffset, materialFlags);
+        expectRejected(bytes, "material flags");
+    }
+
+    for (const float cutoff : {
+             -0.01f,
+             1.01f,
+             std::numeric_limits<float>::quiet_NaN(),
+             std::numeric_limits<float>::infinity()}) {
+        bytes = valid;
+        writeF32(&bytes, MaterialAlphaCutoffOffset, cutoff);
+        expectRejected(bytes, "material alpha cutoff");
+    }
+
+    bytes = valid;
+    writeU32(&bytes, TextureReferenceByteCountOffset, 0);
+    expectRejected(bytes, "material texture-reference byte count");
+
+    bytes = valid;
+    writeU32(
+        &bytes,
+        TextureReferenceByteCountOffset,
+        xrphoton::ogfx::MaximumStringBytes + 1);
+    expectRejected(bytes, "material texture-reference byte count");
+
+    bytes = valid;
+    writeU32(&bytes, MaterialReservedOffset, 1);
+    expectRejected(bytes, "material reserved word");
+
+    bytes = valid;
+    bytes[V2TextureReferenceOffset] = '.';
+    expectRejected(bytes, "material texture reference");
+
+    bytes = valid;
+    const std::uint32_t referenceSize = static_cast<std::uint32_t>(
+        std::string_view("trees\\trees_new_vetka_green").size());
+    writeU32(&bytes, TextureReferenceByteCountOffset, referenceSize - 1);
+    expectRejected(bytes, "byte size");
+
+    bytes = valid;
+    writeU32(&bytes, TextureReferenceByteCountOffset, referenceSize + 1);
+    expectRejected(bytes, "byte size");
+
+    bytes = valid;
+    bytes.pop_back();
+    expectRejected(bytes, "byte size");
+
+    bytes = valid;
+    bytes.push_back(0);
+    expectRejected(bytes, "byte size");
 }
 
 void testPayloadAndGeometryRejections()
@@ -815,6 +1043,93 @@ bool readBytes(
         return false;
     }
     return true;
+}
+
+std::uint16_t readU16At(
+    std::span<const std::uint8_t> bytes,
+    std::size_t offset)
+{
+    return static_cast<std::uint16_t>(bytes[offset])
+        | static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(bytes[offset + 1]) << 8);
+}
+
+std::uint32_t readU32At(
+    std::span<const std::uint8_t> bytes,
+    std::size_t offset)
+{
+    return static_cast<std::uint32_t>(bytes[offset])
+        | (static_cast<std::uint32_t>(bytes[offset + 1]) << 8)
+        | (static_cast<std::uint32_t>(bytes[offset + 2]) << 16)
+        | (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+}
+
+void verifyLeafTexture(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
+        return;
+    }
+    constexpr std::size_t DdsFileHeaderSize = 128;
+    expect(bytes.size() >= DdsFileHeaderSize,
+        "leaf texture contains a complete DDS header");
+    if (bytes.size() < DdsFileHeaderSize) {
+        return;
+    }
+    expect(bytes[0] == 'D' && bytes[1] == 'D'
+            && bytes[2] == 'S' && bytes[3] == ' ',
+        "leaf texture has DDS magic");
+    const std::uint32_t height = readU32At(bytes, 12);
+    const std::uint32_t width = readU32At(bytes, 16);
+    expect(width == 512 && height == 512,
+        "leaf texture has the pinned 512x512 dimensions");
+    constexpr std::uint32_t Dxt1 =
+        static_cast<std::uint32_t>('D')
+        | (static_cast<std::uint32_t>('X') << 8)
+        | (static_cast<std::uint32_t>('T') << 16)
+        | (static_cast<std::uint32_t>('1') << 24);
+    expect(readU32At(bytes, 84) == Dxt1,
+        "leaf texture uses renderer-supported DXT1/BC1");
+    if (width != 512 || height != 512 || readU32At(bytes, 84) != Dxt1) {
+        return;
+    }
+
+    const std::uint64_t blockWidth = (static_cast<std::uint64_t>(width) + 3) / 4;
+    const std::uint64_t blockHeight = (static_cast<std::uint64_t>(height) + 3) / 4;
+    const std::uint64_t mipZeroBytes = blockWidth * blockHeight * 8;
+    expect(mipZeroBytes <= bytes.size() - DdsFileHeaderSize,
+        "leaf texture contains its complete BC1 mip 0");
+    if (mipZeroBytes > bytes.size() - DdsFileHeaderSize) {
+        return;
+    }
+
+    std::uint64_t transparentTexels = 0;
+    for (std::uint64_t blockY = 0; blockY < blockHeight; ++blockY) {
+        for (std::uint64_t blockX = 0; blockX < blockWidth; ++blockX) {
+            const std::size_t offset = DdsFileHeaderSize
+                + static_cast<std::size_t>((blockY * blockWidth + blockX) * 8);
+            const std::uint16_t color0 = readU16At(bytes, offset);
+            const std::uint16_t color1 = readU16At(bytes, offset + 2);
+            const std::uint32_t selectors = readU32At(bytes, offset + 4);
+            if (color0 > color1) {
+                continue;
+            }
+            for (std::uint32_t texel = 0; texel < 16; ++texel) {
+                const std::uint64_t x = blockX * 4 + (texel % 4);
+                const std::uint64_t y = blockY * 4 + (texel / 4);
+                if (x < width && y < height
+                    && ((selectors >> (texel * 2)) & 3u) == 3u) {
+                    ++transparentTexels;
+                }
+            }
+        }
+    }
+    expect(transparentTexels == 153'894,
+        "leaf texture has exactly 153894 fully transparent mip-0 texels");
+    expect(transparentTexels > 0
+            && transparentTexels < static_cast<std::uint64_t>(width) * height,
+        "leaf texture contains both visible and rejected alpha-test samples");
 }
 
 void verifyCliOutputs(
@@ -1055,6 +1370,91 @@ void verifyPyramidOutput(const std::filesystem::path& path)
         "test_pyramid preserves a nonconstant Blender UV layer");
 }
 
+void verifyLeafCardOutput(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
+        return;
+    }
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(bytes, path.string());
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(bytes, path.string());
+    expect(static_cast<bool>(schema) && static_cast<bool>(runtime),
+        "test_leaf_card passes schema and runtime OGFx decoding");
+    if (!schema || !runtime) {
+        if (!schema) {
+            std::cerr << schema.error << '\n';
+        }
+        if (!runtime) {
+            std::cerr << runtime.error << '\n';
+        }
+        return;
+    }
+    expect(modelsEqual(schema.model, runtime.model),
+        "test_leaf_card schema and runtime models are identical");
+    const SerializeResult roundTrip =
+        xrphoton::ogfx::serializeModel(schema.model, "leaf-card-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip) && roundTrip.bytes == bytes,
+        "test_leaf_card schema/writer round trip is byte exact");
+
+    const Model& model = schema.model;
+    expectOneAlphaTestedGeometry(
+        model,
+        6,
+        "trees\\trees_new_vetka_green",
+        128.0f / 255.0f);
+    expect(model.positions.size() == 4,
+        "test_leaf_card has four unified vertices");
+    expect(model.indices == std::vector<std::uint32_t>{0, 1, 2, 0, 3, 1},
+        "test_leaf_card has the pinned deterministic quad index stream");
+    expect(everyTriangleIsCcwAndAgreesWithNormals(model),
+        "test_leaf_card triangles are nondegenerate, CCW, and normal-aligned");
+
+    const Bounds bounds = calculateBounds(model);
+    expect(bounds.minimum.x == -1.0f && bounds.maximum.x == 1.0f
+            && bounds.minimum.y == 0.0f && bounds.maximum.y == 2.0f
+            && bounds.minimum.z == 0.0f && bounds.maximum.z == 0.0f,
+        "test_leaf_card has exact engine-space X[-1,1], Y[0,2], Z[0,0] bounds");
+    if (model.positions.size() == 4 && model.attributes.size() == 4) {
+        constexpr std::array<xrphoton::ogfx::Position, 4> ExpectedPositions{{
+            {-1.0f, 0.0f, 0.0f},
+            {1.0f, 2.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {-1.0f, 2.0f, 0.0f},
+        }};
+        constexpr std::array<std::array<float, 2>, 4> ExpectedUvs{{
+            {0.0f, 1.0f},
+            {1.0f, 0.0f},
+            {1.0f, 1.0f},
+            {0.0f, 0.0f},
+        }};
+        bool exactPositionUvPairs = true;
+        for (std::size_t index = 0; index < ExpectedPositions.size(); ++index) {
+            const auto& position = model.positions[index];
+            const auto& attributes = model.attributes[index];
+            exactPositionUvPairs = exactPositionUvPairs
+                && position.x == ExpectedPositions[index].x
+                && position.y == ExpectedPositions[index].y
+                && position.z == ExpectedPositions[index].z
+                && attributes.u == ExpectedUvs[index][0]
+                && attributes.v == ExpectedUvs[index][1];
+        }
+        expect(exactPositionUvPairs,
+            "test_leaf_card pins exact upright position/UV pairs and the one-time V flip");
+        expect(std::all_of(
+                   model.attributes.begin(),
+                   model.attributes.end(),
+                   [](const auto& attributes) {
+                       return attributes.nx == 0.0f
+                           && attributes.ny == 0.0f
+                           && attributes.nz == -1.0f;
+                   }),
+            "test_leaf_card faces the startup camera with exact -Z normals");
+    }
+}
+
 using PositionKey = std::array<std::uint32_t, 3>;
 using NormalKey = std::array<std::uint32_t, 3>;
 using UvKey = std::array<std::uint32_t, 2>;
@@ -1263,6 +1663,28 @@ int main(int argumentCount, char** arguments)
         return 0;
     }
     if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-leaf-card-output") {
+        verifyLeafCardOutput(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " test_leaf_card offline proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "test_leaf_card OGFx output verification passed.\n";
+        return 0;
+    }
+    if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-leaf-texture") {
+        verifyLeafTexture(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " leaf texture proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Leaf DDS alpha verification passed.\n";
+        return 0;
+    }
+    if (argumentCount == 3
         && std::string_view(arguments[1]) == "--verify-sphere-output") {
         verifySphereOutput(arguments[2]);
         if (failureCount != 0) {
@@ -1290,6 +1712,8 @@ int main(int argumentCount, char** arguments)
             << "       xrPhotonBlenderMeshTests --write-cli-fixture <path|->\n"
             << "       xrPhotonBlenderMeshTests --verify-cli-outputs <first> <second>\n"
             << "       xrPhotonBlenderMeshTests --verify-pyramid-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-leaf-card-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-leaf-texture <dds>\n"
             << "       xrPhotonBlenderMeshTests --verify-sphere-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-smooth-sphere-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-sphere-pair <flat> <smooth>\n";
@@ -1298,10 +1722,12 @@ int main(int argumentCount, char** arguments)
 
     testAsymmetricAxisMapAndCcwWinding();
     testUvPreservationAndVertexDeduplication();
+    testAlphaTestedMaterialAndTextureVNormalization();
     testNonuniformTransformAndUnitScale();
     testNegativeDeterminantKeepsSourceOrder();
     testShearedTransformUsesFullInverseTranspose();
     testFramingAndHeaderRejections();
+    testAlphaTestedHeaderRejections();
     testPayloadAndGeometryRejections();
     testCanonicalWriterSchemaRuntimeAndDeterminism();
 

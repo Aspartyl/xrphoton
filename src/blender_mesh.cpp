@@ -87,6 +87,14 @@ public:
         };
     }
 
+    [[nodiscard]] std::string readString(std::size_t byteCount)
+    {
+        const char* first = reinterpret_cast<const char*>(
+            bytes_.data() + offset_);
+        offset_ += byteCount;
+        return std::string(first, byteCount);
+    }
+
 private:
     std::span<const std::uint8_t> bytes_;
     std::size_t offset_ = 0;
@@ -112,6 +120,38 @@ bool finite(const Vec3& value)
     return std::isfinite(value.x)
         && std::isfinite(value.y)
         && std::isfinite(value.z);
+}
+
+bool validTextureReference(std::string_view value)
+{
+    if (value.empty() || value.size() > ogfx::MaximumStringBytes
+        || value.front() == '\\' || value.back() == '\\') {
+        return false;
+    }
+
+    bool previousWasSeparator = false;
+    for (const unsigned char byte : value) {
+        const bool alphaNumeric =
+            (byte >= static_cast<unsigned char>('A')
+                && byte <= static_cast<unsigned char>('Z'))
+            || (byte >= static_cast<unsigned char>('a')
+                && byte <= static_cast<unsigned char>('z'))
+            || (byte >= static_cast<unsigned char>('0')
+                && byte <= static_cast<unsigned char>('9'));
+        if (byte == static_cast<unsigned char>('\\')) {
+            if (previousWasSeparator) {
+                return false;
+            }
+            previousWasSeparator = true;
+            continue;
+        }
+        if (!alphaNumeric && byte != static_cast<unsigned char>('_')
+            && byte != static_cast<unsigned char>('-')) {
+            return false;
+        }
+        previousWasSeparator = false;
+    }
+    return true;
 }
 
 double determinant(const Matrix3x4& matrix)
@@ -197,6 +237,7 @@ bool convertCorner(
     const Matrix3x4& matrix,
     double unitScale,
     double inverseDeterminant,
+    bool flipTextureV,
     ConvertedCorner* converted)
 {
     const Vec3 position = transformPosition(matrix, unitScale, source.position);
@@ -215,7 +256,7 @@ bool convertCorner(
         toCanonicalF32(normal.y),
         toCanonicalF32(normal.z),
         source.u == 0.0f ? 0.0f : source.u,
-        source.v == 0.0f ? 0.0f : source.v,
+        toCanonicalF32(flipTextureV ? 1.0 - source.v : source.v),
     };
     return std::isfinite(converted->position.x)
         && std::isfinite(converted->position.y)
@@ -276,11 +317,11 @@ ogfx::DecodeResult decodeStaticMesh(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName)
 {
-    if (bytes.size() < StreamHeaderSize) {
+    if (bytes.size() < StreamHeaderSizeV1) {
         return failure(
             diagnosticName,
             "byte size",
-            "at least " + std::to_string(StreamHeaderSize),
+            "at least " + std::to_string(StreamHeaderSizeV1),
             std::to_string(bytes.size()));
     }
     if (!std::equal(StreamMagic.begin(), StreamMagic.end(), bytes.begin())) {
@@ -289,20 +330,32 @@ ogfx::DecodeResult decodeStaticMesh(
 
     Reader reader(bytes.subspan(4));
     const std::uint32_t version = reader.readU32();
-    if (version != StreamVersion) {
+    if (version != StreamVersion1 && version != StreamVersion2) {
         return failure(
             diagnosticName,
             "version",
-            std::to_string(StreamVersion),
+            std::to_string(StreamVersion1) + " or "
+                + std::to_string(StreamVersion2),
             std::to_string(version));
     }
     const std::uint32_t headerSize = reader.readU32();
-    if (headerSize != StreamHeaderSize) {
+    const std::uint32_t expectedHeaderSize = version == StreamVersion1
+        ? StreamHeaderSizeV1
+        : StreamHeaderSizeV2;
+    if (headerSize != expectedHeaderSize) {
         return failure(
             diagnosticName,
             "header byte size",
-            std::to_string(StreamHeaderSize),
+            std::to_string(expectedHeaderSize),
             std::to_string(headerSize));
+    }
+    if (bytes.size() < expectedHeaderSize) {
+        return failure(
+            diagnosticName,
+            "byte size",
+            "at least the declared " + std::to_string(expectedHeaderSize)
+                + "-byte header",
+            std::to_string(bytes.size()));
     }
     const std::uint32_t flags = reader.readU32();
     if ((flags & ~SupportedStreamFlags) != 0) {
@@ -359,10 +412,60 @@ ogfx::DecodeResult decodeStaticMesh(
             "a nonzero value");
     }
 
+    bool alphaTested = false;
+    float alphaCutoff = 0.5f;
+    std::uint32_t textureReferenceByteCount = 0;
+    if (version == StreamVersion2) {
+        const std::uint32_t materialFlags = reader.readU32();
+        if (materialFlags != MaterialFlagAlphaTested) {
+            return failure(
+                diagnosticName,
+                "material flags",
+                "exactly bit 0 (alpha-tested)",
+                std::to_string(materialFlags));
+        }
+        alphaTested = true;
+        alphaCutoff = reader.readF32();
+        if (!std::isfinite(alphaCutoff)
+            || alphaCutoff < 0.0f || alphaCutoff > 1.0f) {
+            return failure(
+                diagnosticName,
+                "material alpha cutoff",
+                "a finite f32 in [0, 1]",
+                std::to_string(alphaCutoff));
+        }
+        textureReferenceByteCount = reader.readU32();
+        if (textureReferenceByteCount == 0
+            || textureReferenceByteCount > ogfx::MaximumStringBytes) {
+            return failure(
+                diagnosticName,
+                "material texture-reference byte count",
+                "1.." + std::to_string(ogfx::MaximumStringBytes),
+                std::to_string(textureReferenceByteCount));
+        }
+        const std::uint32_t materialReserved = reader.readU32();
+        if (materialReserved != 0) {
+            return failure(
+                diagnosticName,
+                "material reserved word",
+                "zero",
+                std::to_string(materialReserved));
+        }
+        if ((flags & StreamFlagHasUvs) == 0) {
+            return failure(
+                diagnosticName,
+                "flags",
+                "bit 0 (UVs) set for a textured material",
+                std::to_string(flags));
+        }
+    }
+
     constexpr std::uint64_t TriangleRecordSize =
         static_cast<std::uint64_t>(CornersPerTriangle) * CornerRecordSize;
     const std::uint64_t sizeLimitedTriangleCount =
-        (ogfx::MaximumFileBytes - StreamHeaderSize) / TriangleRecordSize;
+        (ogfx::MaximumFileBytes - expectedHeaderSize
+            - textureReferenceByteCount)
+        / TriangleRecordSize;
     const std::uint64_t maximumTriangleCount = std::min<std::uint64_t>(
         MaximumTriangleCount, sizeLimitedTriangleCount);
     if (triangleCount > maximumTriangleCount) {
@@ -372,7 +475,8 @@ ogfx::DecodeResult decodeStaticMesh(
             "at most " + std::to_string(maximumTriangleCount),
             std::to_string(triangleCount));
     }
-    const std::uint64_t expectedSize = StreamHeaderSize
+    const std::uint64_t expectedSize = expectedHeaderSize
+        + textureReferenceByteCount
         + static_cast<std::uint64_t>(triangleCount) * TriangleRecordSize;
     if (bytes.size() != expectedSize) {
         return failure(
@@ -380,6 +484,18 @@ ogfx::DecodeResult decodeStaticMesh(
             "byte size",
             std::to_string(expectedSize) + " from the triangle count",
             std::to_string(bytes.size()));
+    }
+
+    std::string textureReference;
+    if (alphaTested) {
+        textureReference = reader.readString(textureReferenceByteCount);
+        if (!validTextureReference(textureReference)) {
+            return failure(
+                diagnosticName,
+                "material texture reference",
+                "an extensionless canonical ASCII path using backslash separators",
+                "an invalid value");
+        }
     }
 
     const double transformDeterminant = determinant(matrix);
@@ -461,6 +577,7 @@ ogfx::DecodeResult decodeStaticMesh(
                     matrix,
                     unitScale,
                     inverseDeterminant,
+                    alphaTested,
                     &converted[outputCorner])) {
                 return failure(
                     diagnosticName,
@@ -521,10 +638,13 @@ ogfx::DecodeResult decodeStaticMesh(
         .firstIndex = 0,
         .indexCount = static_cast<std::uint32_t>(model.indices.size()),
         .materialIndex = 0,
-        .alphaTested = false,
+        .alphaTested = alphaTested,
     });
     model.meshes.push_back({.firstGeometry = 0, .geometryCount = 1});
-    model.materials.push_back({});
+    ogfx::Material material{};
+    material.alphaCutoff = alphaCutoff;
+    material.baseColorTexture = std::move(textureReference);
+    model.materials.push_back(std::move(material));
     return {.model = std::move(model), .error = {}};
 }
 }

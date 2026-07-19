@@ -10,6 +10,10 @@ build/
 # Local Blender authoring files
 /blender/
 
+# Python bytecode generated while checking Blender tooling
+__pycache__/
+*.py[cod]
+
 # Machine-local CMake preset overrides
 CMakeUserPresets.json
 

@@ -53,8 +53,10 @@ no SDK code path serializes OGFx/OMFx on its own, however convenient a
 external assets primarily enter through Blender and the one export path. Its
 first landed front end is the headless Blender 5.1.x script
 [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py): it extracts one
-explicitly named material-free static mesh into the private stdin-only `XRBM`
-exchange, while the C++ adapter performs coordinate/normal/winding conversion
+explicitly named static mesh into the private stdin-only `XRBM` exchange.
+Material-free inputs use byte-compatible v1; strict v2 adds one alpha-tested
+DDS material, logical texture reference, cutoff, and the one-time textured V
+normalization. The C++ adapter performs coordinate/normal/winding conversion
 and the shared compiler alone writes OGFx. A later add-on UI can wrap that path
 but cannot fork it. The SDK may later expose an optional GLB importer, but only
 as a front end to the shared compiler, never as another OGFx writer. That adapter stays
@@ -168,9 +170,11 @@ path does not use Blender: Blender import remains a visual oracle or an
 intentional editing workflow for legacy content, while batch migration parses
 OGF directly. The separate narrow headless Blender-to-OGFx path has now landed
 for the `test_pyramid` gallery probe, flat-shaded `test_sphere`
-dense-triangulation/UV-seam/corner-splitting fixture, and matching
-`test_smooth_sphere` normal-sharing comparison. All three are independent optional
-gallery entries. The project model and CLI harden
+dense-triangulation/UV-seam/corner-splitting fixture, matching
+`test_smooth_sphere` normal-sharing comparison, and alpha-tested
+`test_leaf_card`. The leaf is the first v2 material consumer and visibly proves
+any-hit rejection with `trees\trees_new_vetka_green`. All four are independent
+optional gallery entries. The project model and CLI harden
 around that legacy conversion, Blender export,
 and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own
@@ -188,9 +192,10 @@ body, not simulation state. Its opt-in compiler proof is
 `XRPHOTON_ALPHA_TAIL_TEXTURE_DDS`; the separate runtime gallery cache is
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`. A future SDK inspector may visualize or
 edit these render/physics records, but this milestone neither supplies such a UI
-nor integrates a physics backend. The shipped tail DDS also has no transparent mip-0
-texels, so the runtime milestone proves mixed routing and sampled-alpha any-hit
-execution, not a visible cutout. Broader source profiles must continue to fail
+nor integrates a physics backend. The shipped tail DDS has no transparent mip-0
+texels, so the tail itself proves mixed routing and sampled-alpha any-hit
+execution rather than a visible cutout; the Blender leaf card supplies the
+separate visible-`IgnoreHit` acceptance. Broader source profiles must continue to fail
 until all of their semantics have mappings rather than being silently flattened.
 Committing to a finer schedule for the remaining formats would invent decisions
 the owner has deferred.

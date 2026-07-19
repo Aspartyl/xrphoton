@@ -134,7 +134,8 @@ bool readSourceStream(
 {
     bytes->clear();
     constexpr std::uint64_t MaximumBlenderStreamBytes =
-        xrphoton::blender_mesh::StreamHeaderSize
+        xrphoton::blender_mesh::StreamHeaderSizeV2
+        + xrphoton::ogfx::MaximumStringBytes
         + static_cast<std::uint64_t>(
             xrphoton::blender_mesh::MaximumTriangleCount)
             * xrphoton::blender_mesh::CornersPerTriangle

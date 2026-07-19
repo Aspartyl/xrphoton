@@ -819,43 +819,88 @@ compiler model as the legacy adapter, and invokes the one canonical writer.
 `XRBM` is a private producer/compiler exchange contract; it is neither a
 persisted asset nor a runtime format.
 
-The accepted profile is intentionally exact: one explicitly named active-scene
-mesh object with no material slots or evaluated materials, modifiers, object or
-mesh animation data, shape keys, constraints, parenting, or color attributes.
-Linked-library data and overrides are also outside this self-contained source
-profile. It accepts zero or one UV layer and rejects loose vertices/edges, degenerate
-triangles, singular/non-finite transforms, non-finite corner data, and normals
-that disagree with the converted winding. A one-million-triangle profile cap
-bounds the extractor, stdin payload, deduplication table, and compiler model's
-combined working set. It produces one opaque geometry, one mesh, and one default
-material with no texture reference. This slice does not
-flatten hierarchy, apply modifiers, export materials/textures, or infer which
-object the user intended.
+The common source profile is intentionally exact: one explicitly named
+active-scene mesh object with no modifiers, object or mesh animation, shape
+keys, constraints, parenting, color attributes, linked-library data, or
+overrides. It rejects loose vertices/edges, degenerate triangles,
+singular/non-finite transforms, non-finite corner data, and normals that
+disagree with the converted winding. A one-million-triangle cap bounds the
+extractor, stdin payload, deduplication table, and compiler model's combined
+working set. This slice does not flatten hierarchy, apply modifiers, support
+blended transparency, or infer which object the user intended.
 
-**UV convention at this boundary.** XRBM version 1 and the current Blender
-adapter preserve authored Blender `(u, v)` values exactly; they do not flip V.
-That pins deterministic extraction for this material-free profile, but it does
-not decide the eventual textured-Blender sampling convention. Before texture
-references enter this source profile, an asymmetric textured oracle must decide
-one offline normalization point—either UV conversion or image-row conversion—
-and test it against both Blender's viewport and xrPhoton. The choice must be an
-explicit compiler-contract change, never an unannounced fix applied in multiple
-places.
+Two strict XRBM profiles now share that geometry path:
 
-The ignored root `blender/` directory holds owner-local source files. The first
-fixtures are `test_pyramid.blend` / object `test_pyramid` and
-`test_sphere.blend` / object `test_sphere`, plus
-`test_smooth_sphere.blend` / object `test_smooth_sphere`. All three are optional
-gallery probes; the sphere pair pins identical position/UV corner streams with
-flat-face normal splits versus shared smooth normals.
+- **Version 1, 96-byte header:** no material slots or evaluated materials,
+  zero or one UV layer, and one emitted opaque geometry/default untextured
+  material. Existing v1 sources and canonical OGFx outputs remain byte-identical.
+- **Version 2, 112-byte header:** exactly one local material and UV layer, with
+  every polygon using slot zero. The unanimated material's Boolean custom
+  property `xrphoton_alpha_tested` must be true, Blender's surface render method
+  must be `DITHERED`, and `alpha_threshold` supplies the finite `[0, 1]` cutoff.
+  The explicit property is authoritative because Blender 5.1 does not durably
+  preserve the former `CLIP` blend-method classification in the saved source.
+  The
+  node tree must contain only one active Material Output, one Principled BSDF,
+  and one external Image Texture, linked directly as image Color/Alpha →
+  Principled Base Color/Alpha → Output Surface. Nodes must be unmuted,
+  unanimated, valid for all Blender renderers, and use the
+  default identity texture/color mappings so the extractor never ignores a
+  source-side sampling transform. The image must be a
+  lowercase `.dds` using exact sRGB color space, Straight alpha, and
+  Linear/Repeat/Flat sampling beneath
+  `--texture-root`; its extensionless relative path becomes the canonical
+  backslash-separated OGFx texture reference. The v2 material-flags word must
+  equal alpha-test bit 0 exactly; it is not an extensible ignore-unknown field.
+
+The little-endian exchange layout is deliberately small and closed:
+
+| Offset | Bytes | XRBM field |
+|---:|---:|---|
+| 0 | 4 | magic `XRBM` |
+| 4 | 4 | version (`1` or `2`) |
+| 8 | 4 | exact header size (`96` or `112`) |
+| 12 | 4 | flags; bit 0 means UVs, all other bits zero |
+| 16 | 4 | triangle count |
+| 20 | 12 | Blender major/minor/patch as three `u32` values |
+| 32 | 4 | positive finite scene-unit scale (`f32`) |
+| 36 | 4 | reserved zero |
+| 40 | 48 | row-major object affine 3×4 matrix (12 `f32` values) |
+| 88 | 8 | two reserved-zero `u32` values |
+| 96 | 16 | v2 only: alpha-test flag, cutoff, texture-reference byte count, reserved zero |
+
+In v1, triangle-corner records begin at byte 96. In v2, the exact-length ASCII
+texture reference follows byte 112, then the records begin. Every triangle has
+three 32-byte corner records: position `(x,y,z)`, normal `(x,y,z)`, and UV
+`(u,v)`, all `f32`. Exact file size, reserved fields, flags, string grammar,
+finite values, and semantic ranges are validated before a compiler model is
+accepted. XRBM's exchange version is independent of the persistent format:
+both XRBM v1 and v2 are compiled into canonical OGFx container version 1.
+
+**UV convention at this boundary.** XRBM v1 preserves authored Blender
+`(u, v)` values exactly for backward compatibility. Textured v2 performs the
+single offline normalization `v_engine = 1 - v_blender`; DDS rows and Vulkan
+sampling are not flipped elsewhere. The vertically asymmetric
+`test_leaf_card` fixture and its visible gallery result pin this convention so
+future material profiles cannot silently apply a second flip.
+
+The ignored root `blender/` directory holds owner-local source files. The
+fixtures are `test_pyramid.blend` / object `test_pyramid`, `test_sphere.blend` /
+object `test_sphere`, `test_smooth_sphere.blend` / object
+`test_smooth_sphere`, and `test_leaf_card.blend` / object `test_leaf_card`.
+All four are optional gallery probes; the sphere pair pins identical
+position/UV corner streams with flat-face normal splits versus shared smooth
+normals, while the leaf card pins the v2 material and UV contract.
 Generated outputs live beneath the ignored
 `build/<preset>/assets/blender/` directory. The opt-in
 `xrPhotonBlenderOfflineProof` target uses the cache settings
 `XRPHOTON_BLENDER_EXECUTABLE`, `XRPHOTON_BLENDER_PYRAMID_BLEND`, and
 `XRPHOTON_BLENDER_SPHERE_BLEND`, and
-`XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND` to run all three files through Blender and
+`XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND`, plus
+`XRPHOTON_BLENDER_LEAF_CARD_BLEND`, `XRPHOTON_BLENDER_LEAF_TEXTURE_ROOT`, and
+`XRPHOTON_BLENDER_LEAF_TEXTURE_DDS`, to run all four files through Blender and
 verify their canonical outputs; it does not make the local `.blend` inputs
-normal-build dependencies. All three outputs can be configured as gallery entries.
+normal-build dependencies. All four outputs can be configured as gallery entries.
 
 Third-party assets — free path-tracing test models included — normally enter
 the same way: Blender imports them, then an xrPhoton export front end feeds the
@@ -1045,8 +1090,8 @@ each arrives with its own consumer.
    beneath
    `build/<preset>/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`.
 
-2. **Additive runtime gallery + textured plitka path. Implementation landed;
-   final visual sign-off pending.** Generic scene
+2. **Additive runtime gallery + textured plitka path. Landed and visually
+   validated.** Generic scene
    assembly merges independently decoded OGFx models and supplies world placements
    without adding instances to the format. The permanent generated wedge probe
    drove the N-BLAS/N-instance and multi-geometry generalization. The texture
@@ -1056,19 +1101,22 @@ each arrives with its own consumer.
    the M4a plitka output and its marble DDS into the render loop beside the generated
    probes, exercising the real BC1 upload and nonzero descriptor path without
    changing the canonical bytes or adding source-specific runtime logic. Its
-   on-screen orientation, scale, winding, and texture appearance remain a final
-   owner visual check.
+   on-screen orientation, authored scale, winding, and texture appearance have
+   been checked in the configured gallery.
 
-3. **Blender opaque probe → headless export → OGFx. Landed and gallery
+3. **Blender static probes → headless export → OGFx. Landed and gallery
    validated.** Blender 5.1.x and
    `tools/blender/export_ogfx.py` extract
-   the explicitly named, material-free static `test_pyramid` mesh through the
-   private stdin-only `XRBM` exchange. The C++ adapter applies scene/object
+   one explicitly named static mesh through the private stdin-only `XRBM`
+   exchange. The C++ adapter applies scene/object
    transforms, `(x, y, z)` → `(x, z, y)`, inverse-transpose normals, and
    determinant-aware winding, then feeds the shared writer. The flat-shaded
    `test_sphere` exercises dense triangulation, its UV seam, and flat-face corner
    splitting; `test_smooth_sphere` pins shared normals over the same geometry and
-   UV corner stream. All three canonical outputs are reproducible beneath
+   UV corner stream. Material-free inputs remain XRBM v1. XRBM v2 adds the
+   strict one-material alpha-tested profile used by `test_leaf_card`, carrying
+   `trees\trees_new_vetka_green`, cutoff 128/255, and the one-time textured V
+   flip. All four canonical outputs are reproducible beneath
    `build/<preset>/assets/blender/` and are independent optional gallery probes.
    The slice adds no second writer or runtime loader. A direct
    GLB-to-compiler adapter remains an optional later offline tool.
@@ -1121,8 +1169,21 @@ each arrives with its own consumer.
    The shipped 256×128 DXT1 texture is structurally alpha-capable, but its mip-0
    blocks select no transparent palette texels. This asset therefore proves the
    mixed-class routing and real-texture any-hit path, not a visibly discarded
-   cutout; a separate transparent acceptance texture is required to make
-   `IgnoreHit` observable on screen.
+   cutout.
+
+6. **Alpha-tested Blender leaf card → visible `IgnoreHit` acceptance.
+   Landed and gallery validated.** The two-triangle `test_leaf_card` is the first
+   XRBM v2 source. Its deterministic 584-byte OGFx output has SHA-256
+   `c348ffda8f0f81b8662d209040d31e72e68eb3fb627622c2a6a65edab6c56977`
+   and reconstructs one alpha-tested geometry/material with logical texture
+   `trees\trees_new_vetka_green` and cutoff 128/255. The proof pins the source
+   512×512 DXT1 DDS at 174,904 bytes and SHA-256
+   `f6d6ad3e53890ed4614ad0b3c486a3196945bac9a27cee88ba71fc9e048985a5`,
+   independently decodes BC1 mip 0, and counts 153,894 fully transparent texels
+   alongside opaque texels. The configured gallery resolves that DDS through
+   the ordinary texture table, selects the alpha-tested SBT record, and visibly
+   reveals the miss background where any-hit calls `IgnoreHit`. This closes the
+   outstanding geometry-plan acceptance gap without a renderer-only fixture.
 
 The code-owned gallery table remains temporary placement policy until level/scene
 data has its real owner; it contains no geometry and never becomes an OGFx chunk.

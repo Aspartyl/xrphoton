@@ -65,8 +65,10 @@ set(XRPHOTON_TEST_PYRAMID_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_pyramid.ogfx)
 set(XRPHOTON_TEST_SPHERE_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_sphere.ogfx)
 set(XRPHOTON_TEST_SMOOTH_SPHERE_ASSET
     ${XRPHOTON_BLENDER_ASSET_DIR}/test_smooth_sphere.ogfx)
-# Reserve the modern-content namespace even before the first Blender exporter
-# output lands. Generated probe and SoC directories are created by their writers.
+set(XRPHOTON_TEST_LEAF_CARD_ASSET
+    ${XRPHOTON_BLENDER_ASSET_DIR}/test_leaf_card.ogfx)
+# Keep modern-content outputs separate from generated probes and migrated SoC
+# assets; each writer creates the deeper directories it owns.
 file(MAKE_DIRECTORY ${XRPHOTON_BLENDER_ASSET_DIR})
 add_custom_command(
     OUTPUT
@@ -221,6 +223,16 @@ if(BUILD_TESTING)
     set(XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND
         "${CMAKE_SOURCE_DIR}/blender/test_smooth_sphere.blend" CACHE FILEPATH
         "Local ignored smooth sphere .blend used by the opt-in Blender proof")
+    set(XRPHOTON_BLENDER_LEAF_CARD_BLEND
+        "${CMAKE_SOURCE_DIR}/blender/test_leaf_card.blend" CACHE FILEPATH
+        "Local ignored alpha-tested leaf-card .blend used by the opt-in Blender proof")
+    set(XRPHOTON_BLENDER_LEAF_TEXTURE_ROOT
+        "${CMAKE_SOURCE_DIR}/original_game_files/soc/textures" CACHE PATH
+        "Local DDS root used to derive the leaf card's logical texture reference")
+    set(XRPHOTON_BLENDER_LEAF_TEXTURE_DDS
+        "${XRPHOTON_BLENDER_LEAF_TEXTURE_ROOT}/trees/trees_new_vetka_green.dds"
+        CACHE FILEPATH
+        "Local DXT1 foliage texture pinned by the opt-in Blender proof")
     add_custom_target(xrPhotonBlenderOfflineProof
         COMMAND ${CMAKE_COMMAND}
             -DBLENDER_EXECUTABLE=${XRPHOTON_BLENDER_EXECUTABLE}
@@ -233,6 +245,10 @@ if(BUILD_TESTING)
             -DSPHERE_OUTPUT=${XRPHOTON_TEST_SPHERE_ASSET}
             -DSMOOTH_SPHERE_BLEND=${XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND}
             -DSMOOTH_SPHERE_OUTPUT=${XRPHOTON_TEST_SMOOTH_SPHERE_ASSET}
+            -DLEAF_CARD_BLEND=${XRPHOTON_BLENDER_LEAF_CARD_BLEND}
+            -DLEAF_CARD_OUTPUT=${XRPHOTON_TEST_LEAF_CARD_ASSET}
+            -DLEAF_TEXTURE_ROOT=${XRPHOTON_BLENDER_LEAF_TEXTURE_ROOT}
+            -DLEAF_TEXTURE_DDS=${XRPHOTON_BLENDER_LEAF_TEXTURE_DDS}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/blender_offline_proof.cmake
         DEPENDS
             xrPhotonAssetCompiler
@@ -262,6 +278,8 @@ set(XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX "" CACHE FILEPATH
     "Optional converted Blender sphere OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX "" CACHE FILEPATH
     "Optional converted Blender smooth sphere OGFx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX "" CACHE FILEPATH
+    "Optional converted Blender alpha-tested leaf card OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_BARREL_OGFX "" CACHE FILEPATH
     "Optional converted SoC closed barrel OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX "" CACHE FILEPATH
@@ -294,6 +312,13 @@ if(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX)
         ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 else()
     set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX}"
+        ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX_ABSOLUTE "")
 endif()
 if(XRPHOTON_GALLERY_BARREL_OGFX)
     get_filename_component(XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE
@@ -439,6 +464,7 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BARREL_OGFX=u8\"${XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=u8\"${XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"

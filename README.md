@@ -30,26 +30,32 @@ Right now it renders an additive OGFx preview gallery that you can fly around
 two-geometry wedge regression probe placed twice, including one rotated and
 non-uniformly scaled instance. A configured reference build adds the converted,
 textured legacy `plitka1.ogfx` as a fourth placement through the same runtime path.
-That plitka configuration reaches the interactive render loop and passes plain,
-GPU-assisted, and synchronization validation; its final on-screen orientation,
-scale, winding, and texture appearance still require owner visual sign-off.
-The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`, and
-`test_smooth_sphere.ogfx` can be configured independently as Blender gallery
-placements. The converted regular `bochka_close_1.ogfx` is a seventh gallery
+That plitka configuration reaches the interactive render loop, passes plain,
+GPU-assisted, and synchronization validation, and has been visually checked in
+the complete gallery row.
+The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`,
+`test_smooth_sphere.ogfx`, and alpha-tested `test_leaf_card.ogfx` can be
+configured independently as Blender gallery placements. The converted regular
+`bochka_close_1.ogfx` is another gallery
 model: its `mtl\mtl_barrel_01` reference uses the same DDS path, while its
 backend-neutral compound-collider metadata is preserved but not simulated yet.
-The converted `item_psevdodog_tail.ogfx` is the eighth model. Its one mesh keeps
+The converted `item_psevdodog_tail.ogfx` is the ninth model. Its one mesh keeps
 two geometries in source order: a `models\model_aref` alpha-tested range and a
 `models\model` opaque range, both using `act\act_pseudodog_fur` through one
 shared material with the source cutoff of 128/255. Its single rigid box-body
 recipe is also preserved as backend-neutral metadata and is not simulated.
-With every optional asset enabled, the gallery contains eight BLASes, nine TLAS
-instances, and ten geometries; the wedge remains the shared-BLAS probe. The two
+All three configured SoC assets retain their authored scale in the gallery:
+plitka and the barrel are translated only, while the tail is rotated and
+translated without resizing.
+With every optional asset enabled, the gallery contains nine BLASes, ten TLAS
+instances, and eleven geometries; the wedge remains the shared-BLAS probe. The two
 spheres have identical geometry and UV corner streams but deliberately different
 normal sharing, making flat-versus-smooth shading directly observable. The
-shipped tail DDS has no transparent texels in mip 0, so this asset proves mixed
-opaque/alpha-tested routing and real texture sampling through the any-hit stage,
-but it does not yet demonstrate a visible `IgnoreHit` cutout.
+shipped tail DDS has no transparent texels in mip 0, so that asset proves mixed
+opaque/alpha-tested routing and real texture sampling through the any-hit stage.
+The Blender leaf card closes the visual acceptance gap: its pinned
+`trees\trees_new_vetka_green` DXT1 mip contains 153,894 transparent texels, and
+the running gallery visibly reveals the miss background through those samples.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
@@ -76,15 +82,19 @@ blue/green wedge faces; configured plitka exercises the real BC1 upload and a
 nonzero texture-table index. The separate converter accepts pinned OGF v4
 flat-static and rigid-compound profiles and feeds that same writer for offline validation. The converted
 plitka is now the first original X-Ray model carried through xrPhoton's configured
-runtime path, with final visual sign-off pending. The Blender slice uses Blender
+runtime path. The Blender slice uses Blender
 5.1.x and [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py) to extract
-one explicitly named, material-free static mesh. A private `XRBM` stream crosses
+one explicitly named static mesh. A private `XRBM` stream crosses
 stdin to the C++ adapter, which performs coordinate/normal/winding conversion and
 feeds the same canonical writer used by every other source. `test_pyramid` is the
 first gallery probe; the flat-shaded `test_sphere` exercises dense triangulation,
 its UV seam, and corner splitting; and `test_smooth_sphere` proves that equal
-positions share smooth normals while UV seams remain split. All three use the
-optional gallery path. The regular barrel adds the first narrow type-`0xA`
+positions share smooth normals while UV seams remain split. Material-free inputs
+remain byte-compatible XRBM v1. The strict v2 profile adds exactly one
+alpha-tested Blender material, derives one logical DDS reference from its direct
+Image Texture node, carries Blender's cutoff, and flips textured V once for
+DDS/Vulkan top-row sampling. `test_leaf_card` is its first consumer and visible
+`IgnoreHit` proof. All four use the optional gallery path. The regular barrel adds the first narrow type-`0xA`
 rigid-compound legacy profile: its bind/model-space child mesh is flattened to
 ordinary render geometry and its three cylinder records, masses, centers of
 mass, source material, and source-node names enter optional OGFx metadata. The
@@ -157,10 +167,15 @@ cmake --build --preset ogfx-core --target xrPhotonAssetCompiler
   --object test_pyramid
 ```
 
-The checked input profile is exactly one explicitly named mesh object: no
-materials, modifiers, animation, shape keys, constraints, parenting, or color
-attributes; linked-library data and overrides are also rejected. It accepts
-either zero or one UV layer. Scene units and the object's affine
+The checked input is exactly one explicitly named mesh object: no modifiers,
+animation, shape keys, constraints, parenting, or color attributes; linked-library
+data and overrides are also rejected. Material-free XRBM v1 accepts zero or one
+UV layer. XRBM v2 accepts exactly one local material used by every polygon, one
+UV layer, one direct Image Texture → Principled Base Color/Alpha graph, the
+Boolean `xrphoton_alpha_tested` custom property, and a lowercase `.dds` using
+exact sRGB/Straight-alpha interpretation beneath the supplied `--texture-root`;
+the graph must be unmuted, unanimated, and use identity texture/color
+mapping. Blended or more elaborate materials fail loudly. Scene units and the object's affine
 transform are baked by the compiler; a one-million-triangle cap bounds peak
 working memory. Blender source files live in the Git-ignored
 root `blender/` directory; reproducible outputs live under the Git-ignored
@@ -169,7 +184,7 @@ sends a bounded private `XRBM` extraction stream to
 `xrPhotonAssetCompiler convert-blender`, and the shared C++ writer publishes the
 canonical file.
 
-For the three local regression sources, configure their ignored paths once and run
+For the four local regression sources, configure their ignored paths once and run
 the opt-in end-to-end proof:
 
 ```sh
@@ -177,15 +192,18 @@ cmake --preset ogfx-core \
   -DXRPHOTON_BLENDER_EXECUTABLE=/path/to/blender \
   -DXRPHOTON_BLENDER_PYRAMID_BLEND="$PWD/blender/test_pyramid.blend" \
   -DXRPHOTON_BLENDER_SPHERE_BLEND="$PWD/blender/test_sphere.blend" \
-  -DXRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND="$PWD/blender/test_smooth_sphere.blend"
+  -DXRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND="$PWD/blender/test_smooth_sphere.blend" \
+  -DXRPHOTON_BLENDER_LEAF_CARD_BLEND="$PWD/blender/test_leaf_card.blend" \
+  -DXRPHOTON_BLENDER_LEAF_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
 cmake --build --preset ogfx-core --target xrPhotonBlenderOfflineProof
 ```
 
 It runs the real Blender extractor and compiler twice for each fixture, verifies
 deterministic canonical schema reconstruction, and persists
-`test_pyramid.ogfx`, `test_sphere.ogfx`, and `test_smooth_sphere.ogfx` under
-`build/ogfx-core/assets/blender/`. Normal builds do not depend on Blender or the
-ignored `.blend` files.
+`test_pyramid.ogfx`, `test_sphere.ogfx`, `test_smooth_sphere.ogfx`, and
+`test_leaf_card.ogfx` under `build/ogfx-core/assets/blender/`. It also pins the
+leaf DDS identity and proves that 153,894 mip-0 texels select BC1 transparency.
+Normal builds do not depend on Blender or the ignored `.blend` files.
 
 ### Proving the legacy plitka conversion
 
@@ -251,7 +269,7 @@ The proof selects no physics backend and performs no simulation.
 
 The generated quad and wedge need no local source files. To add the verified
 plitka, regular-barrel, and pseudodog-tail outputs, their original textures, and
-all three converted Blender assets to the debug gallery, configure the
+all four converted Blender assets to the debug gallery, configure the
 owner-local paths once, then build normally:
 
 ```sh
@@ -260,6 +278,7 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_BLENDER_OGFX="$PWD/build/ogfx-core/assets/blender/test_pyramid.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_smooth_sphere.ogfx" \
+  -DXRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX="$PWD/build/ogfx-core/assets/blender/test_leaf_card.ogfx" \
   -DXRPHOTON_GALLERY_BARREL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/physics/balon/bochka_close_1.ogfx" \
   -DXRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx" \
   -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
@@ -268,16 +287,18 @@ cmake --build --preset debug
 ```
 
 The texture root must preserve the exact-case relative paths
-`ston/ston_stena_marbl_m_03_back.dds`, `mtl/mtl_barrel_01.dds`, and
-`act/act_pseudodog_fur.dds`. The shipped tail texture's mip 0 is fully opaque;
-its configured gallery entry therefore exercises the alpha-tested any-hit path
-without producing a visible rejected-texel cutout. CMake remembers these values
+`ston/ston_stena_marbl_m_03_back.dds`, `mtl/mtl_barrel_01.dds`,
+`act/act_pseudodog_fur.dds`, and `trees/trees_new_vetka_green.dds`. The shipped
+tail texture's mip 0 is fully opaque; the leaf texture supplies the complementary
+visible cutout acceptance and shows the miss background through rejected texels.
+CMake remembers these values
 separately in each build tree, so configure the `release` preset the same way
 when needed. With
 an empty `XRPHOTON_GALLERY_PLITKA_OGFX`,
 `XRPHOTON_GALLERY_BLENDER_OGFX`, or
 `XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX`, or
 `XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX`, or
+`XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX`, or
 `XRPHOTON_GALLERY_BARREL_OGFX`, or
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`, xrPhoton skips that optional entry. Once
 an entry is configured, a missing/broken OGFx—or referenced texture root/DDS—is a
