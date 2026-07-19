@@ -690,17 +690,18 @@ explicit compiler-contract change, never an unannounced fix applied in multiple
 places.
 
 The ignored root `blender/` directory holds owner-local source files. The first
-fixtures are `test_pyramid.blend` / object `test_pyramid`, the gallery probe, and
-`test_sphere.blend` / object `test_sphere`, the flat-shaded
-dense-triangulation/UV-seam/corner-splitting regression fixture.
+fixtures are `test_pyramid.blend` / object `test_pyramid` and
+`test_sphere.blend` / object `test_sphere`, both optional gallery probes; the
+flat-shaded sphere remains the dense-triangulation/UV-seam/corner-splitting
+regression fixture.
 Generated outputs live beneath the ignored
 `build/<preset>/assets/blender/` directory. The opt-in
 `xrPhotonBlenderOfflineProof` target uses the cache settings
 `XRPHOTON_BLENDER_EXECUTABLE`, `XRPHOTON_BLENDER_PYRAMID_BLEND`, and
 `XRPHOTON_BLENDER_SPHERE_BLEND` to run both files through Blender and verify
 their canonical outputs; it does not make the local `.blend` inputs normal-build
-dependencies. The pyramid's manual rendered appearance and GPU validation are
-still pending.
+dependencies. Both outputs can be configured as gallery entries. The pyramid has
+manual visual sign-off; the sphere's visual and GPU sign-off remain pending.
 
 Third-party assets — free path-tracing test models included — normally enter
 the same way: Blender imports them, then an xrPhoton export front end feeds the
@@ -901,17 +902,18 @@ each arrives with its own consumer.
    on-screen orientation, scale, winding, and texture appearance remain a final
    owner visual check.
 
-3. **Blender opaque probe → headless export → OGFx. Landed; manual/GPU gallery
-   validation pending.** Blender 5.1.x and `tools/blender/export_ogfx.py` extract
+3. **Blender opaque probe → headless export → OGFx. Landed; sphere manual/GPU
+   gallery validation pending.** Blender 5.1.x and
+   `tools/blender/export_ogfx.py` extract
    the explicitly named, material-free static `test_pyramid` mesh through the
    private stdin-only `XRBM` exchange. The C++ adapter applies scene/object
    transforms, `(x, y, z)` → `(x, z, y)`, inverse-transpose normals, and
    determinant-aware winding, then feeds the shared writer. The flat-shaded
    `test_sphere` exercises dense triangulation, its UV seam, and corner splitting.
-   Both canonical outputs are reproducible
-   beneath `build/<preset>/assets/blender/`; the pyramid is the optional gallery
-   probe, but its manual rendered appearance and GPU validation have not yet been
-   signed off. The slice adds no second writer or runtime loader. A direct
+   Both canonical outputs are reproducible beneath
+   `build/<preset>/assets/blender/` and are independent optional gallery probes.
+   The pyramid has manual visual sign-off; the sphere's visual and GPU sign-off
+   remain pending. The slice adds no second writer or runtime loader. A direct
    GLB-to-compiler adapter remains an optional later offline tool.
 
 4. **Legacy hierarchy / skeletal-rigid target — next source-profile milestone.**

@@ -158,8 +158,9 @@ path does not use Blender: Blender import remains a visual oracle or an
 intentional editing workflow for legacy content, while batch migration parses
 OGF directly. The separate narrow headless Blender-to-OGFx path has now landed
 for the `test_pyramid` gallery probe and flat-shaded `test_sphere`
-dense-triangulation/UV-seam/corner-splitting fixture. The pyramid's manual gallery
-appearance and GPU validation remain pending. The project model and CLI harden
+dense-triangulation/UV-seam/corner-splitting fixture. Both are independent optional
+gallery entries; the pyramid has manual visual sign-off, while the sphere's visual
+and GPU sign-off remain pending. The project model and CLI harden
 around that legacy conversion, Blender export,
 and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own
