@@ -35,8 +35,11 @@ GPU-assisted, and synchronization validation; its final on-screen orientation,
 scale, winding, and texture appearance still require owner visual sign-off.
 The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`, and
 `test_smooth_sphere.ogfx` can be configured independently as Blender gallery
-placements. With plitka and all three enabled, the gallery contains six BLASes
-and seven TLAS instances; the wedge remains the shared-BLAS probe. The two
+placements. The converted regular `bochka_close_1.ogfx` is a seventh gallery
+model: its `mtl\mtl_barrel_01` reference uses the same DDS path, while its
+backend-neutral compound-collider metadata is preserved but not simulated yet.
+With every optional asset enabled, the gallery contains seven BLASes and eight
+TLAS instances; the wedge remains the shared-BLAS probe. The two
 spheres have identical geometry and UV corner streams but deliberately different
 normal sharing, making flat-versus-smooth shading directly observable.
 That said, the whole ray tracing stack is already behind it: every frame traces
@@ -58,8 +61,8 @@ logical OGFx references, resolves strict DDS DXT1/DXT5 images, uploads BC1/BC3
 payloads directly, and exposes a fixed sampled-image array with an opaque-white
 fallback. The generated probes exercise the fallback with an amber quad and
 blue/green wedge faces; configured plitka exercises the real BC1 upload and a
-nonzero texture-table index. The separate converter accepts the pinned OGF v4
-static profile and feeds that same writer for offline validation. The converted
+nonzero texture-table index. The separate converter accepts pinned OGF v4
+flat-static and rigid-compound profiles and feeds that same writer for offline validation. The converted
 plitka is now the first original X-Ray model carried through xrPhoton's configured
 runtime path, with final visual sign-off pending. The Blender slice uses Blender
 5.1.x and [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py) to extract
@@ -69,10 +72,11 @@ feeds the same canonical writer used by every other source. `test_pyramid` is th
 first gallery probe; the flat-shaded `test_sphere` exercises dense triangulation,
 its UV seam, and corner splitting; and `test_smooth_sphere` proves that equal
 positions share smooth normals while UV seams remain split. All three use the
-optional gallery path. The pyramid and flat sphere have manual visual sign-off;
-the smooth comparison remains pending. The next
-source-profile milestone is `bochka_fuel`, once its hierarchy, bone, and IK/physics
-contracts exist. Dynamic scenes
+optional gallery path. The regular barrel adds the first narrow type-`0xA`
+rigid-compound legacy profile: its bind/model-space child mesh is flattened to
+ordinary render geometry and its three cylinder records, masses, centers of
+mass, source material, and source-node names enter optional OGFx metadata.
+Dynamic scenes
 (TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
 and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -115,10 +119,12 @@ It also builds the narrow legacy OGF converter:
 ./build/ogfx-core/xrPhotonAssetCompiler convert-ogf input.ogf output.ogfx
 ```
 
-This first adapter intentionally accepts only the documented M4a static profile.
-Its output preserves a logical texture name that the runtime reconstructs for
-scene-global DDS resolution and can be supplied directly to the optional gallery
-configuration below.
+The command intentionally dispatches between only two documented profiles: the
+M4a flat-static slice and the exact SoC rigid-compound slice used by
+`bochka_close_1`. It is not general skeletal support. Both outputs preserve a
+logical texture name that the runtime reconstructs for scene-global DDS
+resolution and can be supplied directly to the optional gallery configuration
+below.
 
 ### Converting the Blender probes
 
@@ -184,11 +190,30 @@ local source location can be selected at configure time with
 `-DXRPHOTON_M4A_CORPUS_OGF=/path/to/plitka1.ogf`; the source tree remains
 untracked and normal builds do not depend on it.
 
+### Proving the regular barrel conversion
+
+With the local source at
+`original_game_files/soc/meshes/physics/balon/bochka_close_1.ogf`, run:
+
+```sh
+cmake --build --preset ogfx-core --target xrPhotonRigidOgfOfflineProof
+```
+
+The opt-in proof checks the exact source identity, runs the real converter
+twice, compares the outputs byte-for-byte, verifies bind-pose render flattening
+and all body/cylinder fields, reconstructs the complete OGFx schema, and pins the
+19,352-byte output identity. It persists
+`build/ogfx-core/assets/soc/meshes/physics/balon/bochka_close_1.ogfx`. Override
+the ignored local source path with
+`-DXRPHOTON_RIGID_BARREL_CORPUS_OGF=/path/to/bochka_close_1.ogf` if needed.
+No physics backend is selected or run by this proof.
+
 ### Configuring the optional gallery entries
 
 The generated quad and wedge need no local source files. To add the verified
-plitka output, its original texture, and all three converted Blender assets to the
-debug gallery, configure the owner-local paths once, then build normally:
+plitka and regular-barrel outputs, their original textures, and all three
+converted Blender assets to the debug gallery, configure the owner-local paths
+once, then build normally:
 
 ```sh
 cmake --preset debug \
@@ -196,19 +221,22 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_BLENDER_OGFX="$PWD/build/ogfx-core/assets/blender/test_pyramid.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_smooth_sphere.ogfx" \
+  -DXRPHOTON_GALLERY_BARREL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/physics/balon/bochka_close_1.ogfx" \
   -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
 cmake --build --preset debug
 ./build/debug/xrPhoton
 ```
 
-The texture root must preserve the exact-case relative path
-`ston/ston_stena_marbl_m_03_back.dds`. CMake remembers these values separately in
-each build tree, so configure the `release` preset the same way when needed. With
+The texture root must preserve the exact-case relative paths
+`ston/ston_stena_marbl_m_03_back.dds` and `mtl/mtl_barrel_01.dds`. CMake
+remembers these values separately in each build tree, so configure the `release`
+preset the same way when needed. With
 an empty `XRPHOTON_GALLERY_PLITKA_OGFX`,
 `XRPHOTON_GALLERY_BLENDER_OGFX`, or
 `XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX`, or
-`XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX`, xrPhoton skips that optional entry. Once
-an entry is configured, a missing/broken OGFx—or plitka texture root/DDS—is a
+`XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX`, or
+`XRPHOTON_GALLERY_BARREL_OGFX`, xrPhoton skips that optional entry. Once
+an entry is configured, a missing/broken OGFx—or referenced texture root/DDS—is a
 loud startup failure rather than a silent fallback. The original game files,
 Blender sources, and generated proof outputs remain Git-ignored local inputs.
 

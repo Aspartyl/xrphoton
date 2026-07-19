@@ -20,6 +20,9 @@ using xrphoton::ogfx::DecodeResult;
 using xrphoton::ogfx::Geometry;
 using xrphoton::ogfx::Mesh;
 using xrphoton::ogfx::Model;
+using xrphoton::ogfx::PhysicsBody;
+using xrphoton::ogfx::PhysicsCollider;
+using xrphoton::ogfx::PhysicsShapeType;
 using xrphoton::ogfx::SerializeResult;
 using xrphoton::ogfx::VertexAttributes;
 
@@ -138,6 +141,56 @@ Model makeAllOpaqueTwoGeometryModel()
     model.materials[0].baseColorFactor = {0.125f, 0.25f, 0.75f, 1.0f};
     model.materials.emplace_back();
     model.materials[1].baseColorFactor = {0.25f, 0.75f, 0.125f, 1.0f};
+    return model;
+}
+
+Model makeRigidPhysicsQuad()
+{
+    Model model = makeQuad();
+    model.physicsBodies.push_back(PhysicsBody{
+        .firstCollider = 0,
+        .colliderCount = 3,
+        .mass = 62.0f,
+        .centerOfMass = {0.0f, 0.125f, 0.0f},
+    });
+    model.physicsColliders = {
+        PhysicsCollider{
+            .shapeType = PhysicsShapeType::Cylinder,
+            .flags = 0,
+            .material = "objects\\barrel",
+            .sourceNode = "barrel",
+            .center = {0.0f, 0.5f, 0.0f},
+            .axis = {0.0f, 1.0f, 0.0f},
+            .height = 1.0746f,
+            .radius = 0.3521f,
+            .mass = 60.0f,
+            .centerOfMass = {0.0f, 0.5f, 0.0f},
+        },
+        PhysicsCollider{
+            .shapeType = PhysicsShapeType::Cylinder,
+            .flags = 0,
+            .material = "objects\\barrel",
+            .sourceNode = "obod_1",
+            .center = {0.0f, 1.0f, 0.0f},
+            .axis = {0.0f, 1.0f, 0.0f},
+            .height = 0.0556f,
+            .radius = 0.3711f,
+            .mass = 1.0f,
+            .centerOfMass = {0.0f, 1.0f, 0.0f},
+        },
+        PhysicsCollider{
+            .shapeType = PhysicsShapeType::Cylinder,
+            .flags = 0,
+            .material = "objects\\barrel",
+            .sourceNode = "obod_2",
+            .center = {0.0f, 0.0f, 0.0f},
+            .axis = {0.0f, -1.0f, 0.0f},
+            .height = 0.0551f,
+            .radius = 0.3711f,
+            .mass = 1.0f,
+            .centerOfMass = {0.0f, 0.0f, 0.0f},
+        },
+    };
     return model;
 }
 
@@ -273,6 +326,8 @@ constexpr std::string_view expectedChunkName(ChunkId id)
         return "OGFX_ATTRIBUTES";
     case ChunkId::Indices:
         return "OGFX_INDICES";
+    case ChunkId::RigidPhysics:
+        return "OGFX_RIGID_PHYSICS";
     case ChunkId::Description:
         return "OGFX_DESC";
     }
@@ -286,7 +341,9 @@ bool modelIsEmpty(const Model& model)
         && model.indices.empty()
         && model.geometries.empty()
         && model.meshes.empty()
-        && model.materials.empty();
+        && model.materials.empty()
+        && model.physicsBodies.empty()
+        && model.physicsColliders.empty();
 }
 
 void expectRejected(
@@ -341,7 +398,9 @@ bool modelsEqual(const Model& left, const Model& right)
         || left.indices != right.indices
         || left.geometries.size() != right.geometries.size()
         || left.meshes.size() != right.meshes.size()
-        || left.materials.size() != right.materials.size()) {
+        || left.materials.size() != right.materials.size()
+        || left.physicsBodies.size() != right.physicsBodies.size()
+        || left.physicsColliders.size() != right.physicsColliders.size()) {
         return false;
     }
     for (std::size_t index = 0; index < left.positions.size(); ++index) {
@@ -375,6 +434,33 @@ bool modelsEqual(const Model& left, const Model& right)
         if (left.materials[index].baseColorFactor != right.materials[index].baseColorFactor
             || left.materials[index].alphaCutoff != right.materials[index].alphaCutoff
             || left.materials[index].baseColorTexture != right.materials[index].baseColorTexture) {
+            return false;
+        }
+    }
+    for (std::size_t index = 0; index < left.physicsBodies.size(); ++index) {
+        const PhysicsBody& a = left.physicsBodies[index];
+        const PhysicsBody& b = right.physicsBodies[index];
+        if (a.firstCollider != b.firstCollider
+            || a.colliderCount != b.colliderCount
+            || a.mass != b.mass
+            || a.centerOfMass.x != b.centerOfMass.x
+            || a.centerOfMass.y != b.centerOfMass.y
+            || a.centerOfMass.z != b.centerOfMass.z) {
+            return false;
+        }
+    }
+    for (std::size_t index = 0; index < left.physicsColliders.size(); ++index) {
+        const PhysicsCollider& a = left.physicsColliders[index];
+        const PhysicsCollider& b = right.physicsColliders[index];
+        if (a.shapeType != b.shapeType || a.flags != b.flags
+            || a.material != b.material || a.sourceNode != b.sourceNode
+            || a.center.x != b.center.x || a.center.y != b.center.y
+            || a.center.z != b.center.z || a.axis.x != b.axis.x
+            || a.axis.y != b.axis.y || a.axis.z != b.axis.z
+            || a.height != b.height || a.radius != b.radius || a.mass != b.mass
+            || a.centerOfMass.x != b.centerOfMass.x
+            || a.centerOfMass.y != b.centerOfMass.y
+            || a.centerOfMass.z != b.centerOfMass.z) {
             return false;
         }
     }
@@ -535,6 +621,180 @@ void testSchemaProfile()
         expect(texturedRuntime.model.materials[0].baseColorTexture == "textures/plitka",
             "runtime decoding reconstructs the logical texture reference");
     }
+}
+
+void testRigidPhysicsSchemaAndValidation()
+{
+    const Model source = makeRigidPhysicsQuad();
+    const std::vector<std::uint8_t> canonical = serialize(source);
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(canonical, "physics-schema.ogfx");
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(canonical, "physics-runtime.ogfx");
+    expect(static_cast<bool>(schema),
+        "schema decoding accepts the optional rigid-physics chunk");
+    expect(static_cast<bool>(runtime),
+        "runtime decoding accepts the optional rigid-physics chunk");
+    if (schema && runtime) {
+        expect(modelsEqual(schema.model, source),
+            "schema decoding reconstructs every rigid-physics field");
+        expect(modelsEqual(runtime.model, source),
+            "runtime decoding reconstructs every rigid-physics field");
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            schema.model, "physics-round-trip.ogfx");
+        expect(static_cast<bool>(roundTrip) && roundTrip.bytes == canonical,
+            "physics writer-schema-writer round trip is byte exact");
+    } else {
+        if (!schema) {
+            std::cerr << schema.error << '\n';
+        }
+        if (!runtime) {
+            std::cerr << runtime.error << '\n';
+        }
+    }
+
+    std::vector<RawChunk> chunks = splitChunks(canonical);
+    std::reverse(chunks.begin(), chunks.end());
+    expect(
+        static_cast<bool>(xrphoton::ogfx::decodeModel(
+            assembleFile(chunks), "reordered-physics.ogfx")),
+        "the optional physics chunk is order-independent");
+
+    Model emptyStrings = source;
+    emptyStrings.physicsColliders[0].material.clear();
+    emptyStrings.physicsColliders[0].sourceNode.clear();
+    const DecodeResult emptyDecoded = xrphoton::ogfx::decodeModel(
+        serialize(emptyStrings), "empty-physics-strings.ogfx");
+    expect(static_cast<bool>(emptyDecoded)
+            && modelsEqual(emptyDecoded.model, emptyStrings),
+        "UINT32_MAX preserves optional empty collider strings");
+
+    auto freshChunks = [&]() { return splitChunks(canonical); };
+    chunks = freshChunks();
+    chunkById(&chunks, ChunkId::RigidPhysics).flags = 1;
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "flags");
+    chunks = freshChunks();
+    chunkById(&chunks, ChunkId::RigidPhysics).version = 2;
+    Model renderOnly = source;
+    renderOnly.physicsBodies.clear();
+    renderOnly.physicsColliders.clear();
+    const std::vector<std::uint8_t> futurePhysics = assembleFile(chunks);
+    const DecodeResult futureSchema = xrphoton::ogfx::decodeModelSchema(
+        futurePhysics, "future-optional-physics.ogfx");
+    const DecodeResult futureRuntime = xrphoton::ogfx::decodeModel(
+        futurePhysics, "future-optional-physics.ogfx");
+    expect(static_cast<bool>(futureSchema)
+            && modelsEqual(futureSchema.model, renderOnly)
+            && static_cast<bool>(futureRuntime)
+            && modelsEqual(futureRuntime.model, renderOnly),
+        "an unsupported optional physics version is skipped without losing render data");
+    chunks = freshChunks();
+    chunks.push_back(chunkById(&chunks, ChunkId::RigidPhysics));
+    expectRejected(
+        assembleFile(chunks), "OGFX_RIGID_PHYSICS", "occurrence count");
+
+    chunks = freshChunks();
+    chunkById(&chunks, ChunkId::RigidPhysics).payload.resize(31);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "byteSize");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, 0, 0);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "bodyCount");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, 4, 0);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliderCount");
+    chunks = freshChunks();
+    writeU32(
+        &chunkById(&chunks, ChunkId::RigidPhysics).payload,
+        8,
+        readU32(chunkById(&chunks, ChunkId::RigidPhysics).payload, 8) + 1);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "byteSize");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, 12, 1);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "reserved");
+
+    constexpr std::size_t BodyOffset = xrphoton::ogfx::RigidPhysicsHeaderSize;
+    constexpr std::size_t ColliderOffset = BodyOffset
+        + xrphoton::ogfx::PhysicsBodyRecordSize;
+    constexpr std::size_t StringOffset = ColliderOffset
+        + 3 * xrphoton::ogfx::PhysicsColliderRecordSize;
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, BodyOffset + 8, 1);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "reserved0");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, BodyOffset + 4, 0);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliderCount");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, BodyOffset, 1);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "firstCollider");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, BodyOffset + 4, 4);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "collider range end");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, BodyOffset + 4, 2);
+    expectRejected(
+        assembleFile(chunks), "OGFX_RIGID_PHYSICS", "final collider partition end");
+    chunks = freshChunks();
+    writeF32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, BodyOffset + 16, 0.0f);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "bodies[0].mass");
+    chunks = freshChunks();
+    writeF32(
+        &chunkById(&chunks, ChunkId::RigidPhysics).payload,
+        BodyOffset + 20,
+        std::numeric_limits<float>::quiet_NaN());
+    expectRejected(
+        assembleFile(chunks), "OGFX_RIGID_PHYSICS", "bodies[0].centerOfMass");
+
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, ColliderOffset, 2);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "shapeType");
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, ColliderOffset + 4, 1);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].flags");
+    chunks = freshChunks();
+    writeF32(
+        &chunkById(&chunks, ChunkId::RigidPhysics).payload,
+        ColliderOffset + 16,
+        std::numeric_limits<float>::infinity());
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].center");
+    chunks = freshChunks();
+    writeF32(
+        &chunkById(&chunks, ChunkId::RigidPhysics).payload,
+        ColliderOffset + 28,
+        std::numeric_limits<float>::quiet_NaN());
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].axis");
+    chunks = freshChunks();
+    writeF32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, ColliderOffset + 32, 0.0f);
+    expectRejected(
+        assembleFile(chunks), "OGFX_RIGID_PHYSICS", "axis length squared");
+    chunks = freshChunks();
+    writeF32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, ColliderOffset + 40, 0.0f);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].height");
+    chunks = freshChunks();
+    writeF32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, ColliderOffset + 44, -1.0f);
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].radius");
+    chunks = freshChunks();
+    writeF32(
+        &chunkById(&chunks, ChunkId::RigidPhysics).payload,
+        ColliderOffset + 48,
+        std::numeric_limits<float>::quiet_NaN());
+    expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].mass");
+    chunks = freshChunks();
+    writeF32(
+        &chunkById(&chunks, ChunkId::RigidPhysics).payload,
+        ColliderOffset + 52,
+        std::numeric_limits<float>::quiet_NaN());
+    expectRejected(
+        assembleFile(chunks), "OGFX_RIGID_PHYSICS", "colliders[0].centerOfMass");
+
+    chunks = freshChunks();
+    writeU32(&chunkById(&chunks, ChunkId::RigidPhysics).payload, ColliderOffset + 8, 1);
+    expectRejected(
+        assembleFile(chunks), "OGFX_RIGID_PHYSICS", "materialRefOffset");
+    chunks = freshChunks();
+    chunkById(&chunks, ChunkId::RigidPhysics).payload[StringOffset + 2] = 0xc0;
+    const std::vector<std::uint8_t> invalidUtf8 = assembleFile(chunks);
+    expectRejected(invalidUtf8, "OGFX_RIGID_PHYSICS", "string UTF-8");
+    expectSchemaRejected(invalidUtf8, "OGFX_RIGID_PHYSICS", "string UTF-8");
 }
 
 void testFileAndChunkFraming()
@@ -1032,6 +1292,7 @@ int main()
 {
     testRoundTripAndExtensions();
     testSchemaProfile();
+    testRigidPhysicsSchemaAndValidation();
     testFileAndChunkFraming();
     testRequiredChunkRules();
     testPayloadFramingAndScalars();

@@ -43,6 +43,8 @@ constexpr std::string_view chunkName(std::uint32_t id)
         return "OGFX_ATTRIBUTES";
     case ChunkId::Indices:
         return "OGFX_INDICES";
+    case ChunkId::RigidPhysics:
+        return "OGFX_RIGID_PHYSICS";
     case ChunkId::Description:
         return "OGFX_DESC";
     }
@@ -147,6 +149,9 @@ struct CanonicalModelCounts
     std::uint32_t positionCount = 0;
     std::uint32_t attributeCount = 0;
     std::uint32_t indexCount = 0;
+    std::uint32_t physicsBodyCount = 0;
+    std::uint32_t physicsColliderCount = 0;
+    std::uint32_t physicsStringBytes = 0;
 };
 
 // The canonical writer and bounded source adapters share this one size formula.
@@ -174,6 +179,11 @@ inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
         static_cast<std::uint64_t>(counts.attributeCount) * AttributeRecordSize;
     const std::uint64_t indexBytes =
         static_cast<std::uint64_t>(counts.indexCount) * IndexRecordSize;
+    const std::uint64_t rigidPhysicsBytes = RigidPhysicsHeaderSize
+        + static_cast<std::uint64_t>(counts.physicsBodyCount) * PhysicsBodyRecordSize
+        + static_cast<std::uint64_t>(counts.physicsColliderCount)
+            * PhysicsColliderRecordSize
+        + counts.physicsStringBytes;
 
     std::uint64_t fileBytes = FileHeaderSize;
     addChunk(ModelRecordSize, &fileBytes);
@@ -183,6 +193,9 @@ inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
     addChunk(positionBytes, &fileBytes);
     addChunk(attributeBytes, &fileBytes);
     addChunk(indexBytes, &fileBytes);
+    if (counts.physicsBodyCount != 0 || counts.physicsColliderCount != 0) {
+        addChunk(rigidPhysicsBytes, &fileBytes);
+    }
     return fileBytes;
 }
 

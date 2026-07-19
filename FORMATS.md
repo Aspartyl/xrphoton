@@ -6,10 +6,11 @@ records the settled decisions about how content reaches the runtime (OGFx,
 OMFx, the shared offline asset compiler) and the proposed elaboration of those
 decisions into concrete mechanism. OGFx v1's static core, canonical writer,
 strict runtime decoder/adapter, offline probe front ends, narrow M4a
-legacy-static adapter/CLI, narrow headless Blender 5.1.x static-mesh adapter,
-generic multi-model gallery consumer, and DDS-backed opaque base-color path now
-exist; broader source profiles, later format families, and SDK tools remain
-planned. The landed slices are recorded at the
+legacy-static adapter, narrow SoC v4 rigid-compound adapter, optional
+backend-neutral rigid-physics records, narrow headless Blender 5.1.x
+static-mesh adapter, generic multi-model gallery consumer, and DDS-backed
+opaque base-color path now exist; broader source profiles, live physics, later
+format families, and SDK tools remain planned. The landed slices are recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
 
 **How to read the labels.** Three kinds of statement appear below, and the
@@ -111,10 +112,10 @@ xray_re's `xr_ogf_format.h`:
 | `0x4` | `OGF_INDICES` | `u32` index count, then **16-bit** (`u16`) indices |
 | `0x6` | `OGF_SWIDATA` | four reserved `u32` values, a `u32` window count, then slide-window records: `{u32 offset, u16 tris, u16 verts}` |
 | `0x9` | `OGF_CHILDREN` | child visuals of hierarchical models, each an embedded OGF |
-| `0xD` | `OGF_S_BONE_NAMES` | bone names and hierarchy (per-bone name, parent, bind shape) *(exact layout: verify)* |
+| `0xD` | `OGF_S_BONE_NAMES` | bone names and hierarchy (per-bone name, parent, bind OBB); the SoC v4 subset used by the landed rigid-barrel profile is pinned |
 | `0xE` | `OGF_S_MOTIONS` | embedded skeletal motions — the same layout `.omf` externalizes (see [OMFx](#omfx)) |
 | `0xF` | `OGF_S_SMPARAMS` | motion parameters: `u16` version (3 or 4), bone partitions, per-motion definitions |
-| `0x10` | `OGF_S_IKDATA` | per-bone physics/IK metadata: shape, joint limits, mass, center *(exact layout: verify)* |
+| `0x10` | `OGF_S_IKDATA` | per-bone physics/IK metadata: shape, joint data, bind transform, mass, center; the SoC v4 rigid-cylinder subset is pinned |
 | `0x11` | `OGF_S_USERDATA` | free-form ltx-style text blob |
 | `0x12` | `OGF_S_DESC` | provenance: source file, export tool + build time, owner/creation time, modifier/modification time |
 | `0x13` | `OGF_S_MOTION_REFS_0` | external motion references (one string; `0x18`/`_1` is the Clear-Sky+ multi-string variant) |
@@ -173,6 +174,38 @@ agree with its unchanged right-handed winding. The adapter creates one opaque
 geometry/mesh/material and preserves the logical texture name; the canonical
 OGFx writer independently regenerates bounds and serializes it. The adapter does
 not add a runtime OGF loading path.
+
+**IMPLEMENTED — narrow SoC rigid-compound profile.** The generalized
+`convert-ogf` entry point also accepts the exact regular-barrel family proven by
+`meshes/physics/balon/bochka_close_1.ogf`: an uncompressed OGF v4 type-`0xA`
+root containing exactly `HEADER`, `DESC`, `CHILDREN`, `S_BONE_NAMES`, and
+`S_IKDATA`. Its children are contiguous embedded type-`5` visuals containing
+the four required render chunks, one-link `0x12071980` 60-byte vertices, and
+`u16` triangle indices. The source shader pair is pinned to header shader id
+`0` plus `models\model`, mapped explicitly to opaque OGFx material semantics;
+the acceptance asset preserves `mtl\mtl_barrel_01`.
+
+The acceptance asset changed from the earlier `bochka_fuel` roadmap candidate
+to `bochka_close_1` because this milestone is meant to prove an ordinary closed
+barrel, not an explosive gameplay object. This was a content choice rather
+than an adapter limitation: `bochka_fuel` also fits the profile, while SoC's
+`explosive_barrel` configuration supplies its explosive class, blast, damage,
+fuse, and sound behavior outside the OGF visual.
+
+Bone names are nonempty printable ASCII, case-insensitively unique, and form
+one rooted acyclic hierarchy. This first profile accepts only active cylinder
+shapes, rigid nonbreakable joints, finite positive per-bone masses, and zero
+bind rotations. Unsupported chunks, child types, vertex formats, shape flags,
+shape types, joint types/flags, rotations, or malformed hierarchy fail with a
+source chunk/field diagnostic rather than being discarded.
+
+The render P/N/UV records and triangle order are already in bind/model space,
+so they pass through unchanged and the validated one-link bone indices are not
+retained as skinning data. The children flatten into an ordinary static OGFx
+mesh (`modelType == 0`). Hierarchical bind translations are accumulated only
+to place each cylinder center and per-bone center of mass in model space. The
+result is one reusable 62-unit compound-body recipe with three named cylinder
+colliders; it is metadata, not a live physics object.
 
 What this heritage gets right — and what OGFx therefore **preserves**
 (**DECISION**):
@@ -347,6 +380,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0020` | `OGFX_POSITIONS` | yes | tightly packed `f32×3` positions, 12-byte stride |
 | `0x0021` | `OGFX_ATTRIBUTES` | yes | 20-byte all-scalar attribute records: `nx, ny, nz, u, v` |
 | `0x0022` | `OGFX_INDICES` | yes | `u32` indices, geometry-local |
+| `0x0030` | `OGFX_RIGID_PHYSICS` | optional | backend-neutral compound-body records: contiguous collider ranges, masses/centers of mass, cylinder shapes, source material, and source-node names |
 | `0x0040` | `OGFX_DESC` | optional | provenance (the `OGF_S_DESC` heritage: source asset, converting tool + version, stable source-provided timestamps) plus the complete-input hash the compiler used |
 
 All seven required version-1 chunks use chunk version `1`, set the required
@@ -443,6 +477,61 @@ that decoder resource check. Runtime `decodeModel` reconstructs the same logical
 references as `decodeModelSchema`; its remaining capability difference is the
 opaque-only geometry gate.
 
+`OGFX_RIGID_PHYSICS` is emitted only when both physics arrays are nonempty. It
+uses chunk version `1`, `flags == 0` (optional), and this exact framing:
+
+```text
+payload header — 32 bytes
+ 0  u32 bodyCount
+ 4  u32 colliderCount
+ 8  u32 stringByteSize
+12  u32 reserved[5]         (all zero)
+
+body record — bodyCount records, 32-byte stride
+ 0  u32 firstCollider
+ 4  u32 colliderCount
+ 8  u32 reserved[2]         (both zero)
+16  f32 mass                (finite and positive)
+20  f32 centerOfMassX
+24  f32 centerOfMassY
+28  f32 centerOfMassZ
+
+collider record — colliderCount records, 64-byte stride
+ 0  u32 shapeType           (1 = cylinder)
+ 4  u32 colliderFlags       (zero; reserved in version 1)
+ 8  u32 materialRefOffset   (UINT32_MAX = none)
+12  u32 sourceNodeRefOffset (UINT32_MAX = none)
+16  f32 centerX
+20  f32 centerY
+24  f32 centerZ
+28  f32 axisX
+32  f32 axisY
+36  f32 axisZ
+40  f32 height              (finite and positive)
+44  f32 radius              (finite and positive)
+48  f32 mass                (finite and positive)
+52  f32 centerOfMassX
+56  f32 centerOfMassY
+60  f32 centerOfMassZ
+
+string arena — stringByteSize bytes immediately after the records
+```
+
+The body ranges form one ordered, gap-free partition of every collider exactly
+once. Centers, axes, and centers of mass are finite; axes are nonzero. Material
+and source-node references use the same interned length-prefixed UTF-8 arena
+discipline as material texture references, including the 4096-byte per-string
+and 64 MiB reconstructed-string caps. Both physics arrays must be empty or both
+nonempty. No physics-engine handles, motion type, world placement, or live
+dynamics enter this chunk.
+
+An unsupported future version of this optional chunk is safe to skip for
+loading, but its opaque payload is not retained in the reconstructed `Model`.
+Consequently, decoding such a file with an older compiler and serializing that
+model again intentionally omits the skipped physics chunk: optional-version
+forward compatibility is a render/load guarantee, not an archival
+decode-and-rewrite guarantee.
+
 The reference remains an extensionless logical name rather than image bytes in
 the geometry container. The scene resolver accepts canonical X-Ray names made of
 `[A-Za-z0-9_-]+` components separated by `\`, maps them exactly beneath the
@@ -454,9 +543,10 @@ that real slot, while missing or invalid referenced files are loud startup
 failures. This keeps OGFx geometry reusable and image-container policy separate.
 
 The geometry, mesh, position, attribute, and index chunks are **pure arrays**:
-their element counts derive from `byteSize / stride`. Skeletal chunk families
-(bones, IK, motion references) claim id ranges when skeletal support lands —
-they are not designed here.
+their element counts derive from `byteSize / stride`. Animation skeletons, skin
+weights, and motion references remain deferred. The landed rigid source profile
+instead flattens its render hierarchy and preserves only its reusable compound
+physics recipe in the optional chunk above.
 
 `OGFX_DESC` currently reserves an id and purpose only. M4 does not emit or
 interpret it; until its version-1 payload is pinned, writers omit it and
@@ -532,6 +622,12 @@ alpha-tested record would silently render the wrong semantics. The later
 opaque/alpha milestone removes that capability gate when it adds the actual
 consumer.
 
+Both schema and runtime byte decoders validate and reconstruct optional rigid
+physics records. [`src/ogfx_loader.cpp`](src/ogfx_loader.cpp) intentionally
+copies only render data into `SceneData` today, so the gallery barrel remains a
+static placement: no backend is selected, no body is instantiated, and no TLAS
+update or collision simulation is implied.
+
 Container version 1 supports only the static `normal` model type. Heritage
 model-type values remain documented and reserved, but the loader rejects them
 until their required chunks and semantics are designed and implemented.
@@ -553,11 +649,12 @@ The conversions the compiler owns:
 - **Legacy X-Ray** is left-handed, Y-up, Z-forward (its Direct3D lineage) —
   the *same* arrangement ARCHITECTURE.md documents for the engine (Y-up, +Z
   forward at zero yaw, +X screen-right), so the expected legacy conversion
-  is a coordinate **pass-through**, not a mirror. What still gets pinned
-  against OpenXRay and the blender-xray add-on with test assets at
-  converter-implementation time is everything a pass-through can still get
-  subtly wrong: triangle winding, normal orientation, and bind-pose
-  conventions *(verify against OpenXRay sources at implementation time)*.
+  is a coordinate **pass-through**, not a mirror. M4a and the rigid barrel pin
+  unchanged render positions, normals, UVs, and triangle order against real SoC
+  assets. For the rigid slice, child vertices are already bind/model-space;
+  hierarchical bind translations affect only the local collider centers and
+  centers of mass that the compiler flattens into model space. Animated
+  skinning conventions remain to be pinned when that profile lands.
 - **Blender** is right-handed, Z-up. The landed static-mesh adapter maps each
   transformed position and normal from `(x, y, z)` to engine `(x, z, y)`. That
   axis swap has determinant `-1`; the compiler therefore reverses triangle
@@ -745,9 +842,12 @@ focus, clear vision" convention applied to tooling.
 The first landed compiler slice is the standard-library-only model and canonical
 writer in [`src/ogfx.hpp`](src/ogfx.hpp) / [`src/ogfx.cpp`](src/ogfx.cpp). The
 M4a [`src/legacy_ogf.hpp`](src/legacy_ogf.hpp) /
-[`src/legacy_ogf.cpp`](src/legacy_ogf.cpp) source adapter populates that model,
-and `xrPhotonAssetCompiler convert-ogf <input.ogf> <output.ogfx>` supplies the
-filesystem boundary. The Blender extractor and `src/blender_mesh.cpp` adapter add
+[`src/legacy_ogf.cpp`](src/legacy_ogf.cpp) static source adapter and
+[`src/legacy_ogf_rigid.cpp`](src/legacy_ogf_rigid.cpp) rigid-compound adapter
+populate that model. Their `decodeModel` entry point dispatches from the source
+header type, and `xrPhotonAssetCompiler convert-ogf <input.ogf> <output.ogfx>`
+supplies their common filesystem boundary. The Blender extractor and
+`src/blender_mesh.cpp` adapter add
 the `convert-blender <diagnostic-name> <output.ogfx>` stdin boundary described
 above. Neither source adapter owns serialization: the CLI always calls the same
 validated writer. These units own neither Vulkan nor renderer-native state.
@@ -903,8 +1003,8 @@ each arrives with its own consumer.
    on-screen orientation, scale, winding, and texture appearance remain a final
    owner visual check.
 
-3. **Blender opaque probe → headless export → OGFx. Landed; smooth comparison
-   gallery validation pending.** Blender 5.1.x and
+3. **Blender opaque probe → headless export → OGFx. Landed and gallery
+   validated.** Blender 5.1.x and
    `tools/blender/export_ogfx.py` extract
    the explicitly named, material-free static `test_pyramid` mesh through the
    private stdin-only `XRBM` exchange. The C++ adapter applies scene/object
@@ -917,22 +1017,26 @@ each arrives with its own consumer.
    The slice adds no second writer or runtime loader. A direct
    GLB-to-compiler adapter remains an optional later offline tool.
 
-4. **Legacy hierarchy / skeletal-rigid target — next source-profile milestone.**
-   The externally supplied SoC asset
-   `meshes/objects/dynamics/balon/bochka_fuel.ogf` remains the first
-   recognizable target after the Blender probe. It is not relabelled "static"
-   merely because the barrel appears rigid: its root contains embedded child
-   visuals plus bone-name and IK/physics chunks. Its canonical path remains:
+4. **Regular-barrel rigid OGF → flattened render mesh + reusable physics
+   recipe. Landed.** The externally supplied SoC source is
+   `meshes/physics/balon/bochka_close_1.ogf` (29,710 bytes, SHA-256
+   `87be6a577756af252496be56d29d4c50c9ebdba9443e9d57f22af212fa1af33f`).
+   The direct legacy adapter validates its type-`0xA` root, type-`5` child,
+   three-bone hierarchy, rigid/nonbreakable cylinder data, and bind transforms;
+   Blender is not a conversion stage. It emits one ordinary opaque render mesh
+   with 436 vertices, 1,158 indices, and logical texture
+   `mtl\mtl_barrel_01`, plus one optional 62-unit body containing the named
+   `barrel`, `obod_1`, and `obod_2` cylinders.
 
-   ```text
-   bochka_fuel.ogf ──► legacy OGF reader ──► shared compiler ──► bochka_fuel.ogfx
-   ```
-
-   Blender import is an independent visual oracle and optional editing path, not a
-   conversion stage. The target lands only with explicit nested-visual, bind/bone,
-   and IK/physics contracts. Until those chunk families exist, the converter
-   rejects the barrel instead of emitting geometry-only OGFx that silently drops
-   source semantics. Its texture references can use the already-landed resolver.
+   `xrPhotonRigidOgfOfflineProof` runs the real compiler twice, verifies exact
+   source identity, complete render/physics schema reconstruction, byte-exact
+   writer round trips, and the runtime decode profile. Its deterministic output
+   is 19,352 bytes with SHA-256
+   `eed1c06c5d975199ae96fe49517f8893e164cf5e93ce1a040421c7cb0e115060`
+   and is persisted at
+   `build/<preset>/assets/soc/meshes/physics/balon/bochka_close_1.ogfx`.
+   The gallery consumes that render data and the existing DDS path, but no
+   current runtime subsystem consumes the optional physics recipe.
 
 The code-owned gallery table remains temporary placement policy until level/scene
 data has its real owner; it contains no geometry and never becomes an OGFx chunk.

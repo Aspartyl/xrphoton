@@ -27,7 +27,13 @@
 > `test_pyramid`, `test_sphere`, and `test_smooth_sphere` gallery probes through
 > the private stdin-only `XRBM` exchange and shared canonical writer. The sphere
 > pair pins identical geometry/UV corner streams with flat-face splits versus
-> shared smooth normals. `bochka_fuel` is the next source-profile milestone.
+> shared smooth normals.
+
+> **Landed regular-barrel update (2026-07-19).** Direct legacy dispatch now
+> accepts the pinned SoC `meshes/physics/balon/bochka_close_1.ogf` rigid-compound
+> profile. It flattens bind-pose render geometry, preserves one generic body and
+> three cylinder records in optional OGFx metadata, resolves the existing barrel
+> DDS in the gallery, and deliberately adds no live physics backend.
 
 This is the implementation record for roadmap step 2 in
 [ARCHITECTURE.md](ARCHITECTURE.md). M1–M3b describe landed work; later
@@ -1055,9 +1061,9 @@ pending.
 
 The landed `xrPhotonAssetCompiler convert-ogf` command uses a separate,
 standard-library-only legacy adapter and the one canonical OGFx writer. It
-accepts exactly the pinned flat four-chunk profile, passes coordinates, normals,
-UVs, and winding through unchanged, widens indices, regenerates bounds, and
-preserves the logical texture name. Generated fixtures cover the accepted
+dispatches first to the pinned flat four-chunk M4a branch, which passes
+coordinates, normals, UVs, and winding through unchanged, widens indices,
+regenerates bounds, and preserves the logical texture name. Generated fixtures cover the accepted
 boundary, unsupported/malformed rejection, deterministic CLI publication, and
 schema reconstruction. The local `plitka1.ogf` corpus produces the pinned 1,802
 vertices, 3,300 indices, and deterministic 71,328-byte OGFx output; neither it
@@ -1081,8 +1087,8 @@ removed the texture/string-arena gates with the image consumer; only the alpha
 capability gate remains. M4a starts at legacy OGF parsing and never forks the OGFx
 writer.
 
-**Blender opaque export probe — milestone number deferred. Landed; smooth
-comparison gallery validation pending.** Blender 5.1.x runs
+**Blender opaque export probe — milestone number deferred. Landed and gallery
+validated.** Blender 5.1.x runs
 `tools/blender/export_ogfx.py` headlessly against one explicitly named source
 object. The Python side validates and extracts evaluated triangle corners into
 the private versioned `XRBM` stdin exchange; `src/blender_mesh.cpp` performs
@@ -1101,16 +1107,24 @@ target drives all three fixtures through cache-configured local inputs. This is 
 authoring/export path, not part of legacy OGF migration, and it adds neither a
 second writer nor a runtime format.
 
-**Legacy hierarchy / skeletal-rigid OGF proof — next source-profile milestone.**
-The external SoC `meshes/objects/dynamics/balon/bochka_fuel.ogf` is the first
-recognizable legacy acceptance target. Its embedded children, bone/bind data,
-and IK/physics chunks make it intentionally separate from M4a. Convert it
-directly through the CLI only after those OGFx contracts are specified; until
-then, reject it rather than producing a geometry-only file that loses meaning.
-Blender import is an independent visual oracle or deliberate editing path, not
-part of canonical batch conversion. The rendered barrel comparison waits for
-the remaining hierarchy/skeletal runtime consumers; texture resolution is already
-available.
+**Regular-barrel rigid OGF proof — milestone number deferred. Landed.** The
+external SoC `meshes/physics/balon/bochka_close_1.ogf` converts directly through
+the CLI; Blender remains an independent visual oracle or deliberate editing
+path, never a batch-conversion stage. The rigid branch accepts its exact OGF v4
+type-`0xA` root, embedded type-`5` one-link child, rooted three-bone hierarchy,
+zero bind rotations, and rigid nonbreakable cylinder records. Child positions,
+normals, UVs, and winding are already bind/model-space and flatten into one
+ordinary opaque OGFx mesh. Hierarchical bind translations place collider
+centers and centers of mass into model space.
+
+The optional `OGFX_RIGID_PHYSICS` chunk retains one 62-unit body, three named
+cylinders, per-collider masses/centers, and `objects\barrel`; the render material
+retains `mtl\mtl_barrel_01` for the existing DDS resolver. The opt-in
+`xrPhotonRigidOgfOfflineProof` pins source/output identities, performs two real
+CLI conversions, checks byte determinism and full schema round trips, and writes
+`build/<preset>/assets/soc/meshes/physics/balon/bochka_close_1.ogfx` for the
+gallery. This metadata milestone does not instantiate dynamics, select a physics
+backend, or implement the later per-frame TLAS-refit work.
 
 **Post-M4 N-BLAS / N-instance generalization — milestone number deferred.**
 

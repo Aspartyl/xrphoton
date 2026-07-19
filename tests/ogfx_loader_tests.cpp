@@ -218,6 +218,57 @@ void testMultiRecordSceneConversion()
         "multi-record OGFx decoding still creates no placements or images");
 }
 
+void testOptionalPhysicsMetadataBoundary()
+{
+    xrphoton::ogfx::Model model = makeQuad();
+    model.physicsBodies.push_back({
+        .firstCollider = 0,
+        .colliderCount = 1,
+        .mass = 60.0f,
+        .centerOfMass = {0.0f, 0.5f, 0.0f},
+    });
+    model.physicsColliders.push_back({
+        .shapeType = xrphoton::ogfx::PhysicsShapeType::Cylinder,
+        .flags = 0,
+        .material = "objects\\barrel",
+        .sourceNode = "barrel",
+        .center = {0.0f, 0.5f, 0.0f},
+        .axis = {0.0f, 1.0f, 0.0f},
+        .height = 1.0f,
+        .radius = 0.35f,
+        .mass = 60.0f,
+        .centerOfMass = {0.0f, 0.5f, 0.0f},
+    });
+
+    const xrphoton::ogfx::SerializeResult serialized =
+        xrphoton::ogfx::serializeModel(model, "physics-loader-source");
+    expect(static_cast<bool>(serialized),
+        "runtime-loader source with optional physics metadata serializes");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+
+    const xrphoton::OgfxLoadResult loaded = xrphoton::decodeOgfxScene(
+        serialized.bytes,
+        "physics-render-boundary.ogfx");
+    expect(static_cast<bool>(loaded),
+        "render adapter accepts a model carrying validated optional physics metadata");
+    if (!loaded) {
+        std::cerr << loaded.error << '\n';
+        return;
+    }
+    expect(loaded.scene.positions.size() == 12
+            && loaded.scene.attributes.size() == 4
+            && loaded.scene.indices.size() == 6
+            && loaded.scene.geometries.size() == 1
+            && loaded.scene.meshes.size() == 1
+            && loaded.scene.materials.size() == 1,
+        "optional physics records do not alter the current render-only SceneData");
+    expect(loaded.scene.instances.empty() && loaded.scene.images.empty(),
+        "physics metadata creates neither world placement nor runtime image state");
+}
+
 void testFileBoundary()
 {
     const xrphoton::ogfx::SerializeResult serialized =
@@ -258,6 +309,7 @@ int main()
 {
     testSceneConversion();
     testMultiRecordSceneConversion();
+    testOptionalPhysicsMetadataBoundary();
     testFileBoundary();
 
     if (failureCount != 0) {

@@ -20,6 +20,9 @@ using xrphoton::ogfx::Geometry;
 using xrphoton::ogfx::Material;
 using xrphoton::ogfx::Mesh;
 using xrphoton::ogfx::Model;
+using xrphoton::ogfx::PhysicsBody;
+using xrphoton::ogfx::PhysicsCollider;
+using xrphoton::ogfx::PhysicsShapeType;
 using xrphoton::ogfx::Position;
 using xrphoton::ogfx::SerializeResult;
 using xrphoton::ogfx::VertexAttributes;
@@ -125,6 +128,78 @@ Model makeTwoGeometryModel()
     };
     model.materials.emplace_back();
     return model;
+}
+
+Model makeRigidPhysicsQuad()
+{
+    Model model = makeQuad();
+    model.physicsBodies.push_back(PhysicsBody{
+        .firstCollider = 0,
+        .colliderCount = 3,
+        .mass = 62.0f,
+        .centerOfMass = {0.0f, 0.125f, 0.0f},
+    });
+    model.physicsColliders = {
+        PhysicsCollider{
+            .shapeType = PhysicsShapeType::Cylinder,
+            .flags = 0,
+            .material = "objects\\barrel",
+            .sourceNode = "barrel",
+            .center = {0.0f, 0.5f, 0.0f},
+            .axis = {0.0f, 1.0f, 0.0f},
+            .height = 1.0746f,
+            .radius = 0.3521f,
+            .mass = 60.0f,
+            .centerOfMass = {0.0f, 0.5f, 0.0f},
+        },
+        PhysicsCollider{
+            .shapeType = PhysicsShapeType::Cylinder,
+            .flags = 0,
+            .material = "objects\\barrel",
+            .sourceNode = "obod_1",
+            .center = {0.0f, 1.0f, 0.0f},
+            .axis = {0.0f, 1.0f, 0.0f},
+            .height = 0.0556f,
+            .radius = 0.3711f,
+            .mass = 1.0f,
+            .centerOfMass = {0.0f, 1.0f, 0.0f},
+        },
+        PhysicsCollider{
+            .shapeType = PhysicsShapeType::Cylinder,
+            .flags = 0,
+            .material = "objects\\barrel",
+            .sourceNode = "obod_2",
+            .center = {0.0f, 0.0f, 0.0f},
+            .axis = {0.0f, -1.0f, 0.0f},
+            .height = 0.0551f,
+            .radius = 0.3711f,
+            .mass = 1.0f,
+            .centerOfMass = {0.0f, 0.0f, 0.0f},
+        },
+    };
+    return model;
+}
+
+std::size_t chunkHeaderOffset(
+    const std::vector<std::uint8_t>& bytes,
+    ChunkId id)
+{
+    std::size_t offset = xrphoton::ogfx::FileHeaderSize;
+    while (offset + xrphoton::ogfx::ChunkHeaderSize <= bytes.size()) {
+        if (readU32(bytes, offset) == static_cast<std::uint32_t>(id)) {
+            return offset;
+        }
+        offset += xrphoton::ogfx::ChunkHeaderSize
+            + static_cast<std::size_t>(readU64(bytes, offset + 16));
+        if (offset != bytes.size()) {
+            const std::size_t remainder = offset % xrphoton::ogfx::ChunkAlignment;
+            if (remainder != 0) {
+                offset += xrphoton::ogfx::ChunkAlignment - remainder;
+            }
+        }
+    }
+    expect(false, "requested serialized chunk exists");
+    return 0;
 }
 
 void expectRejected(Model model, std::string_view expectedField)
@@ -475,6 +550,111 @@ void testTextureStringArena()
     }
 }
 
+void testRigidPhysicsChunk()
+{
+    const Model model = makeRigidPhysicsQuad();
+    const SerializeResult first =
+        xrphoton::ogfx::serializeModel(model, "physics-first.ogfx");
+    const SerializeResult second =
+        xrphoton::ogfx::serializeModel(model, "physics-second.ogfx");
+    expect(static_cast<bool>(first), "a rigid body with three cylinders serializes");
+    expect(static_cast<bool>(second), "the rigid-physics model serializes again");
+    if (!first || !second) {
+        if (!first.error.empty()) {
+            std::cerr << first.error << '\n';
+        }
+        if (!second.error.empty()) {
+            std::cerr << second.error << '\n';
+        }
+        return;
+    }
+    expect(first.bytes == second.bytes,
+        "rigid-physics serialization is deterministic and ignores diagnostic names");
+
+    const std::vector<std::uint8_t>& bytes = first.bytes;
+    const std::size_t header = chunkHeaderOffset(bytes, ChunkId::RigidPhysics);
+    expect(header == 560,
+        "the optional physics header follows alignment after the unchanged static core");
+    expect(readU32(bytes, header + 4) == 0,
+        "the rigid-physics chunk is optional for older render-only readers");
+    expect(readU32(bytes, header + 8) == xrphoton::ogfx::ChunkVersion,
+        "the rigid-physics chunk uses version 1");
+
+    constexpr std::uint32_t MaterialEntryBytes = 2 + 14;
+    constexpr std::uint32_t BarrelEntryBytes = 2 + 6;
+    constexpr std::uint32_t HoopEntryBytes = 2 + 6;
+    constexpr std::uint32_t StringBytes =
+        MaterialEntryBytes + BarrelEntryBytes + 2 * HoopEntryBytes;
+    constexpr std::uint64_t PayloadBytes = xrphoton::ogfx::RigidPhysicsHeaderSize
+        + xrphoton::ogfx::PhysicsBodyRecordSize
+        + 3 * xrphoton::ogfx::PhysicsColliderRecordSize
+        + StringBytes;
+    expect(readU64(bytes, header + 16) == PayloadBytes,
+        "the physics payload frames its body, colliders, and string arena exactly");
+
+    const std::size_t payload = header + xrphoton::ogfx::ChunkHeaderSize;
+    expect(readU32(bytes, payload) == 1, "physics header records one body");
+    expect(readU32(bytes, payload + 4) == 3,
+        "physics header records three colliders");
+    expect(readU32(bytes, payload + 8) == StringBytes,
+        "physics header records the exact interned string byte count");
+    for (std::size_t offset = payload + 12; offset < payload + 32; offset += 4) {
+        expect(readU32(bytes, offset) == 0, "physics-header reserved words are zero");
+    }
+
+    const std::size_t body = payload + xrphoton::ogfx::RigidPhysicsHeaderSize;
+    expect(readU32(bytes, body) == 0 && readU32(bytes, body + 4) == 3,
+        "the body owns the complete contiguous collider range");
+    expect(readU32(bytes, body + 8) == 0 && readU32(bytes, body + 12) == 0,
+        "physics-body reserved words are zero");
+    expect(readF32(bytes, body + 16) == 62.0f,
+        "the body preserves its aggregate mass");
+    expect(readF32(bytes, body + 24) == 0.125f,
+        "the body preserves its center of mass");
+
+    const std::size_t colliders = body + xrphoton::ogfx::PhysicsBodyRecordSize;
+    expect(readU32(bytes, colliders) == 1,
+        "the first collider records the cylinder shape type");
+    expect(readU32(bytes, colliders + 8) == 0,
+        "first-use material text starts the physics string arena");
+    expect(readU32(bytes, colliders + 12) == MaterialEntryBytes,
+        "the first source-node string follows the material entry");
+    expect(readU32(bytes, colliders + 64 + 8) == 0,
+        "a repeated physics material reuses its first arena entry");
+    expect(readU32(bytes, colliders + 64 + 12)
+            == MaterialEntryBytes + BarrelEntryBytes,
+        "the second source node follows first-use order");
+    expect(readU32(bytes, colliders + 128 + 12)
+            == MaterialEntryBytes + BarrelEntryBytes + HoopEntryBytes,
+        "the third source node follows first-use order");
+    expect(readF32(bytes, colliders + 40) == 1.0746f
+            && readF32(bytes, colliders + 44) == 0.3521f
+            && readF32(bytes, colliders + 48) == 60.0f,
+        "the first cylinder preserves height, radius, and source mass");
+    expect(bytes.size() == header + xrphoton::ogfx::ChunkHeaderSize + PayloadBytes,
+        "the optional final chunk has no trailing padding");
+
+    const xrphoton::ogfx::DecodeResult decoded =
+        xrphoton::ogfx::decodeModelSchema(bytes, "physics-schema.ogfx");
+    expect(static_cast<bool>(decoded), "the schema decoder accepts writer physics output");
+    if (decoded) {
+        expect(decoded.model.physicsBodies.size() == 1
+                && decoded.model.physicsBodies[0].mass == 62.0f,
+            "schema decoding reconstructs the rigid body");
+        expect(decoded.model.physicsColliders.size() == 3
+                && decoded.model.physicsColliders[0].material == "objects\\barrel"
+                && decoded.model.physicsColliders[1].sourceNode == "obod_1"
+                && decoded.model.physicsColliders[2].flags == 0,
+            "schema decoding reconstructs collider fields and strings");
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            decoded.model, "physics-round-trip.ogfx");
+        expect(static_cast<bool>(roundTrip) && roundTrip.bytes == bytes,
+            "writer-decoder-writer preserves every rigid-physics byte");
+    } else {
+        std::cerr << decoded.error << '\n';
+    }
+}
+
 void testValidation()
 {
     {
@@ -627,6 +807,97 @@ void testValidation()
         model.geometries[0].indexCount = 3;
         expectRejected(std::move(model), "sphereRadius");
     }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders.clear();
+        expectRejected(std::move(model), "body/collider presence");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsBodies.clear();
+        expectRejected(std::move(model), "body/collider presence");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsBodies[0].colliderCount = 0;
+        expectRejected(std::move(model), "colliderCount");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsBodies[0].firstCollider = 1;
+        expectRejected(std::move(model), "firstCollider");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsBodies[0].colliderCount = 2;
+        expectRejected(std::move(model), "final collider partition end");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsBodies[0].mass = 0.0f;
+        expectRejected(std::move(model), "bodies[0].mass");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsBodies[0].centerOfMass.x =
+            std::numeric_limits<float>::quiet_NaN();
+        expectRejected(std::move(model), "bodies[0].centerOfMass");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].shapeType =
+            static_cast<PhysicsShapeType>(99);
+        expectRejected(std::move(model), "colliders[0].shapeType");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].flags = 1;
+        expectRejected(std::move(model), "colliders[0].flags");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].center.z =
+            std::numeric_limits<float>::infinity();
+        expectRejected(std::move(model), "colliders[0].center");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].axis = {};
+        expectRejected(std::move(model), "axis length squared");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].height = 0.0f;
+        expectRejected(std::move(model), "colliders[0].height");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].radius =
+            std::numeric_limits<float>::quiet_NaN();
+        expectRejected(std::move(model), "colliders[0].radius");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].mass = -1.0f;
+        expectRejected(std::move(model), "colliders[0].mass");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].centerOfMass.y =
+            std::numeric_limits<float>::quiet_NaN();
+        expectRejected(std::move(model), "colliders[0].centerOfMass");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].material.assign(
+            xrphoton::ogfx::MaximumStringBytes + 1, 'a');
+        expectRejected(std::move(model), "colliders[0].material");
+    }
+    {
+        Model model = makeRigidPhysicsQuad();
+        model.physicsColliders[0].sourceNode = std::string{"\xc0\xaf", 2};
+        expectRejected(std::move(model), "colliders[0].sourceNode");
+    }
 }
 }
 
@@ -637,6 +908,7 @@ int main()
     testSphereEnclosureRounding();
     testAsymmetricBoundsAndMaterialFraming();
     testTextureStringArena();
+    testRigidPhysicsChunk();
     testValidation();
 
     if (failureCount != 0) {

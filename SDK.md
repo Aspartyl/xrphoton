@@ -4,7 +4,8 @@ This document is the plan for the modern successor to the X-Ray SDK. It is the
 SDK counterpart to [FORMATS.md](FORMATS.md) — read that first for the
 asset-format direction and the shared asset compiler the SDK is built around.
 The SDK described here remains a plan; its shared compiler foundation, including
-the legacy and first headless Blender source adapters, already exists. No SDK GUI
+the flat-static and rigid-compound legacy adapters plus the first headless
+Blender source adapter, already exists. No SDK GUI
 or project model exists yet, and neither is scheduled before the runtime
 milestones that need it
 (see the [FORMATS.md milestone section](FORMATS.md#the-revised-first-ogfx-milestone-m4)).
@@ -58,6 +59,12 @@ but cannot fork it. The SDK may later expose an optional GLB importer, but only
 as a front end to the shared compiler, never as another OGFx writer. That adapter stays
 deferred until a concrete workflow justifies its additional input surface
 ([FORMATS.md](FORMATS.md#blender-and-external-assets)).
+
+Legacy batch conversion is a separate direct front end to the same writer. In
+addition to the M4a flat-static slice, it now accepts the pinned SoC regular
+barrel, flattens its safe rigid bind-pose render hierarchy, and preserves its
+generic body/cylinder recipe. Blender is neither required nor invoked by that
+path.
 
 ## Capabilities
 
@@ -165,9 +172,12 @@ around that legacy conversion, Blender export,
 and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own
 loader and renderer, with level tooling following the level-representation
-decisions. The next source-profile milestone and first hierarchical/skeletal-rigid
-legacy acceptance target is the external SoC fuel barrel named in FORMATS.md;
-conversion must fail until
-all of its nested-visual, bone, and IK/physics semantics have mappings rather
-than silently flattening it. Committing to a finer schedule for the remaining
-formats would invent decisions the owner has deferred.
+decisions. The first hierarchical/skeletal-rigid source slice is now landed for
+SoC `bochka_close_1`: flattening is explicit and safe only for its validated
+rigid/nonbreakable zero-rotation bind profile, while collider, mass, material,
+center-of-mass, and source-node semantics remain in backend-neutral OGFx
+metadata. A future SDK inspector may visualize or edit those records, but this
+milestone neither supplies such a UI nor integrates a physics backend. Broader
+source profiles must continue to fail until all of their semantics have mappings
+rather than being silently flattened. Committing to a finer schedule for the
+remaining formats would invent decisions the owner has deferred.

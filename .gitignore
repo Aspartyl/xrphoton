@@ -4,6 +4,9 @@ build/
 # Local proprietary game data
 /original_game_files/
 
+# Local X-Ray engine/build references
+/xray_builds/
+
 # Local Blender authoring files
 /blender/
 

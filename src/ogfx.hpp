@@ -19,14 +19,16 @@ inline constexpr std::uint32_t ChunkVersion = 1;
 inline constexpr std::uint32_t ChunkAlignment = 16;
 inline constexpr std::uint32_t NormalModelType = 0;
 inline constexpr std::uint32_t GeometryFlagAlphaTested = 1;
-inline constexpr std::uint32_t NoTextureReference =
+inline constexpr std::uint32_t NoStringReference =
     std::numeric_limits<std::uint32_t>::max();
+inline constexpr std::uint32_t NoTextureReference = NoStringReference;
 inline constexpr std::uint32_t MaximumStringBytes = 4096;
 inline constexpr std::uint32_t MaximumChunkCount = 4096;
 inline constexpr std::uint64_t MaximumFileBytes = 1ull << 30;
 // Decoding materializes one owning string per referenced material. Keep duplicate-
 // reference expansion well below the independent file-size cap in both profiles.
 inline constexpr std::uint64_t MaximumDecodedTextureBytes = 64ull << 20;
+inline constexpr std::uint64_t MaximumDecodedRigidPhysicsStringBytes = 64ull << 20;
 
 inline constexpr std::uint32_t ModelRecordSize = 48;
 inline constexpr std::uint32_t GeometryRecordSize = 48;
@@ -36,6 +38,12 @@ inline constexpr std::uint32_t MaterialRecordSize = 32;
 inline constexpr std::uint32_t PositionRecordSize = 12;
 inline constexpr std::uint32_t AttributeRecordSize = 20;
 inline constexpr std::uint32_t IndexRecordSize = 4;
+inline constexpr std::uint32_t RigidPhysicsHeaderSize = 32;
+inline constexpr std::uint32_t PhysicsBodyRecordSize = 32;
+inline constexpr std::uint32_t PhysicsColliderRecordSize = 64;
+// Version 1 reserves the collider flag word. Source-specific flag meanings must
+// be mapped deliberately in a later schema version rather than copied through.
+inline constexpr std::uint32_t PhysicsColliderAllowedFlags = 0;
 
 enum class ChunkId : std::uint32_t
 {
@@ -46,6 +54,7 @@ enum class ChunkId : std::uint32_t
     Positions = 0x0020,
     Attributes = 0x0021,
     Indices = 0x0022,
+    RigidPhysics = 0x0030,
     Description = 0x0040,
 };
 
@@ -93,6 +102,35 @@ struct Material
     std::string baseColorTexture;
 };
 
+enum class PhysicsShapeType : std::uint32_t
+{
+    Cylinder = 1,
+};
+
+// Rigid-physics records are an engine-neutral recipe owned by a reusable model.
+// They contain no live physics-engine handles and no world-instance placement.
+struct PhysicsBody
+{
+    std::uint32_t firstCollider = 0;
+    std::uint32_t colliderCount = 0;
+    float mass = 0.0f;
+    Position centerOfMass{};
+};
+
+struct PhysicsCollider
+{
+    PhysicsShapeType shapeType = PhysicsShapeType::Cylinder;
+    std::uint32_t flags = 0;
+    std::string material;
+    std::string sourceNode;
+    Position center{};
+    Position axis{0.0f, 1.0f, 0.0f};
+    float height = 0.0f;
+    float radius = 0.0f;
+    float mass = 0.0f;
+    Position centerOfMass{};
+};
+
 struct Model
 {
     std::vector<Position> positions;
@@ -101,6 +139,8 @@ struct Model
     std::vector<Geometry> geometries;
     std::vector<Mesh> meshes;
     std::vector<Material> materials;
+    std::vector<PhysicsBody> physicsBodies;
+    std::vector<PhysicsCollider> physicsColliders;
 };
 
 struct SerializeResult

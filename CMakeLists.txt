@@ -24,6 +24,7 @@ target_compile_options(xrPhotonOgfx PRIVATE -Wall -Wextra)
 # compiler model and never owns OGFx serialization or a runtime loading path.
 add_library(xrPhotonLegacyOgf STATIC
     src/legacy_ogf.cpp
+    src/legacy_ogf_rigid.cpp
 )
 target_include_directories(xrPhotonLegacyOgf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonLegacyOgf PRIVATE -Wall -Wextra)
@@ -158,6 +159,28 @@ if(BUILD_TESTING)
         USES_TERMINAL
     )
 
+    set(XRPHOTON_RIGID_BARREL_CORPUS_OGF
+        "${CMAKE_SOURCE_DIR}/original_game_files/soc/meshes/physics/balon/bochka_close_1.ogf"
+        CACHE FILEPATH
+        "Local bochka_close_1.ogf used only by the opt-in rigid OGF proof")
+    set(XRPHOTON_RIGID_BARREL_PROOF_OUTPUT
+        "${XRPHOTON_SOC_ASSET_DIR}/meshes/physics/balon/bochka_close_1.ogfx")
+    add_custom_target(xrPhotonRigidOgfOfflineProof
+        COMMAND ${CMAKE_COMMAND}
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DVERIFIER=$<TARGET_FILE:xrPhotonLegacyOgfTests>
+            -DSOURCE_OGF=${XRPHOTON_RIGID_BARREL_CORPUS_OGF}
+            -DOUTPUT_OGFX=${XRPHOTON_RIGID_BARREL_PROOF_OUTPUT}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/rigid_ogf_offline_proof.cmake
+        DEPENDS
+            xrPhotonAssetCompiler
+            xrPhotonLegacyOgfTests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/rigid_ogf_offline_proof.cmake
+        COMMENT "Proving deterministic rigid SoC barrel conversion offline"
+        VERBATIM
+        USES_TERMINAL
+    )
+
     # Blender and the .blend inputs are owner-local tools/sources, so this proof is
     # explicit and never enters the normal asset/build/test dependency graph.
     set(XRPHOTON_BLENDER_EXECUTABLE "" CACHE FILEPATH
@@ -212,6 +235,8 @@ set(XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX "" CACHE FILEPATH
     "Optional converted Blender sphere OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX "" CACHE FILEPATH
     "Optional converted Blender smooth sphere OGFx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_BARREL_OGFX "" CACHE FILEPATH
+    "Optional converted SoC closed barrel OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_TEXTURE_ROOT "" CACHE PATH
     "Texture root containing the DDS paths referenced by configured gallery assets")
 
@@ -240,6 +265,13 @@ if(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX)
         ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 else()
     set(XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_BARREL_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_BARREL_OGFX}"
+        ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE "")
 endif()
 if(XRPHOTON_GALLERY_TEXTURE_ROOT)
     get_filename_component(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE
@@ -365,6 +397,7 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_BARREL_OGFX=u8\"${XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"
 )
 

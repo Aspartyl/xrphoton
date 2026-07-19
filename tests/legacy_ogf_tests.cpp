@@ -19,6 +19,7 @@
 namespace
 {
 using xrphoton::legacy_ogf::decodeStaticModel;
+using xrphoton::legacy_ogf::decodeModel;
 using xrphoton::ogfx::DecodeResult;
 using xrphoton::ogfx::Model;
 using xrphoton::ogfx::SerializeResult;
@@ -27,6 +28,14 @@ constexpr std::uint32_t HeaderChunkId = 0x1;
 constexpr std::uint32_t TextureChunkId = 0x2;
 constexpr std::uint32_t VerticesChunkId = 0x3;
 constexpr std::uint32_t IndicesChunkId = 0x4;
+constexpr std::uint32_t ChildrenChunkId = 0x9;
+constexpr std::uint32_t BoneNamesChunkId = 0xD;
+constexpr std::uint32_t IkDataChunkId = 0x10;
+constexpr std::uint32_t DescriptionChunkId = 0x12;
+constexpr std::uint32_t BoneShapeBytes = 112;
+constexpr std::uint32_t JointDataBytes = 76;
+constexpr std::string_view RigidTextureName = "mtl\\mtl_barrel_01";
+constexpr std::string_view RigidPhysicsMaterial = "objects\\barrel";
 
 int failureCount = 0;
 
@@ -171,6 +180,218 @@ std::vector<std::uint8_t> assemble(const std::vector<RawChunk>& chunks)
     return bytes;
 }
 
+void appendString(std::vector<std::uint8_t>* bytes, std::string_view value)
+{
+    bytes->insert(bytes->end(), value.begin(), value.end());
+    bytes->push_back(0);
+}
+
+std::size_t directChunkPayloadOffset(
+    const std::vector<std::uint8_t>& bytes,
+    std::uint32_t id)
+{
+    std::size_t offset = 0;
+    while (offset + 8 <= bytes.size()) {
+        const std::uint32_t chunkId = readU32(bytes, offset);
+        const std::uint32_t size = readU32(bytes, offset + 4);
+        if (chunkId == id) {
+            return offset + 8;
+        }
+        offset += 8 + size;
+    }
+    return bytes.size();
+}
+
+RawChunk makeRigidHeader(std::uint8_t modelType)
+{
+    RawChunk header{.id = HeaderChunkId, .payload = {}};
+    header.payload.push_back(xrphoton::legacy_ogf::SupportedVersion);
+    header.payload.push_back(modelType);
+    appendU16(&header.payload, xrphoton::legacy_ogf::SupportedShaderId);
+    appendPosition(&header.payload, -2.0f, -1.0f, 0.0f);
+    appendPosition(&header.payload, 3.0f, 4.0f, 2.0f);
+    appendPosition(&header.payload, 0.5f, 1.5f, 1.0f);
+    appendF32(&header.payload, 4.0f);
+    return header;
+}
+
+struct SyntheticRigidFixture
+{
+    std::vector<RawChunk> chunks;
+    std::array<std::size_t, 2> shapeOffsets{};
+    std::array<std::size_t, 2> jointOffsets{};
+    std::array<std::size_t, 2> bindRotationOffsets{};
+    std::size_t childIdOffset = 0;
+    std::size_t childSizeOffset = 4;
+    std::size_t vertexBoneOffset = 0;
+    std::size_t indexValueOffset = 0;
+};
+
+SyntheticRigidFixture makeSyntheticRigidFixture(
+    std::string_view rootParent = {},
+    std::string_view childParent = "root")
+{
+    SyntheticRigidFixture fixture{};
+
+    RawChunk description{.id = DescriptionChunkId, .payload = {}};
+    appendString(&description.payload, "synthetic\\rigid_barrel.object");
+    appendString(&description.payload, "unit-test-builder");
+    appendU32(&description.payload, 0x10203040u);
+    appendString(&description.payload, "fixture-author");
+    appendU32(&description.payload, 0x50607080u);
+    appendString(&description.payload, "fixture-modifier");
+    appendU32(&description.payload, 0x90a0b0c0u);
+
+    RawChunk boneNames{.id = BoneNamesChunkId, .payload = {}};
+    appendU32(&boneNames.payload, 2);
+    appendString(&boneNames.payload, "root");
+    appendString(&boneNames.payload, rootParent);
+    for (std::size_t component = 0; component < 15; ++component) {
+        appendF32(&boneNames.payload, 0.0f);
+    }
+    appendString(&boneNames.payload, "rim0");
+    appendString(&boneNames.payload, childParent);
+    for (std::size_t component = 0; component < 15; ++component) {
+        appendF32(&boneNames.payload, component == 12 ? 0.25f : 0.0f);
+    }
+
+    RawChunk ikData{.id = IkDataChunkId, .payload = {}};
+    struct BoneProbe
+    {
+        std::array<float, 3> cylinderCenter;
+        std::array<float, 3> cylinderAxis;
+        float height;
+        float radius;
+        std::array<float, 3> bindTranslation;
+        float mass;
+        std::array<float, 3> centerOfMass;
+    };
+    constexpr std::array probes{
+        BoneProbe{
+            .cylinderCenter = {0.5f, 0.25f, -0.5f},
+            .cylinderAxis = {0.0f, 1.0f, 0.0f},
+            .height = 2.0f,
+            .radius = 0.4f,
+            .bindTranslation = {1.0f, 2.0f, 3.0f},
+            .mass = 3.0f,
+            .centerOfMass = {0.25f, 0.5f, 0.75f},
+        },
+        BoneProbe{
+            .cylinderCenter = {-0.5f, 1.0f, 0.5f},
+            .cylinderAxis = {0.0f, 0.6f, 0.8f},
+            .height = 0.5f,
+            .radius = 0.75f,
+            .bindTranslation = {-1.0f, 4.0f, 2.0f},
+            .mass = 1.0f,
+            .centerOfMass = {1.0f, -2.0f, 3.0f},
+        },
+    };
+    for (std::size_t boneIndex = 0; boneIndex < probes.size(); ++boneIndex) {
+        const BoneProbe& probe = probes[boneIndex];
+        appendU32(&ikData.payload, 1);
+        appendString(&ikData.payload, RigidPhysicsMaterial);
+
+        fixture.shapeOffsets[boneIndex] = ikData.payload.size();
+        std::vector<std::uint8_t> shape(BoneShapeBytes, 0);
+        writeU16(&shape, 0, 3);
+        writeU16(&shape, 2, 0);
+        writeF32(&shape, 80, probe.cylinderCenter[0]);
+        writeF32(&shape, 84, probe.cylinderCenter[1]);
+        writeF32(&shape, 88, probe.cylinderCenter[2]);
+        writeF32(&shape, 92, probe.cylinderAxis[0]);
+        writeF32(&shape, 96, probe.cylinderAxis[1]);
+        writeF32(&shape, 100, probe.cylinderAxis[2]);
+        writeF32(&shape, 104, probe.height);
+        writeF32(&shape, 108, probe.radius);
+        ikData.payload.insert(ikData.payload.end(), shape.begin(), shape.end());
+
+        fixture.jointOffsets[boneIndex] = ikData.payload.size();
+        std::vector<std::uint8_t> joint(JointDataBytes, 0);
+        writeU32(&joint, 0, 0);
+        writeU32(&joint, 60, 0);
+        writeF32(&joint, 72, 0.125f);
+        ikData.payload.insert(ikData.payload.end(), joint.begin(), joint.end());
+
+        fixture.bindRotationOffsets[boneIndex] = ikData.payload.size();
+        appendPosition(&ikData.payload, 0.0f, 0.0f, 0.0f);
+        appendPosition(
+            &ikData.payload,
+            probe.bindTranslation[0],
+            probe.bindTranslation[1],
+            probe.bindTranslation[2]);
+        appendF32(&ikData.payload, probe.mass);
+        appendPosition(
+            &ikData.payload,
+            probe.centerOfMass[0],
+            probe.centerOfMass[1],
+            probe.centerOfMass[2]);
+    }
+
+    RawChunk childTexture{.id = TextureChunkId, .payload = {}};
+    appendString(&childTexture.payload, RigidTextureName);
+    appendString(&childTexture.payload, "models\\model");
+
+    RawChunk childVertices{.id = VerticesChunkId, .payload = {}};
+    appendU32(
+        &childVertices.payload,
+        xrphoton::legacy_ogf::SupportedRigidVertexFormat);
+    appendU32(&childVertices.payload, 3);
+    constexpr float normalY = -0.3713906705379486f;
+    constexpr float normalZ = 0.9284766912460327f;
+    const std::array<std::array<float, 14>, 3> vertices{{
+        {-2.0f, -1.0f, 0.0f, 0.0f, normalY, normalZ,
+            1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.125f, 0.25f},
+        {3.0f, -1.0f, 0.0f, 0.0f, normalY, normalZ,
+            1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.75f, 0.5f},
+        {-2.0f, 4.0f, 2.0f, 0.0f, normalY, normalZ,
+            1.0f, 0.0f, 0.0f, 0.0f, normalZ, -normalY, 0.375f, 0.875f},
+    }};
+    constexpr std::array<std::uint32_t, 3> boneIndices{0, 1, 1};
+    for (std::size_t vertexIndex = 0; vertexIndex < vertices.size(); ++vertexIndex) {
+        for (float value : vertices[vertexIndex]) {
+            appendF32(&childVertices.payload, value);
+        }
+        appendU32(&childVertices.payload, boneIndices[vertexIndex]);
+    }
+
+    RawChunk childIndices{.id = IndicesChunkId, .payload = {}};
+    appendU32(&childIndices.payload, 3);
+    appendU16(&childIndices.payload, 0);
+    appendU16(&childIndices.payload, 1);
+    appendU16(&childIndices.payload, 2);
+
+    const std::vector<RawChunk> childChunks{
+        makeRigidHeader(xrphoton::legacy_ogf::SupportedRigidChildModelType),
+        std::move(childTexture),
+        std::move(childVertices),
+        std::move(childIndices),
+    };
+    const std::vector<std::uint8_t> childStream = assemble(childChunks);
+    const std::size_t vertexPayloadOffset =
+        directChunkPayloadOffset(childStream, VerticesChunkId);
+    const std::size_t indexPayloadOffset =
+        directChunkPayloadOffset(childStream, IndicesChunkId);
+
+    RawChunk children{.id = ChildrenChunkId, .payload = {}};
+    appendU32(&children.payload, 0);
+    appendU32(
+        &children.payload,
+        static_cast<std::uint32_t>(childStream.size()));
+    children.payload.insert(
+        children.payload.end(), childStream.begin(), childStream.end());
+    fixture.vertexBoneOffset = 8 + vertexPayloadOffset + 8 + 56;
+    fixture.indexValueOffset = 8 + indexPayloadOffset + 4;
+
+    fixture.chunks = {
+        makeRigidHeader(xrphoton::legacy_ogf::SupportedRigidModelType),
+        std::move(description),
+        std::move(children),
+        std::move(boneNames),
+        std::move(ikData),
+    };
+    return fixture;
+}
+
 bool writeBytes(
     const std::filesystem::path& path,
     const std::vector<std::uint8_t>& bytes)
@@ -245,7 +466,16 @@ bool modelIsEmpty(const Model& model)
         && model.indices.empty()
         && model.geometries.empty()
         && model.meshes.empty()
-        && model.materials.empty();
+        && model.materials.empty()
+        && model.physicsBodies.empty()
+        && model.physicsColliders.empty();
+}
+
+bool positionsEqual(
+    const xrphoton::ogfx::Position& left,
+    const xrphoton::ogfx::Position& right)
+{
+    return left.x == right.x && left.y == right.y && left.z == right.z;
 }
 
 bool modelsEqual(const Model& left, const Model& right)
@@ -255,7 +485,9 @@ bool modelsEqual(const Model& left, const Model& right)
         || left.indices != right.indices
         || left.geometries.size() != right.geometries.size()
         || left.meshes.size() != right.meshes.size()
-        || left.materials.size() != right.materials.size()) {
+        || left.materials.size() != right.materials.size()
+        || left.physicsBodies.size() != right.physicsBodies.size()
+        || left.physicsColliders.size() != right.physicsColliders.size()) {
         return false;
     }
     for (std::size_t index = 0; index < left.positions.size(); ++index) {
@@ -294,6 +526,32 @@ bool modelsEqual(const Model& left, const Model& right)
             return false;
         }
     }
+    for (std::size_t index = 0; index < left.physicsBodies.size(); ++index) {
+        const auto& a = left.physicsBodies[index];
+        const auto& b = right.physicsBodies[index];
+        if (a.firstCollider != b.firstCollider
+            || a.colliderCount != b.colliderCount
+            || a.mass != b.mass
+            || !positionsEqual(a.centerOfMass, b.centerOfMass)) {
+            return false;
+        }
+    }
+    for (std::size_t index = 0; index < left.physicsColliders.size(); ++index) {
+        const auto& a = left.physicsColliders[index];
+        const auto& b = right.physicsColliders[index];
+        if (a.shapeType != b.shapeType
+            || a.flags != b.flags
+            || a.material != b.material
+            || a.sourceNode != b.sourceNode
+            || !positionsEqual(a.center, b.center)
+            || !positionsEqual(a.axis, b.axis)
+            || a.height != b.height
+            || a.radius != b.radius
+            || a.mass != b.mass
+            || !positionsEqual(a.centerOfMass, b.centerOfMass)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -316,6 +574,243 @@ void expectRejected(
     expect(result.error.find(": expected ") != std::string::npos
             && result.error.find(", found ") != std::string::npos,
         "legacy rejection states expected and found values");
+}
+
+void expectRigidRejected(
+    const std::vector<std::uint8_t>& bytes,
+    std::string_view expectedChunk,
+    std::string_view expectedField)
+{
+    const DecodeResult result = decodeModel(bytes, "invalid-rigid.ogf");
+    expect(!result, "unsupported or malformed rigid legacy OGF is rejected");
+    expect(modelIsEmpty(result.model),
+        "rigid legacy rejection exposes no partially decoded model or physics");
+    expect(result.error.find("invalid-rigid.ogf") != std::string::npos,
+        "rigid rejection names its input");
+    expect(result.error.find("legacy OGF rigid decoder") != std::string::npos,
+        "rigid rejection names its adapter boundary");
+    expect(result.error.find(expectedChunk) != std::string::npos,
+        std::string("rigid rejection names chunk: ") + std::string(expectedChunk));
+    expect(result.error.find(expectedField) != std::string::npos,
+        std::string("rigid rejection names field: ") + std::string(expectedField));
+    expect(result.error.find(": expected ") != std::string::npos
+            && result.error.find(", found ") != std::string::npos,
+        "rigid rejection states expected and found values");
+}
+
+void testAcceptedRigidProfile()
+{
+    const SyntheticRigidFixture fixture = makeSyntheticRigidFixture();
+    const DecodeResult decoded =
+        decodeModel(assemble(fixture.chunks), "synthetic-rigid.ogf");
+    expect(static_cast<bool>(decoded),
+        "the pinned synthetic v4 rigid-compound profile decodes");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+
+    const Model& model = decoded.model;
+    expect(model.positions.size() == 3 && model.attributes.size() == 3,
+        "rigid child vertices flatten into ordinary OGFx render streams");
+    expect(positionsEqual(model.positions[0], {-2.0f, -1.0f, 0.0f})
+            && positionsEqual(model.positions[1], {3.0f, -1.0f, 0.0f})
+            && positionsEqual(model.positions[2], {-2.0f, 4.0f, 2.0f}),
+        "bind-model-space rigid positions pass through without bone translation");
+    expect(model.attributes[0].ny < 0.0f
+            && model.attributes[0].nz > 0.0f
+            && model.attributes[0].u == 0.125f
+            && model.attributes[0].v == 0.25f,
+        "rigid normals and UVs pass through unchanged");
+    expect(model.indices == std::vector<std::uint32_t>({0, 1, 2}),
+        "rigid child indices widen without reordering");
+    expect(model.geometries.size() == 1
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == 3
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == 3
+            && model.geometries[0].materialIndex == 0
+            && !model.geometries[0].alphaTested,
+        "the rigid child becomes one ordinary opaque geometry");
+    expect(model.meshes.size() == 1
+            && model.meshes[0].firstGeometry == 0
+            && model.meshes[0].geometryCount == 1,
+        "the flattened rigid model owns its child geometry through one mesh");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorTexture == RigidTextureName,
+        "the explicit models/model mapping preserves the barrel texture reference");
+
+    expect(model.physicsBodies.size() == 1
+            && model.physicsBodies[0].firstCollider == 0
+            && model.physicsBodies[0].colliderCount == 2
+            && model.physicsBodies[0].mass == 4.0f
+            && positionsEqual(
+                model.physicsBodies[0].centerOfMass,
+                {1.1875f, 2.875f, 4.8125f}),
+        "bone masses and global centers produce the pinned compound body mass/COM");
+    expect(model.physicsColliders.size() == 2,
+        "each rigid source bone becomes one engine-neutral collider record");
+    if (model.physicsColliders.size() == 2) {
+        const auto& root = model.physicsColliders[0];
+        expect(root.shapeType == xrphoton::ogfx::PhysicsShapeType::Cylinder
+                && root.flags == 0
+                && root.material == RigidPhysicsMaterial
+                && root.sourceNode == "root"
+                && positionsEqual(root.center, {1.5f, 2.25f, 2.5f})
+                && positionsEqual(root.axis, {0.0f, 1.0f, 0.0f})
+                && root.height == 2.0f
+                && root.radius == 0.4f
+                && root.mass == 3.0f
+                && positionsEqual(root.centerOfMass, {1.25f, 2.5f, 3.75f}),
+            "the root cylinder and mass center receive the root bind translation");
+
+        const auto& rim = model.physicsColliders[1];
+        expect(rim.shapeType == xrphoton::ogfx::PhysicsShapeType::Cylinder
+                && rim.flags == 0
+                && rim.material == RigidPhysicsMaterial
+                && rim.sourceNode == "rim0"
+                && positionsEqual(rim.center, {-0.5f, 7.0f, 5.5f})
+                && positionsEqual(rim.axis, {0.0f, 0.6f, 0.8f})
+                && rim.height == 0.5f
+                && rim.radius == 0.75f
+                && rim.mass == 1.0f
+                && positionsEqual(rim.centerOfMass, {1.0f, 4.0f, 8.0f}),
+            "the child cylinder uses its accumulated parent/child bind translation");
+    }
+
+    const SerializeResult first =
+        xrphoton::ogfx::serializeModel(model, "synthetic-rigid-first.ogfx");
+    const SerializeResult second =
+        xrphoton::ogfx::serializeModel(model, "synthetic-rigid-second.ogfx");
+    expect(static_cast<bool>(first) && static_cast<bool>(second),
+        "the canonical writer accepts flattened render data plus compound metadata");
+    if (!first || !second) {
+        if (!first.error.empty()) {
+            std::cerr << first.error << '\n';
+        }
+        if (!second.error.empty()) {
+            std::cerr << second.error << '\n';
+        }
+        return;
+    }
+    expect(first.bytes == second.bytes,
+        "repeated rigid adaptation produces deterministic OGFx bytes");
+
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(first.bytes, "synthetic-rigid-schema.ogfx");
+    expect(static_cast<bool>(schema) && modelsEqual(schema.model, model),
+        "schema decoding reconstructs the complete render and rigid-physics model");
+    if (schema) {
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            schema.model, "synthetic-rigid-round-trip.ogfx");
+        expect(static_cast<bool>(roundTrip) && roundTrip.bytes == first.bytes,
+            "rigid writer-schema-writer round trip is byte exact");
+    } else {
+        std::cerr << schema.error << '\n';
+    }
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(first.bytes, "synthetic-rigid-runtime.ogfx");
+    expect(static_cast<bool>(runtime) && modelsEqual(runtime.model, model),
+        "runtime decoding retains render data and engine-neutral physics metadata");
+
+    const std::vector<std::uint8_t> staticSource = assemble(makeSyntheticChunks());
+    const DecodeResult directStatic =
+        decodeStaticModel(staticSource, "dispatch-static-direct.ogf");
+    const DecodeResult dispatchedStatic =
+        decodeModel(staticSource, "dispatch-static.ogf");
+    expect(static_cast<bool>(directStatic)
+            && static_cast<bool>(dispatchedStatic)
+            && modelsEqual(directStatic.model, dispatchedStatic.model),
+        "the generalized OGF entry point preserves the existing static profile");
+}
+
+void testRigidProfileRejections()
+{
+    SyntheticRigidFixture fixture = makeSyntheticRigidFixture({}, "missing");
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0xd", "bones[1].parentName");
+
+    fixture = makeSyntheticRigidFixture({}, {});
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0xd", "root bone count");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU16(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.shapeOffsets[0],
+        2);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[0].shapeType");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.jointOffsets[1],
+        1);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[1].jointType");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.jointOffsets[0] + 60,
+        1);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[0].jointFlags");
+
+    fixture = makeSyntheticRigidFixture();
+    writeF32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.bindRotationOffsets[1],
+        0.25f);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x10", "bones[1].bindRotation");
+
+    fixture = makeSyntheticRigidFixture();
+    writeF32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.shapeOffsets[0] + 80,
+        std::numeric_limits<float>::max());
+    writeF32(
+        &chunkById(&fixture.chunks, IkDataChunkId).payload,
+        fixture.bindRotationOffsets[0] + 12,
+        std::numeric_limits<float>::max());
+    expectRigidRejected(
+        assemble(fixture.chunks),
+        "chunk 0x10",
+        "bones[0].model-space collider/centerOfMass");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU32(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.childIdOffset,
+        1);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x9", "child id");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU32(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.childSizeOffset,
+        std::numeric_limits<std::uint32_t>::max());
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x9", "child payload byte range");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU32(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.vertexBoneOffset,
+        2);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x3", "vertices[0].boneIndex");
+
+    fixture = makeSyntheticRigidFixture();
+    writeU16(
+        &chunkById(&fixture.chunks, ChildrenChunkId).payload,
+        fixture.indexValueOffset,
+        3);
+    expectRigidRejected(
+        assemble(fixture.chunks), "chunk 0x4", "indices[0].value");
 }
 
 void testAcceptedProfile()
@@ -635,6 +1130,122 @@ void expectPinnedCorpusModel(const Model& model)
         "plitka corpus preserves its pinned logical texture name");
 }
 
+bool positionsNear(
+    const xrphoton::ogfx::Position& left,
+    const xrphoton::ogfx::Position& right,
+    float tolerance = 1.0e-6f)
+{
+    return std::fabs(left.x - right.x) <= tolerance
+        && std::fabs(left.y - right.y) <= tolerance
+        && std::fabs(left.z - right.z) <= tolerance;
+}
+
+void expectPinnedRigidBarrelModel(const Model& model)
+{
+    expect(model.positions.size() == 436 && model.attributes.size() == 436,
+        "the regular barrel contains the pinned 436 complete render vertices");
+    expect(model.indices.size() == 1158,
+        "the regular barrel contains the pinned 1158 widened indices");
+    expect(model.geometries.size() == 1
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == 436
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == 1158
+            && model.geometries[0].materialIndex == 0
+            && !model.geometries[0].alphaTested,
+        "the regular barrel flattens to one complete opaque geometry");
+    expect(model.meshes.size() == 1
+            && model.meshes[0].firstGeometry == 0
+            && model.meshes[0].geometryCount == 1,
+        "the regular barrel flattens to one render mesh");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorTexture == RigidTextureName,
+        "the regular barrel preserves the mtl_barrel_01 logical texture");
+
+    if (model.positions.size() == 436) {
+        xrphoton::ogfx::Position minimum = model.positions.front();
+        xrphoton::ogfx::Position maximum = minimum;
+        for (const auto& position : model.positions) {
+            minimum.x = std::min(minimum.x, position.x);
+            minimum.y = std::min(minimum.y, position.y);
+            minimum.z = std::min(minimum.z, position.z);
+            maximum.x = std::max(maximum.x, position.x);
+            maximum.y = std::max(maximum.y, position.y);
+            maximum.z = std::max(maximum.z, position.z);
+        }
+        expect(positionsNear(minimum, {-0.370839f, 0.001489f, -0.372322f})
+                && positionsNear(maximum, {0.370551f, 1.090266f, 0.369067f}),
+            "the flattened barrel render vertices retain the pinned model-space bounds");
+    }
+
+    expect(model.physicsBodies.size() == 1
+            && model.physicsBodies[0].firstCollider == 0
+            && model.physicsBodies[0].colliderCount == 3
+            && model.physicsBodies[0].mass == 62.0f
+            && positionsNear(
+                model.physicsBodies[0].centerOfMass,
+                {1.35486705e-5f, 0.539355881f, -0.00148954768f}),
+        "the regular barrel preserves one 62-unit compound body and aggregate COM");
+    expect(model.physicsColliders.size() == 3,
+        "the regular barrel preserves its three authored cylinder colliders");
+    if (model.physicsColliders.size() != 3) {
+        return;
+    }
+
+    const auto& barrel = model.physicsColliders[0];
+    expect(barrel.shapeType == xrphoton::ogfx::PhysicsShapeType::Cylinder
+            && barrel.flags == 0
+            && barrel.material == RigidPhysicsMaterial
+            && barrel.sourceNode == "barrel"
+            && positionsNear(
+                barrel.center,
+                {0.000362378545f, 0.538193166f, -0.00171245355f})
+            && positionsEqual(barrel.axis, {0.0f, 1.0f, 0.0f})
+            && std::fabs(barrel.height - 1.074635386f) <= 1.0e-6f
+            && std::fabs(barrel.radius - 0.352066427f) <= 1.0e-6f
+            && barrel.mass == 60.0f
+            && positionsNear(
+                barrel.centerOfMass,
+                {0.0000187968835f, 0.538891077f, -0.00148494681f}),
+        "the main barrel cylinder is flattened into model space exactly once");
+
+    const auto& lowerRim = model.physicsColliders[1];
+    expect(lowerRim.shapeType == xrphoton::ogfx::PhysicsShapeType::Cylinder
+            && lowerRim.flags == 0
+            && lowerRim.material == RigidPhysicsMaterial
+            && lowerRim.sourceNode == "obod_1"
+            && positionsNear(
+                lowerRim.center,
+                {-0.000143597252f, 0.343390855f, -0.00162860146f})
+            && positionsEqual(lowerRim.axis, {0.0f, 1.0f, 0.0f})
+            && std::fabs(lowerRim.height - 0.0556095019f) <= 1.0e-6f
+            && std::fabs(lowerRim.radius - 0.371128023f) <= 1.0e-6f
+            && lowerRim.mass == 1.0f
+            && positionsNear(
+                lowerRim.centerOfMass,
+                {-0.000144170597f, 0.342964927f, -0.00162728876f}),
+        "the lower rim collider receives its hierarchical bind translation");
+
+    const auto& upperRim = model.physicsColliders[2];
+    expect(upperRim.shapeType == xrphoton::ogfx::PhysicsShapeType::Cylinder
+            && upperRim.flags == 0
+            && upperRim.material == RigidPhysicsMaterial
+            && upperRim.sourceNode == "obod_2"
+            && positionsNear(
+                upperRim.center,
+                {-0.000143688521f, 0.763634990f, -0.00162752182f})
+            && positionsNear(
+                upperRim.axis,
+                {-0.000211764025f, 0.999999702f, 0.00087506551f})
+            && std::fabs(upperRim.height - 0.0551285669f) <= 1.0e-6f
+            && std::fabs(upperRim.radius - 0.371128947f) <= 1.0e-6f
+            && upperRim.mass == 1.0f
+            && positionsNear(
+                upperRim.centerOfMass,
+                {-0.000143624842f, 0.763635085f, -0.00162785873f}),
+        "the upper rim collider receives both parent bind translations");
+}
+
 void testLocalCorpus(const std::filesystem::path& path)
 {
     std::vector<std::uint8_t> bytes;
@@ -724,6 +1335,55 @@ void verifyCorpusOutput(
         "the proof output is accepted by the runtime texture profile");
 }
 
+void verifyRigidCorpusOutput(
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& outputPath)
+{
+    std::vector<std::uint8_t> sourceBytes;
+    std::vector<std::uint8_t> outputBytes;
+    if (!readBytes(sourcePath, &sourceBytes)
+        || !readBytes(outputPath, &outputBytes)) {
+        ++failureCount;
+        return;
+    }
+
+    const DecodeResult source = decodeModel(sourceBytes, sourcePath.string());
+    expect(static_cast<bool>(source),
+        "the pinned regular-barrel source decodes through rigid OGF dispatch");
+    if (!source) {
+        std::cerr << source.error << '\n';
+        return;
+    }
+    expectPinnedRigidBarrelModel(source.model);
+    expect(outputBytes.size() == 19352,
+        "the persisted regular-barrel output has the pinned canonical byte size");
+
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(outputBytes, outputPath.string());
+    expect(static_cast<bool>(schema),
+        "the persisted regular-barrel output passes complete OGFx schema decoding");
+    if (!schema) {
+        std::cerr << schema.error << '\n';
+        return;
+    }
+    expect(modelsEqual(schema.model, source.model),
+        "persisted OGFx reconstructs the barrel render and physics metadata exactly");
+
+    const SerializeResult canonical =
+        xrphoton::ogfx::serializeModel(source.model, "rigid-corpus-proof.ogfx");
+    expect(static_cast<bool>(canonical) && canonical.bytes == outputBytes,
+        "the regular-barrel output is byte-exact canonical writer output");
+    const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+        schema.model, "rigid-corpus-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip) && roundTrip.bytes == outputBytes,
+        "the regular-barrel writer-schema-writer round trip is byte exact");
+
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(outputBytes, outputPath.string());
+    expect(static_cast<bool>(runtime) && modelsEqual(runtime.model, source.model),
+        "runtime decoding accepts the barrel texture and optional physics profile");
+}
+
 void verifyCliOutputs(
     const std::filesystem::path& firstPath,
     const std::filesystem::path& secondPath)
@@ -785,12 +1445,25 @@ int main(int argumentCount, char** arguments)
         std::cout << "M4a offline corpus proof passed.\n";
         return 0;
     }
+    if (argumentCount == 4
+        && std::string_view(arguments[1]) == "--verify-rigid-corpus-output") {
+        verifyRigidCorpusOutput(arguments[2], arguments[3]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " rigid OGF offline corpus proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Rigid OGF offline corpus proof passed.\n";
+        return 0;
+    }
 
     testAcceptedProfile();
     testFramingAndProfileRejections();
     testHeaderAndBoundsRejections();
     testTextureRejections();
     testGeometryRejections();
+    testAcceptedRigidProfile();
+    testRigidProfileRejections();
 
     if (argumentCount == 2) {
         testLocalCorpus(arguments[1]);

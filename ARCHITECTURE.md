@@ -26,9 +26,11 @@ OGFx decoder, `SceneData`, GPU upload, acceleration-structure, material/texture,
 shader path.
 
 The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`, and
-`test_smooth_sphere.ogfx` are independent optional gallery assets. With plitka and
-all three configured, six models become seven placements through six BLASes; the
-wedge remains the shared-BLAS probe. The sphere pair has identical indexed
+`test_smooth_sphere.ogfx` are independent optional gallery assets. The converted
+regular `bochka_close_1.ogfx` adds its existing `mtl\mtl_barrel_01.dds` and a
+seventh model. With all optional entries configured, seven models become eight
+placements through seven BLASes; the wedge remains the shared-BLAS probe. The
+sphere pair has identical indexed
 position/UV corner streams but deliberately different normals: flat-face splits
 versus shared smooth normals that remain split only at the UV seam.
 
@@ -38,6 +40,13 @@ exposes one fixed sampled-image descriptor array. The generated probes select th
 fallback; configured plitka selects a real nonzero image index. M1 through M4a and
 the gallery work that instantiated their consumers are recorded in the roadmap
 below.
+
+The regular barrel is rendered as a static gallery placement, but its offline
+source adapter also preserves one compound-body recipe—three named cylinders,
+their masses and centers of mass, and the source physics material—in optional
+OGFx records. Both byte decoders validate those records. `ogfx_loader` does not
+copy them into `SceneData` yet, so they create no live physics body and imply no
+physics-backend choice or dynamic TLAS work.
 
 The first direct modern-content adapter is also landed as a narrow headless
 Blender 5.1.x path. [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py)
@@ -115,12 +124,12 @@ stage; the diagram shows the frame-path layering.)
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU record types | Plain value state loaded from OGFx and owned by `main()` |
-| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; decoder tests remain available without graphics dependencies |
-| [src/legacy_ogf.hpp](src/legacy_ogf.hpp) / [.cpp](src/legacy_ogf.cpp) | Transactional source decoder for the pinned M4a OGF v4 static profile; validates legacy framing/semantics and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build |
+| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only render/physics model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; backend-neutral physics records contain no live backend state |
+| [src/legacy_ogf.hpp](src/legacy_ogf.hpp), [src/legacy_ogf.cpp](src/legacy_ogf.cpp), and [src/legacy_ogf_rigid.cpp](src/legacy_ogf_rigid.cpp) | Transactional source dispatch for the pinned M4a flat-static and SoC rigid-compound OGF v4 profiles; the rigid branch flattens bind-pose render data and retains validated cylinder/mass metadata without owning OGFx serialization | Offline-only source adapters in the graphics-free build |
 | [src/blender_mesh.hpp](src/blender_mesh.hpp) / [.cpp](src/blender_mesh.cpp) | Transactional decoder for the private versioned `XRBM` extraction stream; validates the narrow static profile, bakes units/transforms, converts axes, normals, and winding, deduplicates corners, and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build; no Blender or renderer dependency |
 | [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named material-free mesh; invokes `convert-blender` and supplies `XRBM` on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
 | [tools/asset_compiler.cpp](tools/asset_compiler.cpp) | `xrPhotonAssetCompiler convert-ogf` / `convert-blender` dispatch, bounded source input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
-| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion from the decoded OGFx model into owned `SceneData`; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
+| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render data into owned `SceneData`; optional physics metadata is validated upstream but deliberately has no scene/backend consumer yet; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5 framing and mip-0 decode, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
@@ -155,8 +164,9 @@ Includes are kept acyclic by a deliberate rule:
 - `scene.hpp` is likewise Vulkan-free: CPU scene data depends only on the standard
   library and GLM, while `gpu_scene.hpp` owns the Vulkan/VMA boundary.
 - `ogfx.hpp` is a stricter offline boundary: it depends only on the standard
-  library and shares no renderer-native structs. Source adapters populate its
-  compiler model, and only the canonical writer owns the serialized schema.
+  library and shares no renderer- or physics-backend-native structs. Source
+  adapters populate its compiler model, including optional backend-neutral
+  body/collider values, and only the canonical writer owns the serialized schema.
   Its offline schema decoder supports compiler round trips, including logical
   texture references; the separate runtime entry point layers only the current
   opaque-geometry capability gate over the same structural validation.
@@ -608,9 +618,10 @@ needs deeper overlap.
 
 The ray tracing scene contains one **BLAS per `SceneMesh`** and one **TLAS entry
 per `SceneInstance`**. The generated-only gallery builds two different BLASes and
-three TLAS instances; the configured legacy gallery builds three BLASes and four
+three TLAS instances; the fully configured gallery builds seven BLASes and eight
 TLAS instances. In both cases the two wedge placements reference the same BLAS
-address. The structures are built once by `buildAccelerationStructures` after
+address. The barrel's optional physics metadata does not alter this startup-only
+render structure. The structures are built once by `buildAccelerationStructures` after
 `GpuScene` upload and before the render loop; the TLAS handle is what the RT
 descriptor set binds (`VkWriteDescriptorSetAccelerationStructureKHR` takes the
 handle — an acceleration-structure *device address* is needed only where a TLAS
@@ -899,7 +910,8 @@ Decisions and contracts worth preserving:
    staged device-local uploads, indexed BDA-fetched geometry, the complete OGFx
    round trip, generic multi-model scene assembly, N-BLAS/N-instance acceleration
    structures, opaque base-color DDS sampling, and the narrow headless Blender
-   5.1.x static-mesh adapter have landed. CMake generates the
+   5.1.x static-mesh adapter have landed. The narrow SoC rigid-compound barrel
+   adapter and optional engine-neutral physics records have also landed. CMake generates the
    quad and permanent two-geometry wedge probe through the shared writer. The
    optional configured gallery additionally loads the verified legacy-converted
    `plitka1.ogfx`, resolves its BC1 texture, and carries it into the render loop
@@ -909,7 +921,7 @@ Decisions and contracts worth preserving:
    asset; it is not displaced by later content entries.
 
    The permanent additive content ordering is **quad → plitka1 → Blender opaque
-   probe → `bochka_fuel`**. Plitka's runtime integration is implemented, with its
+   probes → `bochka_close_1`**. Plitka's runtime integration is implemented, with its
    final visual sign-off still pending. The gallery is a preview/integration scene, not
    another format or runtime path: every entry travels through the same OGFx
    decoder, `SceneData`, GPU upload, BLAS/TLAS construction, material/texture
@@ -919,9 +931,12 @@ Decisions and contracts worth preserving:
    `test_pyramid.ogfx`, the flat-shaded dense-triangulation/UV-seam/corner-
    splitting `test_sphere.ogfx`, and its smooth-normal comparison
    `test_smooth_sphere.ogfx` for the optional gallery beneath
-   `build/<preset>/assets/blender/`. The pyramid and flat sphere have received
-   manual gallery sign-off; the smooth comparison remains pending. The next
-   source-profile milestone is `bochka_fuel`.
+   `build/<preset>/assets/blender/`. The direct legacy path now also produces
+   `bochka_close_1.ogfx`: its type-`0xA` hierarchy is validated, its already
+   bind/model-space child mesh is flattened, and its body/cylinder data is
+   retained in optional OGFx metadata. The regular barrel resolves
+   `mtl\mtl_barrel_01` through the existing DDS path and occupies the same
+   gallery row without any source-specific runtime branch.
    The temporary code-owned tables
    supply placements until scene/level data has a real owner; world instances
    never become OGFx chunks.
@@ -932,10 +947,9 @@ Decisions and contracts worth preserving:
    base-color texture consumer are already landed. The **next structural renderer
    item** remains the opaque/alpha-tested hit-group and SBT split when a real
    alpha-tested asset demands it; until then the runtime deliberately retains its
-   opaque gate and `RAY_FLAG_FORCE_OPAQUE`. The recognizable legacy
-   `bochka_fuel.ogf` target follows only after nested-visual, bone/bind, and
-   IK/physics contracts exist. Unsupported source semantics are rejected rather
-   than hidden by a geometry-only conversion.
+   opaque gate and `RAY_FLAG_FORCE_OPAQUE`. Broader skeletal and physics source
+   profiles still require explicit contracts; unsupported source semantics are
+   rejected rather than hidden by a geometry-only conversion.
 3. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
    rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
    buffers, one per `FrameResources` slot (the first genuinely per-frame-written
@@ -945,6 +959,9 @@ Decisions and contracts worth preserving:
    Also the natural point to grow the loop's timing (the fly camera added
    simple clamped delta-time; fixed-timestep simulation can wait for game
    systems).
+   The landed barrel metadata does not implement this step: it creates no live
+   body, does not select a physics backend, and causes no per-frame instance or
+   TLAS update.
 4. **Lighting + path tracing.** Pending — the renderer becomes an actual path
    tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
    pipeline recursion depth at 1), next-event estimation with shadow rays,

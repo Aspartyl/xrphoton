@@ -283,8 +283,7 @@ int convertLegacyOgf(char** arguments)
                 std::cerr << error << '\n';
                 return 1;
             }
-            decoded =
-                xrphoton::legacy_ogf::decodeStaticModel(sourceBytes, inputName);
+            decoded = xrphoton::legacy_ogf::decodeModel(sourceBytes, inputName);
         }
         if (!decoded) {
             std::cerr << decoded.error << '\n';

@@ -37,6 +37,10 @@ constexpr std::array RequiredChunkIds{
     static_cast<std::uint32_t>(ChunkId::Indices),
 };
 
+constexpr std::array KnownOptionalChunkIds{
+    static_cast<std::uint32_t>(ChunkId::RigidPhysics),
+};
+
 struct ModelMetadata
 {
     Bounds bounds{};
@@ -55,6 +59,12 @@ bool isKnownRequiredChunk(std::uint32_t id)
 {
     return std::find(RequiredChunkIds.begin(), RequiredChunkIds.end(), id)
         != RequiredChunkIds.end();
+}
+
+bool isKnownOptionalChunk(std::uint32_t id)
+{
+    return std::find(KnownOptionalChunkIds.begin(), KnownOptionalChunkIds.end(), id)
+        != KnownOptionalChunkIds.end();
 }
 
 std::string hexadecimal(std::uint64_t value)
@@ -145,6 +155,7 @@ public:
             || !decodePositions()
             || !decodeAttributes()
             || !decodeIndices()
+            || !decodeRigidPhysics()
             || !validateModel(geometryBounds, metadata)) {
             return failedResult();
         }
@@ -249,13 +260,15 @@ private:
 
         std::unordered_set<std::uint32_t> seenChunkIds;
         std::uint64_t headerOffset = headerSize;
+        std::uint32_t scannedChunkCount = 0;
         while (headerOffset < bytes_.size()) {
-            if (chunks_.size() >= MaximumChunkCount) {
+            if (scannedChunkCount >= MaximumChunkCount) {
                 return rejectFile(
                     "chunk count",
                     "at most " + std::to_string(MaximumChunkCount),
                     "more than " + std::to_string(MaximumChunkCount));
             }
+            ++scannedChunkCount;
             // The version-1 file header is 16 bytes and every later header offset
             // comes from checkedAlignUp below, so misalignment is not input-reachable.
             assert((headerOffset % ChunkAlignment) == 0);
@@ -302,6 +315,7 @@ private:
             if (!seenChunkIds.insert(id).second) {
                 return reject(id, "occurrence count", "exactly 1", "a duplicate");
             }
+            bool retainChunk = true;
             if (isKnownRequiredChunk(id)) {
                 if (flags != RequiredChunkFlags) {
                     return reject(
@@ -317,6 +331,16 @@ private:
                         std::to_string(ChunkVersion),
                         std::to_string(version));
                 }
+            } else if (isKnownOptionalChunk(id)) {
+                if (flags != 0) {
+                    return reject(id, "flags", "0 (optional)", hexadecimal(flags));
+                }
+                if (version != ChunkVersion) {
+                    // The header and framing are still validated, but an older
+                    // reader must not interpret an optional payload using the
+                    // wrong record schema.
+                    retainChunk = false;
+                }
             } else if ((flags & RequiredChunkFlags) != 0) {
                 return reject(
                     id,
@@ -325,11 +349,13 @@ private:
                     hexadecimal(id) + " marked required");
             }
 
-            chunks_.push_back({
-                .id = id,
-                .payloadOffset = static_cast<std::size_t>(payloadOffset),
-                .payloadSize = payloadSize,
-            });
+            if (retainChunk) {
+                chunks_.push_back({
+                    .id = id,
+                    .payloadOffset = static_cast<std::size_t>(payloadOffset),
+                    .payloadSize = payloadSize,
+                });
+            }
 
             if (payloadEnd == bytes_.size()) {
                 headerOffset = payloadEnd;
@@ -779,6 +805,318 @@ private:
             const std::size_t requestedIndex =
                 static_cast<std::size_t>(found - requestedOffsets.begin());
             model_.materials[index].baseColorTexture = matchedTexts[requestedIndex];
+        }
+        return true;
+    }
+
+    bool decodeRigidPhysics()
+    {
+        const ChunkView* chunkPointer = findChunk(ChunkId::RigidPhysics);
+        if (chunkPointer == nullptr) {
+            return true;
+        }
+        const ChunkView& chunk = *chunkPointer;
+        if (chunk.payloadSize < RigidPhysicsHeaderSize) {
+            return reject(
+                chunk.id,
+                "byteSize",
+                "at least " + std::to_string(RigidPhysicsHeaderSize),
+                std::to_string(chunk.payloadSize));
+        }
+
+        const std::size_t offset = chunk.payloadOffset;
+        const std::uint32_t bodyCount = readU32(bytes_, offset);
+        const std::uint32_t colliderCount = readU32(bytes_, offset + 4);
+        const std::uint32_t stringByteSize = readU32(bytes_, offset + 8);
+        if (bodyCount == 0) {
+            return reject(chunk.id, "bodyCount", "at least 1", "0");
+        }
+        if (colliderCount == 0) {
+            return reject(chunk.id, "colliderCount", "at least 1", "0");
+        }
+        for (std::size_t index = 0; index < 5; ++index) {
+            const std::uint32_t reserved = readU32(bytes_, offset + 12 + index * 4);
+            if (reserved != 0) {
+                return reject(
+                    chunk.id,
+                    "header reserved[" + std::to_string(index) + "]",
+                    "0",
+                    std::to_string(reserved));
+            }
+        }
+
+        const std::uint64_t bodyBytes =
+            static_cast<std::uint64_t>(bodyCount) * PhysicsBodyRecordSize;
+        const std::uint64_t colliderBytes =
+            static_cast<std::uint64_t>(colliderCount) * PhysicsColliderRecordSize;
+        const std::uint64_t expectedBytes = RigidPhysicsHeaderSize
+            + bodyBytes + colliderBytes + stringByteSize;
+        if (expectedBytes != chunk.payloadSize) {
+            return reject(
+                chunk.id,
+                "byteSize",
+                std::to_string(expectedBytes) + " from its framed fields",
+                std::to_string(chunk.payloadSize));
+        }
+
+        model_.physicsBodies.reserve(bodyCount);
+        std::uint64_t expectedFirstCollider = 0;
+        for (std::uint32_t index = 0; index < bodyCount; ++index) {
+            const std::size_t recordOffset = offset + RigidPhysicsHeaderSize
+                + static_cast<std::size_t>(index) * PhysicsBodyRecordSize;
+            const std::uint32_t firstCollider = readU32(bytes_, recordOffset);
+            const std::uint32_t bodyColliderCount = readU32(bytes_, recordOffset + 4);
+            const std::uint32_t reserved0 = readU32(bytes_, recordOffset + 8);
+            const std::uint32_t reserved1 = readU32(bytes_, recordOffset + 12);
+            if (reserved0 != 0) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "reserved0"),
+                    "0",
+                    std::to_string(reserved0));
+            }
+            if (reserved1 != 0) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "reserved1"),
+                    "0",
+                    std::to_string(reserved1));
+            }
+            if (bodyColliderCount == 0) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "colliderCount"),
+                    "at least 1",
+                    "0");
+            }
+            if (firstCollider != expectedFirstCollider) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "firstCollider"),
+                    std::to_string(expectedFirstCollider) + " (next partition offset)",
+                    std::to_string(firstCollider));
+            }
+            const std::uint64_t colliderEnd =
+                static_cast<std::uint64_t>(firstCollider) + bodyColliderCount;
+            if (colliderEnd > colliderCount) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "collider range end"),
+                    "at most " + std::to_string(colliderCount),
+                    std::to_string(colliderEnd));
+            }
+            const float mass = readF32(bytes_, recordOffset + 16);
+            if (!std::isfinite(mass) || mass <= 0.0f) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "mass"),
+                    "a finite positive f32",
+                    std::to_string(mass));
+            }
+            const Position centerOfMass = readPosition(bytes_, recordOffset + 20);
+            if (!positionIsFinite(centerOfMass)) {
+                return reject(
+                    chunk.id,
+                    indexedField("bodies", index, "centerOfMass"),
+                    "finite f32 values",
+                    "a non-finite value");
+            }
+            model_.physicsBodies.push_back({
+                .firstCollider = firstCollider,
+                .colliderCount = bodyColliderCount,
+                .mass = mass,
+                .centerOfMass = centerOfMass,
+            });
+            expectedFirstCollider = colliderEnd;
+        }
+        if (expectedFirstCollider != colliderCount) {
+            return reject(
+                chunk.id,
+                "final collider partition end",
+                std::to_string(colliderCount),
+                std::to_string(expectedFirstCollider));
+        }
+
+        const std::size_t colliderArrayOffset = offset + RigidPhysicsHeaderSize
+            + static_cast<std::size_t>(bodyBytes);
+        std::vector<std::uint32_t> materialOffsets;
+        std::vector<std::uint32_t> sourceNodeOffsets;
+        materialOffsets.reserve(colliderCount);
+        sourceNodeOffsets.reserve(colliderCount);
+        model_.physicsColliders.reserve(colliderCount);
+        for (std::uint32_t index = 0; index < colliderCount; ++index) {
+            const std::size_t recordOffset = colliderArrayOffset
+                + static_cast<std::size_t>(index) * PhysicsColliderRecordSize;
+            const std::uint32_t rawShapeType = readU32(bytes_, recordOffset);
+            if (rawShapeType
+                != static_cast<std::uint32_t>(PhysicsShapeType::Cylinder)) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "shapeType"),
+                    "1 (cylinder)",
+                    std::to_string(rawShapeType));
+            }
+            const std::uint32_t flags = readU32(bytes_, recordOffset + 4);
+            if ((flags & ~PhysicsColliderAllowedFlags) != 0) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "flags"),
+                    "0 (reserved in version 1)",
+                    hexadecimal(flags));
+            }
+            materialOffsets.push_back(readU32(bytes_, recordOffset + 8));
+            sourceNodeOffsets.push_back(readU32(bytes_, recordOffset + 12));
+
+            const Position center = readPosition(bytes_, recordOffset + 16);
+            const Position axis = readPosition(bytes_, recordOffset + 28);
+            const float height = readF32(bytes_, recordOffset + 40);
+            const float radius = readF32(bytes_, recordOffset + 44);
+            const float mass = readF32(bytes_, recordOffset + 48);
+            const Position centerOfMass = readPosition(bytes_, recordOffset + 52);
+            if (!positionIsFinite(center)) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "center"),
+                    "finite f32 values",
+                    "a non-finite value");
+            }
+            if (!positionIsFinite(axis)) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "axis"),
+                    "finite f32 values",
+                    "a non-finite value");
+            }
+            const double axisX = axis.x;
+            const double axisY = axis.y;
+            const double axisZ = axis.z;
+            const double axisLengthSquared =
+                axisX * axisX + axisY * axisY + axisZ * axisZ;
+            if (!std::isfinite(axisLengthSquared) || axisLengthSquared <= 0.0) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "axis length squared"),
+                    "finite and greater than 0",
+                    std::to_string(axisLengthSquared));
+            }
+            auto requirePositive = [&](float value, std::string_view member) {
+                if (std::isfinite(value) && value > 0.0f) {
+                    return true;
+                }
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, member),
+                    "a finite positive f32",
+                    std::to_string(value));
+            };
+            if (!requirePositive(height, "height")
+                || !requirePositive(radius, "radius")
+                || !requirePositive(mass, "mass")) {
+                return false;
+            }
+            if (!positionIsFinite(centerOfMass)) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", index, "centerOfMass"),
+                    "finite f32 values",
+                    "a non-finite value");
+            }
+
+            model_.physicsColliders.push_back({
+                .shapeType = PhysicsShapeType::Cylinder,
+                .flags = flags,
+                .material = {},
+                .sourceNode = {},
+                .center = center,
+                .axis = axis,
+                .height = height,
+                .radius = radius,
+                .mass = mass,
+                .centerOfMass = centerOfMass,
+            });
+        }
+
+        std::vector<std::uint32_t> requestedOffsets;
+        requestedOffsets.reserve(
+            static_cast<std::size_t>(colliderCount) * 2);
+        for (std::uint32_t stringOffset : materialOffsets) {
+            if (stringOffset != NoStringReference) {
+                requestedOffsets.push_back(stringOffset);
+            }
+        }
+        for (std::uint32_t stringOffset : sourceNodeOffsets) {
+            if (stringOffset != NoStringReference) {
+                requestedOffsets.push_back(stringOffset);
+            }
+        }
+        std::sort(requestedOffsets.begin(), requestedOffsets.end());
+        requestedOffsets.erase(
+            std::unique(requestedOffsets.begin(), requestedOffsets.end()),
+            requestedOffsets.end());
+        std::vector<std::uint8_t> matchedOffsets(requestedOffsets.size(), 0);
+        std::vector<std::string_view> matchedTexts(requestedOffsets.size());
+        const std::size_t arenaOffset = colliderArrayOffset
+            + static_cast<std::size_t>(colliderBytes);
+        if (!decodeStringArena(
+                chunk,
+                arenaOffset,
+                stringByteSize,
+                requestedOffsets,
+                &matchedOffsets,
+                &matchedTexts)) {
+            return false;
+        }
+
+        std::uint64_t decodedStringBytes = 0;
+        auto resolveString = [&](std::uint32_t stringOffset,
+                                 std::size_t colliderIndex,
+                                 std::string_view field,
+                                 std::string* result) {
+            if (stringOffset == NoStringReference) {
+                result->clear();
+                return true;
+            }
+            const auto found = std::lower_bound(
+                requestedOffsets.begin(), requestedOffsets.end(), stringOffset);
+            assert(found != requestedOffsets.end() && *found == stringOffset);
+            const std::size_t requestedIndex =
+                static_cast<std::size_t>(found - requestedOffsets.begin());
+            if (matchedOffsets[requestedIndex] == 0) {
+                return reject(
+                    chunk.id,
+                    indexedField("colliders", colliderIndex, field),
+                    "UINT32_MAX or the start of a string entry",
+                    std::to_string(stringOffset));
+            }
+            const std::uint64_t textBytes = matchedTexts[requestedIndex].size();
+            if (textBytes
+                > MaximumDecodedRigidPhysicsStringBytes - decodedStringBytes) {
+                return reject(
+                    chunk.id,
+                    "decoded string bytes",
+                    "at most "
+                        + std::to_string(MaximumDecodedRigidPhysicsStringBytes),
+                    "more than "
+                        + std::to_string(MaximumDecodedRigidPhysicsStringBytes));
+            }
+            decodedStringBytes += textBytes;
+            *result = matchedTexts[requestedIndex];
+            return true;
+        };
+
+        for (std::size_t index = 0; index < model_.physicsColliders.size(); ++index) {
+            if (!resolveString(
+                    materialOffsets[index],
+                    index,
+                    "materialRefOffset",
+                    &model_.physicsColliders[index].material)
+                || !resolveString(
+                    sourceNodeOffsets[index],
+                    index,
+                    "sourceNodeRefOffset",
+                    &model_.physicsColliders[index].sourceNode)) {
+                return false;
+            }
         }
         return true;
     }
