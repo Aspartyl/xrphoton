@@ -25,9 +25,9 @@ inline constexpr std::uint32_t SupportedStreamFlags = StreamFlagHasUvs;
 inline constexpr std::uint32_t MaterialFlagAlphaTested = 1;
 
 // Decodes one static Blender mesh extraction. XRBM v1 is the original
-// material-free profile; v2 adds exactly one alpha-tested DDS material. The
-// result is an ordinary compiler-facing model and must still pass through
-// serializeModel().
+// material-free profile; v2 adds exactly one opaque or alpha-tested DDS
+// material. The result is an ordinary compiler-facing model and must still
+// pass through serializeModel().
 [[nodiscard]] ogfx::DecodeResult decodeStaticMesh(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<Blender stream>");

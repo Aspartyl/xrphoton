@@ -154,7 +154,7 @@ std::vector<std::uint8_t> makeStream(
     return bytes;
 }
 
-std::vector<std::uint8_t> makeAlphaTestedStream(
+std::vector<std::uint8_t> makeTexturedStream(
     const std::vector<Triangle>& triangles,
     std::string_view textureReference = "trees\\trees_new_vetka_green",
     float alphaCutoff = 0.5f,
@@ -207,7 +207,7 @@ std::vector<std::uint8_t> makeAlphaTestedStream(
         }
     }
     expect(bytes.size() == expectedSize,
-        "synthetic alpha-tested XRBM builder emits its declared byte size");
+        "synthetic textured XRBM builder emits its declared byte size");
     return bytes;
 }
 
@@ -360,6 +360,35 @@ void expectOneAlphaTestedGeometry(
         "textured Blender input retains its logical DDS reference and cutoff");
 }
 
+void expectOneOpaqueTexturedGeometry(
+    const Model& model,
+    std::size_t indexCount,
+    std::string_view textureReference)
+{
+    expect(model.positions.size() == model.attributes.size(),
+        "opaque-textured Blender positions and attributes remain parallel streams");
+    expect(model.indices.size() == indexCount,
+        "opaque-textured Blender model contains the expected triangle indices");
+    expect(model.geometries.size() == 1
+            && model.geometries[0].firstVertex == 0
+            && model.geometries[0].vertexCount == model.positions.size()
+            && model.geometries[0].firstIndex == 0
+            && model.geometries[0].indexCount == indexCount
+            && model.geometries[0].materialIndex == 0
+            && !model.geometries[0].alphaTested,
+        "textured Blender mesh maps to one complete opaque geometry");
+    expect(model.meshes.size() == 1
+            && model.meshes[0].firstGeometry == 0
+            && model.meshes[0].geometryCount == 1,
+        "opaque-textured Blender extraction maps to one reusable mesh");
+    expect(model.materials.size() == 1
+            && model.materials[0].baseColorFactor
+                == std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}
+            && model.materials[0].alphaCutoff == 0.5f
+            && model.materials[0].baseColorTexture == textureReference,
+        "opaque-textured Blender input retains its logical DDS reference");
+}
+
 void expectRejected(
     const std::vector<std::uint8_t>& bytes,
     std::string_view expectedField)
@@ -501,7 +530,7 @@ void testAlphaTestedMaterialAndTextureVNormalization()
 {
     constexpr std::string_view textureReference =
         "trees\\trees_new_vetka_green";
-    const std::vector<std::uint8_t> source = makeAlphaTestedStream(
+    const std::vector<std::uint8_t> source = makeTexturedStream(
         makeQuadTriangles(), textureReference, 128.0f / 255.0f);
     const DecodeResult decoded = decodeStaticMesh(source, "leaf-card.blend");
     expect(static_cast<bool>(decoded),
@@ -553,6 +582,48 @@ void testAlphaTestedMaterialAndTextureVNormalization()
     expect(static_cast<bool>(roundTrip)
             && roundTrip.bytes == serialized.bytes,
         "textured Blender writer/schema/writer round trip is byte exact");
+}
+
+void testOpaqueTexturedMaterialAndTextureVNormalization()
+{
+    constexpr std::string_view textureReference =
+        "xrphoton\\remade_bochka_close_1_basecolor";
+    const std::vector<std::uint8_t> source = makeTexturedStream(
+        makeQuadTriangles(), textureReference, 0.5f, 0);
+    const DecodeResult decoded = decodeStaticMesh(source, "remade-barrel.blend");
+    expect(static_cast<bool>(decoded),
+        "opaque-textured Blender barrel stream decodes");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+
+    const Model& model = decoded.model;
+    expectOneOpaqueTexturedGeometry(model, 6, textureReference);
+    if (model.attributes.size() == 4) {
+        expect(model.attributes[0].u == 0.0f
+                && model.attributes[0].v == 1.0f
+                && model.attributes[1].u == 1.0f
+                && model.attributes[1].v == 0.0f
+                && model.attributes[2].u == 1.0f
+                && model.attributes[2].v == 1.0f
+                && model.attributes[3].u == 0.0f
+                && model.attributes[3].v == 0.0f,
+            "opaque-textured v2 uses the same one-time DDS V normalization");
+    }
+
+    const SerializeResult serialized =
+        xrphoton::ogfx::serializeModel(model, "remade-barrel.ogfx");
+    expect(static_cast<bool>(serialized),
+        "opaque-textured Blender model passes through the canonical writer");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+    const DecodeResult runtime = xrphoton::ogfx::decodeModel(
+        serialized.bytes, "remade-barrel-runtime.ogfx");
+    expect(static_cast<bool>(runtime) && modelsEqual(runtime.model, model),
+        "runtime decoder exactly reconstructs opaque-textured Blender output");
 }
 
 void testNonuniformTransformAndUnitScale()
@@ -777,10 +848,10 @@ void testFramingAndHeaderRejections()
     expectRejected(bytes, "object transform");
 }
 
-void testAlphaTestedHeaderRejections()
+void testTexturedHeaderRejections()
 {
     const std::vector<std::uint8_t> valid =
-        makeAlphaTestedStream(makeQuadTriangles());
+        makeTexturedStream(makeQuadTriangles());
     std::vector<std::uint8_t> bytes(
         valid.begin(),
         valid.begin() + xrphoton::blender_mesh::StreamHeaderSizeV2 - 1);
@@ -797,7 +868,7 @@ void testAlphaTestedHeaderRejections()
     writeU32(&bytes, FlagsOffset, 0);
     expectRejected(bytes, "flags");
 
-    for (const std::uint32_t materialFlags : {0u, 2u, 3u}) {
+    for (const std::uint32_t materialFlags : {2u, 3u}) {
         bytes = valid;
         writeU32(&bytes, MaterialFlagsOffset, materialFlags);
         expectRejected(bytes, "material flags");
@@ -1132,6 +1203,124 @@ void verifyLeafTexture(const std::filesystem::path& path)
         "leaf texture contains both visible and rejected alpha-test samples");
 }
 
+void verifyRemadeBarrelTexture(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
+        return;
+    }
+    constexpr std::size_t DdsFileHeaderSize = 128;
+    expect(bytes.size() == 1'398'248,
+        "remade barrel texture has the pinned complete DDS byte size");
+    if (bytes.size() < DdsFileHeaderSize) {
+        return;
+    }
+    expect(bytes[0] == 'D' && bytes[1] == 'D'
+            && bytes[2] == 'S' && bytes[3] == ' ',
+        "remade barrel texture has DDS magic");
+    const std::uint32_t height = readU32At(bytes, 12);
+    const std::uint32_t width = readU32At(bytes, 16);
+    expect(width == 1024 && height == 2048,
+        "remade barrel texture has the pinned 1024x2048 atlas dimensions");
+    constexpr std::uint32_t Dxt1 =
+        static_cast<std::uint32_t>('D')
+        | (static_cast<std::uint32_t>('X') << 8)
+        | (static_cast<std::uint32_t>('T') << 16)
+        | (static_cast<std::uint32_t>('1') << 24);
+    expect(readU32At(bytes, 84) == Dxt1,
+        "remade barrel texture uses renderer-supported DXT1/BC1");
+    expect(readU32At(bytes, 8) == 0x000A1007
+            && readU32At(bytes, 20) == 1'048'576
+            && readU32At(bytes, 28) == 12
+            && readU32At(bytes, 108) == 0x00401008,
+        "remade barrel DDS declares one canonical complete 12-level mip chain");
+    expect(readU32At(bytes, 88) == 0
+            && readU32At(bytes, 92) == 0
+            && readU32At(bytes, 96) == 0
+            && readU32At(bytes, 100) == 0
+            && readU32At(bytes, 104) == 0,
+        "remade barrel compressed DDS leaves RGB bit count and masks zero");
+    if (width != 1024 || height != 2048 || readU32At(bytes, 84) != Dxt1) {
+        return;
+    }
+
+    const std::uint64_t blockWidth = (static_cast<std::uint64_t>(width) + 3) / 4;
+    const std::uint64_t blockHeight = (static_cast<std::uint64_t>(height) + 3) / 4;
+    const std::uint64_t mipZeroBytes = blockWidth * blockHeight * 8;
+    std::uint64_t transparentSelectors = 0;
+    for (std::uint64_t block = 0; block < blockWidth * blockHeight; ++block) {
+        const std::size_t offset = DdsFileHeaderSize
+            + static_cast<std::size_t>(block * 8);
+        const std::uint16_t color0 = readU16At(bytes, offset);
+        const std::uint16_t color1 = readU16At(bytes, offset + 2);
+        const std::uint32_t selectors = readU32At(bytes, offset + 4);
+        if (color0 <= color1) {
+            for (std::uint32_t texel = 0; texel < 16; ++texel) {
+                transparentSelectors +=
+                    ((selectors >> (texel * 2)) & 3u) == 3u;
+            }
+        }
+    }
+    expect(mipZeroBytes == 1'048'576 && transparentSelectors == 0,
+        "remade barrel BC1 mip 0 contains no transparent selector use");
+}
+
+void verifyCustomBarrelTexture(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
+        return;
+    }
+    constexpr std::size_t DdsFileHeaderSize = 128;
+    expect(bytes.size() == 67'108'992,
+        "custom barrel texture has the pinned mip-0-only RGBA8 DDS byte size");
+    if (bytes.size() < DdsFileHeaderSize) {
+        return;
+    }
+    expect(bytes[0] == 'D' && bytes[1] == 'D'
+            && bytes[2] == 'S' && bytes[3] == ' ',
+        "custom barrel texture has DDS magic");
+    const std::uint32_t height = readU32At(bytes, 12);
+    const std::uint32_t width = readU32At(bytes, 16);
+    expect(width == 4096 && height == 4096,
+        "custom barrel texture has the pinned native 4096x4096 atlas dimensions");
+    expect(readU32At(bytes, 80) == 0x00000041
+            && readU32At(bytes, 84) == 0,
+        "custom barrel texture uses canonical uncompressed RGB-with-alpha framing");
+    expect(readU32At(bytes, 8) == 0x0000100F
+            && readU32At(bytes, 20) == 16'384
+            && readU32At(bytes, 28) == 0
+            && readU32At(bytes, 108) == 0x00001000,
+        "custom barrel DDS declares exactly one pitch-framed mip-0 level");
+    expect(readU32At(bytes, 88) == 32
+            && readU32At(bytes, 92) == 0x000000FF
+            && readU32At(bytes, 96) == 0x0000FF00
+            && readU32At(bytes, 100) == 0x00FF0000
+            && readU32At(bytes, 104) == 0xFF000000,
+        "custom barrel DDS pins canonical little-endian RGBA8 masks");
+    if (width != 4096 || height != 4096 || bytes.size() != 67'108'992) {
+        return;
+    }
+
+    bool allAlphaOpaque = true;
+    bool hasColorVariation = false;
+    const std::array firstColor{bytes[128], bytes[129], bytes[130]};
+    for (std::size_t offset = DdsFileHeaderSize;
+         offset < bytes.size();
+         offset += 4) {
+        allAlphaOpaque &= bytes[offset + 3] == 255;
+        hasColorVariation |= bytes[offset] != firstColor[0]
+            || bytes[offset + 1] != firstColor[1]
+            || bytes[offset + 2] != firstColor[2];
+    }
+    expect(allAlphaOpaque,
+        "custom barrel RGBA8 mip 0 is fully opaque");
+    expect(hasColorVariation,
+        "custom barrel RGBA8 mip 0 contains nonuniform authored color data");
+}
+
 void verifyCliOutputs(
     const std::filesystem::path& firstPath,
     const std::filesystem::path& secondPath)
@@ -1455,6 +1644,125 @@ void verifyLeafCardOutput(const std::filesystem::path& path)
     }
 }
 
+void verifyRemadeBarrelOutput(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
+        return;
+    }
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(bytes, path.string());
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(bytes, path.string());
+    expect(static_cast<bool>(schema) && static_cast<bool>(runtime),
+        "remade barrel passes schema and runtime OGFx decoding");
+    if (!schema || !runtime) {
+        if (!schema) {
+            std::cerr << schema.error << '\n';
+        }
+        if (!runtime) {
+            std::cerr << runtime.error << '\n';
+        }
+        return;
+    }
+    expect(modelsEqual(schema.model, runtime.model),
+        "remade barrel schema and runtime models are identical");
+    const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+        schema.model, "remade-barrel-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip) && roundTrip.bytes == bytes,
+        "remade barrel schema/writer round trip is byte exact");
+
+    const Model& model = schema.model;
+    expectOneOpaqueTexturedGeometry(
+        model,
+        47'832,
+        "xrphoton\\remade_bochka_close_1_basecolor");
+    expect(model.positions.size() == 8'381,
+        "remade barrel has the pinned high-fidelity unified vertex count");
+    expect(everyTriangleIsCcwAndAgreesWithNormals(model),
+        "remade barrel triangles are nondegenerate, CCW, and normal-aligned");
+    expect(model.physicsBodies.empty() && model.physicsColliders.empty(),
+        "remade visual barrel deliberately adds no physics metadata yet");
+
+    const Bounds bounds = calculateBounds(model);
+    expect(near(bounds.minimum.x, -0.3727f)
+            && near(bounds.maximum.x, 0.3727f)
+            && near(bounds.minimum.y, 0.001489f)
+            && near(bounds.maximum.y, 1.0885f)
+            && near(bounds.minimum.z, -0.3727f)
+            && near(bounds.maximum.z, 0.3727f),
+        "remade barrel preserves the SoC barrel's meter-scale bounds");
+    expect(std::all_of(
+               model.attributes.begin(),
+               model.attributes.end(),
+               [](const auto& attributes) {
+                   return attributes.u >= 0.0f && attributes.u <= 1.063f
+                       && attributes.v >= 0.0f && attributes.v <= 1.0f;
+               }),
+        "remade barrel UVs stay bounded, with only the octagonal bung seam "
+        "using the texture's declared repeat mode");
+}
+
+void verifyCustomBarrelOutput(const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> bytes;
+    if (!readBytes(path, &bytes)) {
+        ++failureCount;
+        return;
+    }
+    const DecodeResult schema =
+        xrphoton::ogfx::decodeModelSchema(bytes, path.string());
+    const DecodeResult runtime =
+        xrphoton::ogfx::decodeModel(bytes, path.string());
+    expect(static_cast<bool>(schema) && static_cast<bool>(runtime),
+        "custom barrel passes schema and runtime OGFx decoding");
+    if (!schema || !runtime) {
+        if (!schema) {
+            std::cerr << schema.error << '\n';
+        }
+        if (!runtime) {
+            std::cerr << runtime.error << '\n';
+        }
+        return;
+    }
+    expect(modelsEqual(schema.model, runtime.model),
+        "custom barrel schema and runtime models are identical");
+    const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+        schema.model, "custom-barrel-round-trip.ogfx");
+    expect(static_cast<bool>(roundTrip) && roundTrip.bytes == bytes,
+        "custom barrel schema/writer round trip is byte exact");
+
+    const Model& model = schema.model;
+    expectOneOpaqueTexturedGeometry(
+        model,
+        57'384,
+        "xrphoton\\custom_stalker_barrel_basecolor");
+    expect(model.positions.size() == 11'296,
+        "custom barrel has the pinned production-detail unified vertex count");
+    expect(everyTriangleIsCcwAndAgreesWithNormals(model),
+        "custom barrel triangles are nondegenerate, CCW, and normal-aligned");
+    expect(model.physicsBodies.empty() && model.physicsColliders.empty(),
+        "custom visual barrel deliberately adds no physics metadata yet");
+
+    const Bounds bounds = calculateBounds(model);
+    expect(near(bounds.minimum.x, -0.37147823f)
+            && near(bounds.maximum.x, 0.37099651f)
+            && near(bounds.minimum.y, 0.0f)
+            && near(bounds.maximum.y, 1.09803355f)
+            && near(bounds.minimum.z, -0.372f)
+            && near(bounds.maximum.z, 0.37123993f),
+        "custom barrel keeps a believable one-metre industrial-drum scale");
+    expect(std::all_of(
+               model.attributes.begin(),
+               model.attributes.end(),
+               [](const auto& attributes) {
+                   return attributes.u >= 0.0f && attributes.u <= 1.0f
+                       && attributes.v >= 0.0f && attributes.v <= 1.0f;
+               }),
+        "custom barrel UVs remain entirely inside the deliberate material atlas");
+}
+
 using PositionKey = std::array<std::uint32_t, 3>;
 using NormalKey = std::array<std::uint32_t, 3>;
 using UvKey = std::array<std::uint32_t, 2>;
@@ -1685,6 +1993,50 @@ int main(int argumentCount, char** arguments)
         return 0;
     }
     if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-remade-barrel-output") {
+        verifyRemadeBarrelOutput(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " remade barrel offline proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Remade barrel OGFx output verification passed.\n";
+        return 0;
+    }
+    if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-remade-barrel-texture") {
+        verifyRemadeBarrelTexture(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " remade barrel texture proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Remade barrel DDS verification passed.\n";
+        return 0;
+    }
+    if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-custom-barrel-output") {
+        verifyCustomBarrelOutput(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " custom barrel offline proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Custom barrel OGFx output verification passed.\n";
+        return 0;
+    }
+    if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-custom-barrel-texture") {
+        verifyCustomBarrelTexture(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " custom barrel texture proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "Custom barrel DDS verification passed.\n";
+        return 0;
+    }
+    if (argumentCount == 3
         && std::string_view(arguments[1]) == "--verify-sphere-output") {
         verifySphereOutput(arguments[2]);
         if (failureCount != 0) {
@@ -1714,6 +2066,10 @@ int main(int argumentCount, char** arguments)
             << "       xrPhotonBlenderMeshTests --verify-pyramid-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-leaf-card-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-leaf-texture <dds>\n"
+            << "       xrPhotonBlenderMeshTests --verify-remade-barrel-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-remade-barrel-texture <dds>\n"
+            << "       xrPhotonBlenderMeshTests --verify-custom-barrel-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-custom-barrel-texture <dds>\n"
             << "       xrPhotonBlenderMeshTests --verify-sphere-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-smooth-sphere-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-sphere-pair <flat> <smooth>\n";
@@ -1723,11 +2079,12 @@ int main(int argumentCount, char** arguments)
     testAsymmetricAxisMapAndCcwWinding();
     testUvPreservationAndVertexDeduplication();
     testAlphaTestedMaterialAndTextureVNormalization();
+    testOpaqueTexturedMaterialAndTextureVNormalization();
     testNonuniformTransformAndUnitScale();
     testNegativeDeterminantKeepsSourceOrder();
     testShearedTransformUsesFullInverseTranspose();
     testFramingAndHeaderRejections();
-    testAlphaTestedHeaderRejections();
+    testTexturedHeaderRejections();
     testPayloadAndGeometryRejections();
     testCanonicalWriterSchemaRuntimeAndDeterminism();
 

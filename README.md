@@ -39,7 +39,17 @@ configured independently as Blender gallery placements. The converted regular
 `bochka_close_1.ogfx` is another gallery
 model: its `mtl\mtl_barrel_01` reference uses the same DDS path, while its
 backend-neutral compound-collider metadata is preserved but not simulated yet.
-The converted `item_psevdodog_tail.ogfx` is the ninth model. Its one mesh keeps
+The adjacent `remade_bochka_close_1.ogfx` is a Blender-authored, scale-faithful
+visual remake with 8,381 unified vertices, 15,944 triangles, and the owner-local
+opaque BC1 texture `xrphoton\remade_bochka_close_1_basecolor`; it deliberately
+adds no physics metadata yet. The third adjacent drum,
+`custom_stalker_barrel.ogfx`, is an original Stalker-style design: a dented
+192-segment shell, three rolled ribs, recessed dark-steel lid, two modeled bungs,
+weld seam, riveted ochre inspection plate, and modeled warning bars. It exports
+11,296 unified vertices / 19,128 triangles through the same single opaque DDS
+profile, now backed by the untouched 4096×4096 `rusty_metal_04` Poly Haven CC0
+diffuse map in an uncompressed RGBA8 DDS, and likewise adds no physics metadata yet. The converted
+`item_psevdodog_tail.ogfx` follows that three-barrel comparison. Its one mesh keeps
 two geometries in source order: a `models\model_aref` alpha-tested range and a
 `models\model` opaque range, both using `act\act_pseudodog_fur` through one
 shared material with the source cutoff of 128/255. Its single rigid box-body
@@ -47,8 +57,8 @@ recipe is also preserved as backend-neutral metadata and is not simulated.
 All three configured SoC assets retain their authored scale in the gallery:
 plitka and the barrel are translated only, while the tail is rotated and
 translated without resizing.
-With every optional asset enabled, the gallery contains nine BLASes, ten TLAS
-instances, and eleven geometries; the wedge remains the shared-BLAS probe. The two
+With every optional asset enabled, the gallery contains eleven BLASes, twelve TLAS
+instances, and thirteen geometries; the wedge remains the shared-BLAS probe. The two
 spheres have identical geometry and UV corner streams but deliberately different
 normal sharing, making flat-versus-smooth shading directly observable. The
 shipped tail DDS has no transparent texels in mip 0, so that asset proves mixed
@@ -75,9 +85,9 @@ generates `build/<preset>/assets/probes/test_quad.ogfx` and `test_wedge.ogfx`
 through the canonical writer; the runtime strictly decodes both, assembles their model records and world
 placements into `SceneData`, batches two different BLAS builds, and shares the
 wedge BLAS across two TLAS instances. The texture foundation now reconstructs
-logical OGFx references, resolves strict DDS DXT1/DXT5 images, uploads BC1/BC3
-payloads directly, and exposes a fixed sampled-image array with an opaque-white
-fallback. The generated probes exercise the fallback with an amber quad and
+logical OGFx references, resolves strict DDS DXT1/DXT5 or canonical uncompressed
+RGBA8 images, uploads their mip-0 payloads directly, and exposes a fixed
+sampled-image array with an opaque-white fallback. The generated probes exercise the fallback with an amber quad and
 blue/green wedge faces; configured plitka exercises the real BC1 upload and a
 nonzero texture-table index. The separate converter accepts pinned OGF v4
 flat-static and rigid-compound profiles and feeds that same writer for offline validation. The converted
@@ -90,11 +100,14 @@ feeds the same canonical writer used by every other source. `test_pyramid` is th
 first gallery probe; the flat-shaded `test_sphere` exercises dense triangulation,
 its UV seam, and corner splitting; and `test_smooth_sphere` proves that equal
 positions share smooth normals while UV seams remain split. Material-free inputs
-remain byte-compatible XRBM v1. The strict v2 profile adds exactly one
+remain byte-compatible XRBM v1. The strict v2 profile adds exactly one opaque or
 alpha-tested Blender material, derives one logical DDS reference from its direct
-Image Texture node, carries Blender's cutoff, and flips textured V once for
-DDS/Vulkan top-row sampling. `test_leaf_card` is its first consumer and visible
-`IgnoreHit` proof. All four use the optional gallery path. The regular barrel adds the first narrow type-`0xA`
+Image Texture node, carries the classification/cutoff, and flips textured V once
+for DDS/Vulkan top-row sampling. `test_leaf_card` is its alpha-tested consumer
+and visible `IgnoreHit` proof; `remade_bochka_close_1` proves the opaque-textured
+branch with a newly authored asset, and `custom_stalker_barrel` proves a fully
+original production-detail design within that same contract. All six use the
+optional gallery path. The regular barrel adds the first narrow type-`0xA`
 rigid-compound legacy profile: its bind/model-space child mesh is flattened to
 ordinary render geometry and its three cylinder records, masses, centers of
 mass, source material, and source-node names enter optional OGFx metadata. The
@@ -171,10 +184,12 @@ The checked input is exactly one explicitly named mesh object: no modifiers,
 animation, shape keys, constraints, parenting, or color attributes; linked-library
 data and overrides are also rejected. Material-free XRBM v1 accepts zero or one
 UV layer. XRBM v2 accepts exactly one local material used by every polygon, one
-UV layer, one direct Image Texture → Principled Base Color/Alpha graph, the
-Boolean `xrphoton_alpha_tested` custom property, and a lowercase `.dds` using
+UV layer, one direct Image Texture → Principled Base Color graph, the Boolean
+`xrphoton_alpha_tested` custom property, and a lowercase `.dds` using
 exact sRGB/Straight-alpha interpretation beneath the supplied `--texture-root`;
-the graph must be unmuted, unanimated, and use identity texture/color
+the image Alpha output must also feed Principled Alpha exactly when that property
+is true. Opaque inputs leave Alpha unlinked and use the canonical unused cutoff
+of 0.5. The graph must be unmuted, unanimated, and use identity texture/color
 mapping. Blended or more elaborate materials fail loudly. Scene units and the object's affine
 transform are baked by the compiler; a one-million-triangle cap bounds peak
 working memory. Blender source files live in the Git-ignored
@@ -204,6 +219,33 @@ deterministic canonical schema reconstruction, and persists
 `test_leaf_card.ogfx` under `build/ogfx-core/assets/blender/`. It also pins the
 leaf DDS identity and proves that 153,894 mip-0 texels select BC1 transparency.
 Normal builds do not depend on Blender or the ignored `.blend` files.
+
+The scale-faithful barrel remake has a separate opt-in proof because its source
+`.blend`, authored PNG, and runtime DDS are owner-local:
+
+```sh
+cmake --preset ogfx-core \
+  -DXRPHOTON_BLENDER_EXECUTABLE=/path/to/blender \
+  -DXRPHOTON_BLENDER_REMADE_BARREL_BLEND="$PWD/blender/remade_bochka_close_1.blend"
+cmake --build --preset ogfx-core --target xrPhotonRemadeBarrelOfflineProof
+```
+
+It runs the real Blender export twice, checks byte identity and canonical OGFx
+round-trip reconstruction, verifies the 8,381-vertex/15,944-triangle opaque
+material result and SoC-scale bounds, pins the complete 12-mip 1024×2048 DXT1
+texture, and publishes
+`build/ogfx-core/assets/blender/remade_bochka_close_1.ogfx`.
+
+The original custom barrel uses the parallel owner-local proof:
+
+```sh
+cmake --build --preset ogfx-core --target xrPhotonCustomBarrelOfflineProof
+```
+
+That proof pins one opaque 11,296-vertex / 19,128-triangle model, its one-metre
+drum bounds, bounded 0..1 UVs, and the native 4096×4096, mip-0-only uncompressed
+RGBA8 material sheet. It publishes
+`build/ogfx-core/assets/blender/custom_stalker_barrel.ogfx`.
 
 ### Proving the legacy plitka conversion
 
@@ -269,7 +311,7 @@ The proof selects no physics backend and performs no simulation.
 
 The generated quad and wedge need no local source files. To add the verified
 plitka, regular-barrel, and pseudodog-tail outputs, their original textures, and
-all four converted Blender assets to the debug gallery, configure the
+all six converted Blender assets to the debug gallery, configure the
 owner-local paths once, then build normally:
 
 ```sh
@@ -280,6 +322,8 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX="$PWD/build/ogfx-core/assets/blender/test_smooth_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX="$PWD/build/ogfx-core/assets/blender/test_leaf_card.ogfx" \
   -DXRPHOTON_GALLERY_BARREL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/physics/balon/bochka_close_1.ogfx" \
+  -DXRPHOTON_GALLERY_REMADE_BARREL_OGFX="$PWD/build/ogfx-core/assets/blender/remade_bochka_close_1.ogfx" \
+  -DXRPHOTON_GALLERY_CUSTOM_BARREL_OGFX="$PWD/build/ogfx-core/assets/blender/custom_stalker_barrel.ogfx" \
   -DXRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX="$PWD/build/ogfx-core/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx" \
   -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
 cmake --build --preset debug
@@ -291,6 +335,9 @@ The texture root must preserve the exact-case relative paths
 `act/act_pseudodog_fur.dds`, and `trees/trees_new_vetka_green.dds`. The shipped
 tail texture's mip 0 is fully opaque; the leaf texture supplies the complementary
 visible cutout acceptance and shows the miss background through rejected texels.
+The gallery resolves owner-local `blender/textures` first and the configured
+legacy root second, so the remade barrel needs no copied SoC file and an authored
+path deterministically shadows a same-named legacy path.
 CMake remembers these values
 separately in each build tree, so configure the `release` preset the same way
 when needed. With
@@ -300,10 +347,13 @@ an empty `XRPHOTON_GALLERY_PLITKA_OGFX`,
 `XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX`, or
 `XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX`, or
 `XRPHOTON_GALLERY_BARREL_OGFX`, or
+`XRPHOTON_GALLERY_REMADE_BARREL_OGFX`, or
+`XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX`, or
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`, xrPhoton skips that optional entry. Once
 an entry is configured, a missing/broken OGFx—or referenced texture root/DDS—is a
 loud startup failure rather than a silent fallback. The original game files,
-Blender sources, and generated proof outputs remain Git-ignored local inputs.
+Blender sources, Blender textures, and generated proof outputs remain Git-ignored
+local inputs.
 
 The current build and development environment is Linux with GCC or Clang.
 Windows support is planned, but its build and platform integration have not landed yet.

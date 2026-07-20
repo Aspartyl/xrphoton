@@ -135,7 +135,8 @@ VkPhysicalDevice pickPhysicalDevice(
     QueueFamilyIndices* queueFamilies);
 
 // Create the logical device with one queue per unique {trace, present} family and the
-// ray tracing, bindless sampled-image indexing, and BC texture features enabled.
+// ray tracing, bindless sampled-image indexing, BC texture, and 16x anisotropic
+// sampling features enabled.
 VkResult createLogicalDevice(
     VkPhysicalDevice physicalDevice,
     const QueueFamilyIndices& queueFamilies,

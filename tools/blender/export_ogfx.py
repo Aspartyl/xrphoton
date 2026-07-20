@@ -37,6 +37,7 @@ class ExportError(RuntimeError):
 @dataclass(frozen=True)
 class MaterialProfile:
     texture_reference: str
+    alpha_tested: bool
     alpha_cutoff: float
     image_path: Path
 
@@ -71,7 +72,7 @@ def parse_arguments() -> argparse.Namespace:
         "--texture-root",
         help=(
             "root used to derive an extensionless logical DDS reference for "
-            "the optional alpha-tested material"
+            "the optional textured material"
         ),
     )
     return parser.parse_args(sys.argv[separator + 1 :])
@@ -252,11 +253,12 @@ def validate_material_profile(
         "material animation data",
         "animated materials are not supported yet",
     )
+    alpha_tested = material.get("xrphoton_alpha_tested")
     reject(
-        material.get("xrphoton_alpha_tested") is not True,
+        type(alpha_tested) is not bool,
         object_name,
         "material alpha-test classification",
-        "set the Boolean custom property xrphoton_alpha_tested to true",
+        "set the Boolean custom property xrphoton_alpha_tested to true or false",
     )
     reject(
         material.surface_render_method != "DITHERED",
@@ -272,10 +274,16 @@ def validate_material_profile(
         "expected a finite value in [0, 1]",
     )
     reject(
+        not alpha_tested and alpha_cutoff != 0.5,
+        object_name,
+        "opaque material alpha threshold",
+        "expected the canonical unused value 0.5",
+    )
+    reject(
         material.node_tree is None,
         object_name,
         "material nodes",
-        "the alpha-tested profile requires nodes",
+        "the textured profile requires nodes",
     )
 
     node_tree = material.node_tree
@@ -337,23 +345,34 @@ def validate_material_profile(
     alpha_links = list(principled.inputs["Alpha"].links)
     reject(
         len(base_color_links) != 1
-        or len(alpha_links) != 1
-        or base_color_links[0].from_node != alpha_links[0].from_node
         or base_color_links[0].from_node.bl_idname != "ShaderNodeTexImage"
         or base_color_links[0].from_socket.name != "Color"
-        or alpha_links[0].from_socket.name != "Alpha",
+        or (alpha_tested and (
+            len(alpha_links) != 1
+            or base_color_links[0].from_node != alpha_links[0].from_node
+            or alpha_links[0].from_socket.name != "Alpha"
+        ))
+        or (not alpha_tested and len(alpha_links) != 0),
         object_name,
         "material image links",
-        "one Image Texture must feed Principled Base Color and Alpha directly",
+        (
+            "one Image Texture must feed Principled Base Color and Alpha directly"
+            if alpha_tested
+            else "one Image Texture must feed Principled Base Color directly with Alpha unlinked"
+        ),
     )
     image_node = base_color_links[0].from_node
     reject(
-        len(node_tree.links) != 3
+        len(node_tree.links) != (3 if alpha_tested else 2)
         or any(link.is_muted or not link.is_valid for link in node_tree.links)
         or bool(image_node.inputs["Vector"].links),
         object_name,
         "material node links",
-        "only the direct image color, image alpha, and surface links are supported",
+        (
+            "only the direct image color, image alpha, and surface links are supported"
+            if alpha_tested
+            else "only the direct image color and surface links are supported"
+        ),
     )
     reject(
         image_node.interpolation != "Linear"
@@ -446,6 +465,7 @@ def validate_material_profile(
 
     return MaterialProfile(
         texture_reference=canonical_texture_reference(relative_path, object_name),
+        alpha_tested=alpha_tested,
         alpha_cutoff=alpha_cutoff,
         image_path=image_path,
     )
@@ -600,7 +620,11 @@ def extract_stream(
             payload.extend(
                 struct.pack(
                     "<IfII",
-                    MATERIAL_FLAG_ALPHA_TESTED,
+                    (
+                        MATERIAL_FLAG_ALPHA_TESTED
+                        if material_profile.alpha_tested
+                        else 0
+                    ),
                     material_profile.alpha_cutoff,
                     len(texture_reference_bytes),
                     0,

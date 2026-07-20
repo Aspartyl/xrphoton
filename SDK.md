@@ -54,9 +54,9 @@ external assets primarily enter through Blender and the one export path. Its
 first landed front end is the headless Blender 5.1.x script
 [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py): it extracts one
 explicitly named static mesh into the private stdin-only `XRBM` exchange.
-Material-free inputs use byte-compatible v1; strict v2 adds one alpha-tested
-DDS material, logical texture reference, cutoff, and the one-time textured V
-normalization. The C++ adapter performs coordinate/normal/winding conversion
+Material-free inputs use byte-compatible v1; strict v2 adds one opaque or
+alpha-tested DDS material, logical texture reference, classification/cutoff,
+and the one-time textured V normalization. The C++ adapter performs coordinate/normal/winding conversion
 and the shared compiler alone writes OGFx. A later add-on UI can wrap that path
 but cannot fork it. The SDK may later expose an optional GLB importer, but only
 as a front end to the shared compiler, never as another OGFx writer. That adapter stays
@@ -173,8 +173,13 @@ for the `test_pyramid` gallery probe, flat-shaded `test_sphere`
 dense-triangulation/UV-seam/corner-splitting fixture, matching
 `test_smooth_sphere` normal-sharing comparison, and alpha-tested
 `test_leaf_card`. The leaf is the first v2 material consumer and visibly proves
-any-hit rejection with `trees\trees_new_vetka_green`. All four are independent
-optional gallery entries. The project model and CLI harden
+any-hit rejection with `trees\trees_new_vetka_green`; the scale-faithful
+`remade_bochka_close_1` extends v2 to one opaque DDS material and supplies a
+newly authored high-detail comparison beside the converted SoC barrel;
+`custom_stalker_barrel` uses the same format for an original 19,128-triangle
+Stalker-style production prop with one owner-local native-4K uncompressed RGBA8
+DDS. All six are
+independent optional gallery entries. The project model and CLI harden
 around that legacy conversion, Blender export,
 and any later optional import adapters, and GUI tools follow the CLI
 they front — model/animation viewing first, since it reuses the runtime's own

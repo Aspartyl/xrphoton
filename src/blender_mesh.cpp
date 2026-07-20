@@ -413,18 +413,19 @@ ogfx::DecodeResult decodeStaticMesh(
     }
 
     bool alphaTested = false;
+    const bool texturedMaterial = version == StreamVersion2;
     float alphaCutoff = 0.5f;
     std::uint32_t textureReferenceByteCount = 0;
-    if (version == StreamVersion2) {
+    if (texturedMaterial) {
         const std::uint32_t materialFlags = reader.readU32();
-        if (materialFlags != MaterialFlagAlphaTested) {
+        if ((materialFlags & ~MaterialFlagAlphaTested) != 0) {
             return failure(
                 diagnosticName,
                 "material flags",
-                "exactly bit 0 (alpha-tested)",
+                "only bit 0 (alpha-tested) may be set",
                 std::to_string(materialFlags));
         }
-        alphaTested = true;
+        alphaTested = (materialFlags & MaterialFlagAlphaTested) != 0;
         alphaCutoff = reader.readF32();
         if (!std::isfinite(alphaCutoff)
             || alphaCutoff < 0.0f || alphaCutoff > 1.0f) {
@@ -487,7 +488,7 @@ ogfx::DecodeResult decodeStaticMesh(
     }
 
     std::string textureReference;
-    if (alphaTested) {
+    if (texturedMaterial) {
         textureReference = reader.readString(textureReferenceByteCount);
         if (!validTextureReference(textureReference)) {
             return failure(
@@ -577,7 +578,7 @@ ogfx::DecodeResult decodeStaticMesh(
                     matrix,
                     unitScale,
                     inverseDeterminant,
-                    alphaTested,
+                    texturedMaterial,
                     &converted[outputCorner])) {
                 return failure(
                     diagnosticName,

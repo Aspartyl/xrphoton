@@ -595,7 +595,9 @@ the geometry container. The scene resolver accepts canonical X-Ray names made of
 `[A-Za-z0-9_-]+` components separated by `\`, maps them exactly beneath the
 configured texture root, appends `.dds`, and rejects traversal, alternate
 separators, drive syntax, control bytes, and non-ASCII names. DDS DXT1/DXT5 mip-0
-payloads remain BC-compressed and map to sRGB BC1/BC3 GPU images. Scene image 0 is
+payloads remain BC-compressed and map to sRGB BC1/BC3 GPU images; the strict
+uncompressed alternative is 32-bit little-endian RGBA with exact channel masks,
+interpreted as RGBA8-sRGB. Scene image 0 is
 always a generated opaque-white RGBA8-sRGB fallback; untextured materials select
 that real slot, while missing or invalid referenced files are loud startup
 failures. This keeps OGFx geometry reusable and image-container policy separate.
@@ -836,22 +838,26 @@ Two strict XRBM profiles now share that geometry path:
   material. Existing v1 sources and canonical OGFx outputs remain byte-identical.
 - **Version 2, 112-byte header:** exactly one local material and UV layer, with
   every polygon using slot zero. The unanimated material's Boolean custom
-  property `xrphoton_alpha_tested` must be true, Blender's surface render method
-  must be `DITHERED`, and `alpha_threshold` supplies the finite `[0, 1]` cutoff.
+  property `xrphoton_alpha_tested` must explicitly be true or false, Blender's
+  surface render method must be `DITHERED`, and `alpha_threshold` supplies the
+  finite `[0, 1]` cutoff. Opaque materials use the canonical unused value 0.5.
   The explicit property is authoritative because Blender 5.1 does not durably
   preserve the former `CLIP` blend-method classification in the saved source.
   The
   node tree must contain only one active Material Output, one Principled BSDF,
-  and one external Image Texture, linked directly as image Color/Alpha →
-  Principled Base Color/Alpha → Output Surface. Nodes must be unmuted,
+  and one external Image Texture, linked directly as image Color → Principled
+  Base Color → Output Surface. Alpha-tested materials additionally require image
+  Alpha → Principled Alpha; opaque materials require that input to remain
+  unlinked. Nodes must be unmuted,
   unanimated, valid for all Blender renderers, and use the
   default identity texture/color mappings so the extractor never ignores a
   source-side sampling transform. The image must be a
   lowercase `.dds` using exact sRGB color space, Straight alpha, and
   Linear/Repeat/Flat sampling beneath
   `--texture-root`; its extensionless relative path becomes the canonical
-  backslash-separated OGFx texture reference. The v2 material-flags word must
-  equal alpha-test bit 0 exactly; it is not an extensible ignore-unknown field.
+  backslash-separated OGFx texture reference. The v2 material-flags word may be
+  zero (opaque) or alpha-test bit 0; every unknown bit is rejected rather than
+  treated as an extensible ignore-unknown field.
 
 The little-endian exchange layout is deliberately small and closed:
 
@@ -867,7 +873,7 @@ The little-endian exchange layout is deliberately small and closed:
 | 36 | 4 | reserved zero |
 | 40 | 48 | row-major object affine 3×4 matrix (12 `f32` values) |
 | 88 | 8 | two reserved-zero `u32` values |
-| 96 | 16 | v2 only: alpha-test flag, cutoff, texture-reference byte count, reserved zero |
+| 96 | 16 | v2 only: material flags (bit 0 = alpha-tested), cutoff, texture-reference byte count, reserved zero |
 
 In v1, triangle-corner records begin at byte 96. In v2, the exact-length ASCII
 texture reference follows byte 112, then the records begin. Every triangle has
@@ -888,7 +894,7 @@ The ignored root `blender/` directory holds owner-local source files. The
 fixtures are `test_pyramid.blend` / object `test_pyramid`, `test_sphere.blend` /
 object `test_sphere`, `test_smooth_sphere.blend` / object
 `test_smooth_sphere`, and `test_leaf_card.blend` / object `test_leaf_card`.
-All four are optional gallery probes; the sphere pair pins identical
+Those four are optional regression probes; the sphere pair pins identical
 position/UV corner streams with flat-face normal splits versus shared smooth
 normals, while the leaf card pins the v2 material and UV contract.
 Generated outputs live beneath the ignored
@@ -901,6 +907,37 @@ Generated outputs live beneath the ignored
 `XRPHOTON_BLENDER_LEAF_TEXTURE_DDS`, to run all four files through Blender and
 verify their canonical outputs; it does not make the local `.blend` inputs
 normal-build dependencies. All four outputs can be configured as gallery entries.
+
+The owner-local `remade_bochka_close_1.blend` / object
+`remade_bochka_close_1` is the first opaque-textured v2 asset. It preserves the
+SoC closed barrel's meter-scale bounds while replacing its visual mesh with
+8,381 unified vertices / 15,944 triangles and the owner-local
+`xrphoton\remade_bochka_close_1_basecolor` 1024×2048 DXT1 texture. It is a visual
+asset only and carries no physics bodies or colliders. The separate opt-in
+`xrPhotonRemadeBarrelOfflineProof` runs the ignored `.blend` through real Blender
+twice, verifies deterministic canonical reconstruction and source-scale bounds,
+pins the complete 12-level DDS chain, and publishes
+`build/ogfx-core/assets/blender/remade_bochka_close_1.ogfx`. Its PNG and DDS live
+under `blender/textures/xrphoton/`; the texture files, `.blend`, and generated
+OGFx remain ignored local/build inputs.
+
+The owner-local `custom_stalker_barrel.blend` / object
+`custom_stalker_barrel` deliberately uses the identical opaque XRBM v2 profile
+without treating the SoC mesh or texture as an art source. It contains one
+static mesh, one UV layer, one material, no modifiers, and no physics metadata.
+The converted model has 11,296 unified vertices / 19,128 triangles with
+one-metre industrial-drum bounds; all UVs remain inside the 0..1 texture. Its
+owner-local `xrphoton\custom_stalker_barrel_basecolor` material is Poly Haven's
+CC0 `rusty_metal_04_diff_4k.jpg`, preserved at its untouched 4096×4096 texel grid
+in an uncompressed RGBA8 DDS. No crop, resize, tint, or generated overlay is
+applied; only mip 0 is stored and consumed. The unused roughness, metallic,
+normal, displacement, and packaged Blender files are not copied into the project.
+Every mechanical feature—the rolled ribs, recessed lid, two
+bung assemblies, weld seam, inspection plate, rivets, and warning bars—is
+geometry rather than an image feature requiring alignment. The opt-in
+`xrPhotonCustomBarrelOfflineProof` runs real Blender twice, verifies exact OGFx
+reconstruction and DDS structure, and publishes
+`build/ogfx-core/assets/blender/custom_stalker_barrel.ogfx`.
 
 Third-party assets — free path-tracing test models included — normally enter
 the same way: Blender imports them, then an xrPhoton export front end feeds the
@@ -1096,7 +1133,8 @@ each arrives with its own consumer.
    without adding instances to the format. The permanent generated wedge probe
    drove the N-BLAS/N-instance and multi-geometry generalization. The texture
    foundation carries logical names into `SceneData`, resolves strict DDS
-   DXT1/DXT5 beneath an owner-configured root, uploads BC1/BC3 directly, and maps
+   DXT1/DXT5 or canonical uncompressed RGBA8 beneath an owner-configured root,
+   uploads mip 0 directly, and maps
    untextured materials to a white fallback. The configured gallery now carries
    the M4a plitka output and its marble DDS into the render loop beside the generated
    probes, exercising the real BC1 upload and nonzero descriptor path without
@@ -1114,9 +1152,9 @@ each arrives with its own consumer.
    `test_sphere` exercises dense triangulation, its UV seam, and flat-face corner
    splitting; `test_smooth_sphere` pins shared normals over the same geometry and
    UV corner stream. Material-free inputs remain XRBM v1. XRBM v2 adds the
-   strict one-material alpha-tested profile used by `test_leaf_card`, carrying
+   strict one-material opaque-or-alpha-tested profile. `test_leaf_card` carries
    `trees\trees_new_vetka_green`, cutoff 128/255, and the one-time textured V
-   flip. All four canonical outputs are reproducible beneath
+   flip. The four regression outputs are reproducible beneath
    `build/<preset>/assets/blender/` and are independent optional gallery probes.
    The slice adds no second writer or runtime loader. A direct
    GLB-to-compiler adapter remains an optional later offline tool.
@@ -1184,6 +1222,38 @@ each arrives with its own consumer.
    the ordinary texture table, selects the alpha-tested SBT record, and visibly
    reveals the miss background where any-hit calls `IgnoreHit`. This closes the
    outstanding geometry-plan acceptance gap without a renderer-only fixture.
+
+7. **Scale-faithful opaque Blender barrel remake. Landed and gallery
+   validated.** `remade_bochka_close_1.blend` uses the same XRBM v2 geometry and
+   textured-V contract with material flags zero, producing one opaque geometry,
+   8,381 unified vertices, 47,832 indices / 15,944 triangles, logical texture
+   `xrphoton\remade_bochka_close_1_basecolor`, and no physics metadata. Its bounds
+   preserve the SoC barrel's meter scale for a translation-only comparison. The
+   separate proof runs real Blender twice and pins the 459,984-byte OGFx output
+   at SHA-256
+   `1e55ea5794b9bfeb879fff05b028a701dec9e0b57c3e9e77b4f2c8cc69ace688`.
+   The owner-local 1024×2048 DXT1 DDS has a complete 12-level mip chain, contains no
+   transparent BC1 selectors in mip 0, and is 1,398,248 bytes at SHA-256
+   `4affd371f0bdfde9ddc188735e930deee7f0b72c0a920083e700eec1e7d9307a`.
+   Runtime texture resolution overlays owner-local `blender/textures` ahead of the
+   owner-local legacy root, then places the remake directly beside the converted
+   original without scaling either one.
+
+8. **Original production-detail Stalker-style barrel. Landed and gallery
+   validated.** `custom_stalker_barrel` keeps the same XRBM v2/OGFx material
+   contract while replacing reference-copying with an original design. Its
+   dented 192-segment shell, three rolled ribs, recessed lid, asymmetric fill
+   and vent bungs, rear weld seam, and riveted warning plate are modeled into one
+   static mesh. The deterministic 591,456-byte OGFx output has SHA-256
+   `47f1451815bfbb9eaf546a3c0326038933fea07ce18eeb34f5a8814fd873ebe8`.
+   The temporary acceptance material uses the untouched 4096×4096 Poly Haven CC0
+   `rusty_metal_04` diffuse image and stores it as one uncompressed RGBA8 mip-0
+   level. Its canonical DDS is 67,108,992 bytes at
+   SHA-256
+   `089dd46cf7059cd28abca583290f03af1033c400c730614d6c6572c26503ecc2`.
+   The gallery places it translation-only beside the converted original and
+   scale-faithful remake, giving all three barrels the same runtime path and
+   directly comparable scale.
 
 The code-owned gallery table remains temporary placement policy until level/scene
 data has its real owner; it contains no geometry and never becomes an OGFx chunk.

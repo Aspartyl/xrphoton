@@ -472,6 +472,13 @@ VkResult createGpuScene(
                      "descriptor limits checked during device selection.\n";
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+    if (physicalDeviceProperties.limits.maxSamplerAnisotropy
+        < SceneTextureAnisotropy) {
+        std::cerr << "Physical device maxSamplerAnisotropy "
+                  << physicalDeviceProperties.limits.maxSamplerAnisotropy
+                  << " is below the required " << SceneTextureAnisotropy << "x.\n";
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
     if (!queryRequiredSceneTextureFormatSupport(physicalDevice).isComplete()) {
         std::cerr << "Physical device no longer satisfies the scene texture format "
                      "profile checked during device selection.\n";
@@ -527,6 +534,11 @@ VkResult createGpuScene(
     samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerCreateInfo.anisotropyEnable = VK_TRUE;
+    samplerCreateInfo.maxAnisotropy = SceneTextureAnisotropy;
+    // The current profile deliberately retains and uploads only mip 0. Explicit
+    // ray gradients still let anisotropy filter that level along an oblique
+    // footprint, while this clamp prevents access to nonexistent levels.
     samplerCreateInfo.maxLod = 0.0f;
     VkResult result = vkCreateSampler(
         device,

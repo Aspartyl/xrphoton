@@ -57,6 +57,53 @@ uint64_t levelSize(uint32_t width, uint32_t height, uint32_t blockSize)
     return blocksWide * blocksHigh * blockSize;
 }
 
+std::vector<uint8_t> makeRgba8Dds(
+    uint32_t width,
+    uint32_t height,
+    uint32_t mipCount = 1,
+    bool declareMipChain = false)
+{
+    uint64_t payloadSize = 0;
+    uint32_t mipWidth = width;
+    uint32_t mipHeight = height;
+    for (uint32_t level = 0; level < mipCount; ++level) {
+        payloadSize += uint64_t{mipWidth} * mipHeight * 4;
+        mipWidth = std::max<uint32_t>(1, mipWidth >> 1);
+        mipHeight = std::max<uint32_t>(1, mipHeight >> 1);
+    }
+
+    std::vector<uint8_t> bytes(static_cast<std::size_t>(128 + payloadSize), 0);
+    bytes[0] = 'D';
+    bytes[1] = 'D';
+    bytes[2] = 'S';
+    bytes[3] = ' ';
+    writeU32(&bytes, 4, 124);
+    uint32_t flags = 0x0000100F;
+    uint32_t caps = 0x00001000;
+    if (declareMipChain) {
+        flags |= 0x00020000;
+        caps |= 0x00400000;
+    }
+    writeU32(&bytes, 8, flags);
+    writeU32(&bytes, 12, height);
+    writeU32(&bytes, 16, width);
+    writeU32(&bytes, 20, width * 4);
+    writeU32(&bytes, 28, declareMipChain ? mipCount : 0);
+    writeU32(&bytes, 76, 32);
+    writeU32(&bytes, 80, 0x00000041);
+    writeU32(&bytes, 88, 32);
+    writeU32(&bytes, 92, 0x000000FF);
+    writeU32(&bytes, 96, 0x0000FF00);
+    writeU32(&bytes, 100, 0x00FF0000);
+    writeU32(&bytes, 104, 0xFF000000);
+    writeU32(&bytes, 108, caps);
+
+    for (std::size_t index = 128; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<uint8_t>((index - 128) & 0xFF);
+    }
+    return bytes;
+}
+
 std::vector<uint8_t> makeDds(
     uint32_t width,
     uint32_t height,
@@ -247,6 +294,29 @@ void testDdsDecode(const std::filesystem::path& directory)
     expect(loaded.image.pixels.size() == 32,
         "BC3 mip-0 size uses 16-byte blocks");
 
+    const std::vector<uint8_t> rgba8 = makeRgba8Dds(3, 2);
+    expect(writeFile(fixture, rgba8), "RGBA8 fixture writes");
+    loaded = xrphoton::loadTextureFile(fixture);
+    expect(static_cast<bool>(loaded), "canonical uncompressed RGBA8 DDS decodes");
+    expect(
+        loaded.image.format == xrphoton::SceneImageFormat::Rgba8Srgb,
+        "uncompressed RGBA8 maps to the CPU RGBA8 sRGB format");
+    expect(loaded.image.width == 3 && loaded.image.height == 2,
+        "RGBA8 dimensions survive decoding");
+    expect(loaded.image.pixels.size() == 24,
+        "RGBA8 mip-0 size is four bytes per texel");
+    expect(
+        loaded.image.pixels
+            == std::vector<uint8_t>(rgba8.begin() + 128, rgba8.end()),
+        "RGBA8 mip-0 channel bytes survive unchanged");
+
+    const std::vector<uint8_t> rgbaMipChain = makeRgba8Dds(4, 2, 3, true);
+    expect(writeFile(fixture, rgbaMipChain), "RGBA8 full mip-chain fixture writes");
+    loaded = xrphoton::loadTextureFile(fixture);
+    expect(static_cast<bool>(loaded), "declared complete RGBA8 mip chain frames exactly");
+    expect(loaded.image.pixels.size() == 32,
+        "only RGBA8 mip zero is retained from a validated complete chain");
+
     const std::vector<uint8_t> mipChain = makeDds(5, 3, FourCcDxt1, 3, true);
     expect(writeFile(fixture, mipChain), "full mip-chain fixture writes");
     loaded = xrphoton::loadTextureFile(fixture);
@@ -283,20 +353,40 @@ void testDdsDecode(const std::filesystem::path& directory)
 
     malformed = bc1;
     writeU32(&malformed, 80, 0);
-    expectDdsRejected(fixture, malformed, "DDPF_FOURCC",
-        "uncompressed pixel-format shape is rejected");
+    expectDdsRejected(fixture, malformed, "DDS_PIXELFORMAT.dwFlags",
+        "unknown pixel-format shape is rejected");
 
     malformed = bc1;
     writeU32(&malformed, 80, 0x00000044);
     writeU32(&malformed, 88, 32);
     writeU32(&malformed, 92, 0x00FF0000);
-    expectDdsRejected(fixture, malformed, "uncompressed masks",
+    expectDdsRejected(fixture, malformed, "expected exactly",
         "hybrid FOURCC and RGB-mask flags are rejected");
 
     malformed = bc1;
     writeU32(&malformed, 92, 0x00FF0000);
     expectDdsRejected(fixture, malformed, "color masks",
         "nonzero color masks are rejected even with a FOURCC-only flag word");
+
+    malformed = rgba8;
+    writeU32(&malformed, 92, 0x00FF0000);
+    expectDdsRejected(fixture, malformed, "RGBA8 layout",
+        "noncanonical RGBA8 channel masks are rejected");
+
+    malformed = rgba8;
+    writeU32(&malformed, 8, 0x00001007);
+    expectDdsRejected(fixture, malformed, "DDSD_PITCH",
+        "RGBA8 without a pitch flag is rejected");
+
+    malformed = rgba8;
+    writeU32(&malformed, 20, 16);
+    expectDdsRejected(fixture, malformed, "row pitch",
+        "RGBA8 with a noncanonical row pitch is rejected");
+
+    malformed = rgba8;
+    writeU32(&malformed, 84, FourCcDxt1);
+    expectDdsRejected(fixture, malformed, "expected zero",
+        "RGBA8 with a nonzero FOURCC is rejected");
 
     malformed = bc1;
     writeU32(&malformed, 84, FourCcDxt3);
@@ -427,6 +517,39 @@ void testSceneResolution(const std::filesystem::path& directory)
     expect(scene.images[2].format == xrphoton::SceneImageFormat::Bc3Srgb
             && scene.images[2].pixels[0] == 0x11,
         "second distinct BC3 image occupies scene image two");
+
+    const std::filesystem::path authoredRoot = directory / "authored-root";
+    const std::filesystem::path legacyRoot = directory / "legacy-root";
+    std::vector<uint8_t> legacyOverlay = makeDds(1, 1, FourCcDxt1);
+    legacyOverlay[128] = 0x55;
+    expect(writeFile(
+               legacyRoot / "overlay" / "shared.dds",
+               legacyOverlay),
+        "fallback overlay texture writes");
+    const std::array overlayRoots{authoredRoot, legacyRoot};
+    xrphoton::SceneData overlayScene{};
+    overlayScene.materials = {material("overlay\\shared")};
+    resolved = xrphoton::resolveSceneTexturesFromRoots(
+        &overlayScene, overlayRoots);
+    expect(static_cast<bool>(resolved)
+            && overlayScene.images.size() == 2
+            && overlayScene.images[1].pixels[0] == 0x55,
+        "ordered texture roots fall back to the first root containing the path");
+
+    std::vector<uint8_t> authoredOverlay = makeDds(1, 1, FourCcDxt1);
+    authoredOverlay[128] = 0x44;
+    expect(writeFile(
+               authoredRoot / "overlay" / "shared.dds",
+               authoredOverlay),
+        "primary overlay texture writes");
+    overlayScene = {};
+    overlayScene.materials = {material("overlay\\shared")};
+    resolved = xrphoton::resolveSceneTexturesFromRoots(
+        &overlayScene, overlayRoots);
+    expect(static_cast<bool>(resolved)
+            && overlayScene.images.size() == 2
+            && overlayScene.images[1].pixels[0] == 0x44,
+        "the earliest configured texture root deterministically shadows later roots");
 
     xrphoton::SceneData capped{};
     capped.materials = {

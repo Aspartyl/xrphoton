@@ -67,6 +67,10 @@ set(XRPHOTON_TEST_SMOOTH_SPHERE_ASSET
     ${XRPHOTON_BLENDER_ASSET_DIR}/test_smooth_sphere.ogfx)
 set(XRPHOTON_TEST_LEAF_CARD_ASSET
     ${XRPHOTON_BLENDER_ASSET_DIR}/test_leaf_card.ogfx)
+set(XRPHOTON_TEST_REMADE_BARREL_ASSET
+    ${XRPHOTON_BLENDER_ASSET_DIR}/remade_bochka_close_1.ogfx)
+set(XRPHOTON_TEST_CUSTOM_BARREL_ASSET
+    ${XRPHOTON_BLENDER_ASSET_DIR}/custom_stalker_barrel.ogfx)
 # Keep modern-content outputs separate from generated probes and migrated SoC
 # assets; each writer creates the deeper directories it owns.
 file(MAKE_DIRECTORY ${XRPHOTON_BLENDER_ASSET_DIR})
@@ -259,6 +263,70 @@ if(BUILD_TESTING)
         VERBATIM
         USES_TERMINAL
     )
+
+    set(XRPHOTON_BLENDER_REMADE_BARREL_BLEND
+        "${CMAKE_SOURCE_DIR}/blender/remade_bochka_close_1.blend" CACHE FILEPATH
+        "Local ignored high-fidelity barrel .blend used by its opt-in proof")
+    set(XRPHOTON_BLENDER_REMADE_BARREL_TEXTURE_ROOT
+        "${CMAKE_SOURCE_DIR}/blender/textures" CACHE PATH
+        "Authored DDS root used by the remade-barrel Blender proof")
+    set(XRPHOTON_BLENDER_REMADE_BARREL_TEXTURE_DDS
+        "${XRPHOTON_BLENDER_REMADE_BARREL_TEXTURE_ROOT}/xrphoton/remade_bochka_close_1_basecolor.dds"
+        CACHE FILEPATH
+        "Authored remade-barrel DXT1 texture pinned by its opt-in proof")
+    add_custom_target(xrPhotonRemadeBarrelOfflineProof
+        COMMAND ${CMAKE_COMMAND}
+            -DBLENDER_EXECUTABLE=${XRPHOTON_BLENDER_EXECUTABLE}
+            -DEXPORT_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/blender/export_ogfx.py
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DVERIFIER=$<TARGET_FILE:xrPhotonBlenderMeshTests>
+            -DSOURCE_BLEND=${XRPHOTON_BLENDER_REMADE_BARREL_BLEND}
+            -DTEXTURE_ROOT=${XRPHOTON_BLENDER_REMADE_BARREL_TEXTURE_ROOT}
+            -DTEXTURE_DDS=${XRPHOTON_BLENDER_REMADE_BARREL_TEXTURE_DDS}
+            -DOUTPUT_OGFX=${XRPHOTON_TEST_REMADE_BARREL_ASSET}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/remade_barrel_offline_proof.cmake
+        DEPENDS
+            xrPhotonAssetCompiler
+            xrPhotonBlenderMeshTests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/blender/export_ogfx.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/remade_barrel_offline_proof.cmake
+            ${XRPHOTON_BLENDER_REMADE_BARREL_TEXTURE_DDS}
+        COMMENT "Proving deterministic high-fidelity Blender barrel conversion offline"
+        VERBATIM
+        USES_TERMINAL
+    )
+
+    set(XRPHOTON_BLENDER_CUSTOM_BARREL_BLEND
+        "${CMAKE_SOURCE_DIR}/blender/custom_stalker_barrel.blend" CACHE FILEPATH
+        "Local ignored custom Stalker-style barrel .blend used by its opt-in proof")
+    set(XRPHOTON_BLENDER_CUSTOM_BARREL_TEXTURE_ROOT
+        "${CMAKE_SOURCE_DIR}/blender/textures" CACHE PATH
+        "Owner-local DDS root used by the custom-barrel Blender proof")
+    set(XRPHOTON_BLENDER_CUSTOM_BARREL_TEXTURE_DDS
+        "${XRPHOTON_BLENDER_CUSTOM_BARREL_TEXTURE_ROOT}/xrphoton/custom_stalker_barrel_basecolor.dds"
+        CACHE FILEPATH
+        "Owner-local Poly Haven scan-backed 4K RGBA8 texture pinned by its opt-in proof")
+    add_custom_target(xrPhotonCustomBarrelOfflineProof
+        COMMAND ${CMAKE_COMMAND}
+            -DBLENDER_EXECUTABLE=${XRPHOTON_BLENDER_EXECUTABLE}
+            -DEXPORT_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tools/blender/export_ogfx.py
+            -DASSET_COMPILER=$<TARGET_FILE:xrPhotonAssetCompiler>
+            -DVERIFIER=$<TARGET_FILE:xrPhotonBlenderMeshTests>
+            -DSOURCE_BLEND=${XRPHOTON_BLENDER_CUSTOM_BARREL_BLEND}
+            -DTEXTURE_ROOT=${XRPHOTON_BLENDER_CUSTOM_BARREL_TEXTURE_ROOT}
+            -DTEXTURE_DDS=${XRPHOTON_BLENDER_CUSTOM_BARREL_TEXTURE_DDS}
+            -DOUTPUT_OGFX=${XRPHOTON_TEST_CUSTOM_BARREL_ASSET}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/custom_barrel_offline_proof.cmake
+        DEPENDS
+            xrPhotonAssetCompiler
+            xrPhotonBlenderMeshTests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/blender/export_ogfx.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/custom_barrel_offline_proof.cmake
+            ${XRPHOTON_BLENDER_CUSTOM_BARREL_TEXTURE_DDS}
+        COMMENT "Proving deterministic custom Stalker-style Blender barrel conversion offline"
+        VERBATIM
+        USES_TERMINAL
+    )
 endif()
 
 option(XRPHOTON_BUILD_ENGINE "Build the Vulkan renderer executable" ON)
@@ -282,6 +350,10 @@ set(XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX "" CACHE FILEPATH
     "Optional converted Blender alpha-tested leaf card OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_BARREL_OGFX "" CACHE FILEPATH
     "Optional converted SoC closed barrel OGFx shown in the runtime gallery")
+set(XRPHOTON_GALLERY_REMADE_BARREL_OGFX "" CACHE FILEPATH
+    "Optional converted high-fidelity Blender barrel OGFx shown beside the SoC barrel")
+set(XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX "" CACHE FILEPATH
+    "Optional converted custom Blender barrel OGFx shown beside the comparison barrels")
 set(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX "" CACHE FILEPATH
     "Optional converted SoC pseudodog tail OGFx shown in the runtime gallery")
 set(XRPHOTON_GALLERY_TEXTURE_ROOT "" CACHE PATH
@@ -326,6 +398,20 @@ if(XRPHOTON_GALLERY_BARREL_OGFX)
         ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 else()
     set(XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_REMADE_BARREL_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_REMADE_BARREL_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_REMADE_BARREL_OGFX}"
+        ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_REMADE_BARREL_OGFX_ABSOLUTE "")
+endif()
+if(XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX)
+    get_filename_component(XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX_ABSOLUTE
+        "${XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX}"
+        ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+else()
+    set(XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX_ABSOLUTE "")
 endif()
 if(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX)
     get_filename_component(XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX_ABSOLUTE
@@ -466,7 +552,10 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BARREL_OGFX=u8\"${XRPHOTON_GALLERY_BARREL_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_REMADE_BARREL_OGFX=u8\"${XRPHOTON_GALLERY_REMADE_BARREL_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX=u8\"${XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=u8\"${XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX_ABSOLUTE}\"
+    XRPHOTON_GALLERY_AUTHORED_TEXTURE_ROOT=u8\"${CMAKE_CURRENT_SOURCE_DIR}/blender/textures\"
     XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"${XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE}\"
 )
 

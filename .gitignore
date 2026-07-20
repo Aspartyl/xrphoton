@@ -7,7 +7,7 @@ build/
 # Local X-Ray engine/build references
 /xray_builds/
 
-# Local Blender authoring files
+# Local Blender authoring files and textures
 /blender/
 
 # Python bytecode generated while checking Blender tooling

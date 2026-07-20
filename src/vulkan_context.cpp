@@ -172,6 +172,8 @@ struct RayTracingFeatureSupport
     bool hasBufferDeviceAddress = false;
     bool hasSampledImageArrayNonUniformIndexing = false;
     bool hasTextureCompressionBC = false;
+    bool hasSamplerAnisotropy = false;
+    bool hasRequiredSamplerAnisotropyLimit = false;
     bool hasAccelerationStructure = false;
     bool hasRayTracingPipeline = false;
 
@@ -182,6 +184,8 @@ struct RayTracingFeatureSupport
             && hasBufferDeviceAddress
             && hasSampledImageArrayNonUniformIndexing
             && hasTextureCompressionBC
+            && hasSamplerAnisotropy
+            && hasRequiredSamplerAnisotropyLimit
             && hasAccelerationStructure
             && hasRayTracingPipeline;
     }
@@ -220,6 +224,13 @@ RayTracingFeatureSupport queryRequiredRayTracingFeatureSupport(
         vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
     support.hasTextureCompressionBC =
         physicalDeviceFeatures.features.textureCompressionBC == VK_TRUE;
+    support.hasSamplerAnisotropy =
+        physicalDeviceFeatures.features.samplerAnisotropy == VK_TRUE;
+    VkPhysicalDeviceProperties physicalDeviceProperties{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+    support.hasRequiredSamplerAnisotropyLimit =
+        physicalDeviceProperties.limits.maxSamplerAnisotropy
+        >= SceneTextureAnisotropy;
     support.hasAccelerationStructure =
         accelerationStructureFeatures.accelerationStructure == VK_TRUE;
     support.hasRayTracingPipeline = rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
@@ -463,6 +474,17 @@ void reportPhysicalDeviceRejection(const PhysicalDeviceSuitability& suitability)
 
         if (!suitability.rayTracingFeatures.hasTextureCompressionBC) {
             std::cerr << "  - missing required feature textureCompressionBC\n";
+        }
+
+        if (!suitability.rayTracingFeatures.hasSamplerAnisotropy) {
+            std::cerr << "  - missing required feature samplerAnisotropy\n";
+        }
+
+        if (!suitability.rayTracingFeatures.hasRequiredSamplerAnisotropyLimit) {
+            std::cerr << "  - maxSamplerAnisotropy is "
+                      << suitability.properties.limits.maxSamplerAnisotropy
+                      << ", but the scene sampler requires "
+                      << SceneTextureAnisotropy << "x\n";
         }
 
         if (!suitability.rayTracingFeatures.hasAccelerationStructure) {
@@ -714,6 +736,7 @@ VkResult createLogicalDevice(
     deviceFeatures.pNext = &accelerationStructureFeatures;
     deviceFeatures.features.shaderInt64 = VK_TRUE;
     deviceFeatures.features.textureCompressionBC = VK_TRUE;
+    deviceFeatures.features.samplerAnisotropy = VK_TRUE;
 
     VkDeviceCreateInfo deviceCreateInfo{};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;

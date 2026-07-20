@@ -16,6 +16,7 @@ struct RayTracingFunctions;
 // Binding 4 in raytrace.slang has this fixed width. Keeping the CPU constant beside
 // the owned textures makes descriptor-limit and scene-size checks share one value.
 constexpr uint32_t MaxSceneTextures = 1024;
+constexpr float SceneTextureAnisotropy = 16.0f;
 
 // Device-address records consumed by raytrace.slang. Explicit offsets make the
 // CPU/shader ABI fail at compile time instead of becoming a silent GPU read bug.

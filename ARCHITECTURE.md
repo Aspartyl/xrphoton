@@ -28,21 +28,27 @@ shader path.
 The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`,
 `test_smooth_sphere.ogfx`, and alpha-tested `test_leaf_card.ogfx` are independent
 optional gallery assets. The converted regular `bochka_close_1.ogfx` adds its
-existing `mtl\mtl_barrel_01.dds`. The mixed `item_psevdodog_tail.ogfx` is the
-ninth model: its single
+existing `mtl\mtl_barrel_01.dds`; the adjacent scale-faithful Blender remake adds
+one opaque geometry using the owner-local
+`xrphoton\remade_bochka_close_1_basecolor.dds` and intentionally no physics
+metadata. The third adjacent drum, `custom_stalker_barrel.ogfx`, is an original
+192-segment dented design with modeled ribs, bungs, weld seam, riveted plate and
+warning bars, using Poly Haven's untouched 4K CC0 `rusty_metal_04` diffuse map
+in one owner-local uncompressed RGBA8 DDS and no physics metadata.
+The mixed `item_psevdodog_tail.ogfx` follows that three-barrel comparison: its single
 mesh contains one `models\model_aref` alpha-tested geometry and one
 `models\model` opaque geometry, sharing `act\act_pseudodog_fur` and one material
-whose cutoff is exactly 128/255. With all optional entries configured, nine
-models become ten placements through nine BLASes and contain eleven geometries;
+whose cutoff is exactly 128/255. With all optional entries configured, eleven
+models become twelve placements through eleven BLASes and contain thirteen geometries;
 the wedge remains the shared-BLAS probe. The sphere pair has identical indexed
 position/UV corner streams but deliberately different normals: flat-face splits
 versus shared smooth normals that remain split only at the UV seam.
 The three SoC gallery entries retain authored scale: plitka and the barrel use
 translation-only placement, and the tail adds rotation but no resize.
 
-The landed texture foundation validates strict DDS DXT1/DXT5 input, uploads BC1/BC3
-payloads directly, always supplies an opaque-white fallback at image zero, and
-exposes one fixed sampled-image descriptor array. The generated probes select the
+The landed texture foundation validates strict DDS DXT1/DXT5 and canonical
+uncompressed RGBA8 input, uploads mip-0 BC1/BC3/RGBA8 payloads directly, always
+supplies an opaque-white fallback at image zero, and exposes one fixed sampled-image descriptor array. The generated probes select the
 fallback; configured plitka selects a real nonzero image index. The tail adds
 per-geometry opaque/alpha-tested SBT selection, conditional BLAS opacity flags,
 and texture-alpha any-hit evaluation. Its shipped DDS has no transparent texels
@@ -76,9 +82,10 @@ inverse-transpose normal transformation, and reverses winding according to the
 combined object/axis-transform determinant before populating the ordinary compiler
 model. Only the shared canonical writer serializes OGFx. `test_pyramid`, the
 flat-shaded `test_sphere`, and `test_smooth_sphere` use the byte-compatible
-material-free XRBM v1 profile. XRBM v2 adds exactly one strict alpha-tested DDS
-material and is exercised by `test_leaf_card`; it carries the logical texture
-reference and cutoff and normalizes textured V once at the adapter boundary.
+material-free XRBM v1 profile. XRBM v2 adds exactly one strict opaque or
+alpha-tested DDS material; `test_leaf_card` exercises the alpha-tested branch and
+the remade barrel exercises opaque texturing. It carries the logical texture
+reference and classification/cutoff and normalizes textured V once at the adapter boundary.
 The sphere pair exercises dense triangulation, UV seams, corner splitting, and
 flat-versus-smooth normal preservation; the leaf card visibly proves any-hit
 rejection through the same runtime path as legacy content.
@@ -149,13 +156,13 @@ stage; the diagram shows the frame-path layering.)
 | [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only render/physics model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; backend-neutral physics records contain no live backend state |
 | [src/legacy_ogf.hpp](src/legacy_ogf.hpp), [src/legacy_ogf.cpp](src/legacy_ogf.cpp), and [src/legacy_ogf_rigid.cpp](src/legacy_ogf_rigid.cpp) | Transactional source dispatch for the pinned M4a flat-static and narrow SoC rigid-compound OGF v4 profiles; the rigid branch flattens validated bind-pose render data, maps `models\model`/`models\model_aref` to opaque/alpha-tested geometry, and retains box-or-cylinder body metadata without owning OGFx serialization | Offline-only source adapters in the graphics-free build |
 | [src/blender_mesh.hpp](src/blender_mesh.hpp) / [.cpp](src/blender_mesh.cpp) | Transactional decoder for the private versioned `XRBM` extraction stream; validates the narrow static profile, bakes units/transforms, converts axes, normals, and winding, deduplicates corners, and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build; no Blender or renderer dependency |
-| [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named static mesh; emits material-free XRBM v1 or the strict one-alpha-tested-DDS-material v2 profile, invokes `convert-blender`, and supplies the exchange on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
+| [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named static mesh; emits material-free XRBM v1 or the strict one-opaque-or-alpha-tested-DDS-material v2 profile, invokes `convert-blender`, and supplies the exchange on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
 | [tools/asset_compiler.cpp](tools/asset_compiler.cpp) | `xrPhotonAssetCompiler convert-ogf` / `convert-blender` dispatch, bounded source input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render data into owned `SceneData`; optional physics metadata is validated upstream but deliberately has no scene/backend consumer yet; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
-| [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5 framing and mip-0 decode, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
+| [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned `RayTypeCount` constant and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; currently fixed at one radiance ray type |
-| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
+| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/probes/test_quad.ogfx` and `assets/probes/test_wedge.ogfx` in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (N-instance buffer, vector of BLAS handles/backings, TLAS, and shared scratch arena) and `buildAccelerationStructures` over borrowed `GpuScene` geometry, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — built once at startup |
@@ -411,7 +418,8 @@ trace dispatch gate), not a real capability query.
 The feature chain uses `VkPhysicalDeviceVulkan12Features` for both
 `bufferDeviceAddress` and `shaderSampledImageArrayNonUniformIndexing`, alongside
 the ray-tracing-pipeline and acceleration-structure extension structs. Core
-`VkPhysicalDeviceFeatures` carries `shaderInt64` and `textureCompressionBC`.
+`VkPhysicalDeviceFeatures` carries `shaderInt64`, `textureCompressionBC`, and
+`samplerAnisotropy`.
 Selection queries this exact chain and device creation reuses it with the required
 bits enabled; the standalone buffer-device-address feature struct is deliberately
 absent because chaining both promoted forms is invalid.
@@ -422,7 +430,9 @@ and `maxPerStageResources` must cover the array plus the two hit-stage SSBOs. Fo
 RGBA8-sRGB, BC1-sRGB, and BC3-sRGB, selection requires optimal-tiling sampled,
 linear-filter, and transfer-destination format features and confirms the exact 2D
 optimal `SAMPLED | TRANSFER_DST` image-creation tuple. Actual image extents are
-later gated against that tuple's returned `maxExtent` at `GpuScene` creation.
+later gated against that tuple's returned `maxExtent` at `GpuScene` creation. The
+device must expose the feature and limit required by the shared 16× anisotropic
+scene sampler.
 
 ### Queue families
 
@@ -642,8 +652,8 @@ needs deeper overlap.
 
 The ray tracing scene contains one **BLAS per `SceneMesh`** and one **TLAS entry
 per `SceneInstance`**. The generated-only gallery builds two different BLASes and
-three TLAS instances; the fully configured gallery builds nine BLASes and ten
-TLAS instances over eleven geometries. In both cases the two wedge placements
+three TLAS instances; the fully configured gallery builds eleven BLASes and twelve
+TLAS instances over thirteen geometries. In both cases the two wedge placements
 reference the same BLAS address. The barrel's cylinder metadata and the tail's
 box metadata do not alter this startup-only render structure. The structures are
 built once by `buildAccelerationStructures` after
@@ -694,16 +704,21 @@ Decisions and contracts worth preserving:
   the barrier's second scope is what makes the copy visible to later queue submissions,
   so neither the AS build nor frame path needs an upload-specific barrier.
 - **Sampled scene textures.** The Vulkan-free resolver always creates image 0 as a
-  1×1 opaque-white RGBA8-sRGB fallback, then appends deduplicated BC1/BC3 images in
+  1×1 opaque-white RGBA8-sRGB fallback, then appends deduplicated
+  BC1/BC3/uncompressed-RGBA8 images in
   first-material-use order. `GpuScene` reserves ownership before creation, uploads
   each exact mip-0 payload through a transient staging buffer, and records
   `UNDEFINED → TRANSFER_DST_OPTIMAL`, the tightly packed buffer-to-image copy, then
   `TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL` with ray-tracing-shader read
   visibility. A failed post-submit fence wait device-idles before transient staging
   memory can die. Views are created after all images and the shared linear-repeat,
-  max-Lod-0 sampler last, giving strict reverse teardown. Compressed payloads stay
-  compressed in device memory; no runtime DXT decompression or mip generation exists.
-  Both closest-hit and alpha-tested any-hit sample this same table. The tail's
+  16×-anisotropic, max-Lod-0 sampler last, giving strict reverse teardown.
+  Compressed payloads stay compressed in device memory; no runtime DXT
+  decompression or mip generation exists. Ray generation carries neighboring
+  primary-ray directions to hit stages; they reconstruct explicit UV gradients so
+  `SampleGrad` can apply anisotropy despite ray tracing having no implicit fragment
+  derivatives. The gradients still clamp to the sole uploaded mip 0. Both
+  closest-hit and alpha-tested any-hit sample this same table. The tail's
   shipped DDS is fully opaque at mip 0, so it exercises the any-hit sample and
   cutoff comparison without taking the visible `IgnoreHit` branch. The leaf
   card resolves a DXT1 mip with both opaque and transparent samples and visibly
@@ -968,14 +983,18 @@ Decisions and contracts worth preserving:
    optional configured gallery additionally loads the verified legacy-converted
    `plitka1.ogfx`, resolves its BC1 texture, and carries it into the render loop
    beside those probes. The alpha-tested Blender leaf card closes the visible
-   any-hit acceptance gap. Plain, GPU-assisted, and synchronization validation
+   any-hit acceptance gap. The opaque-textured, scale-faithful Blender barrel
+   remake adds the first newly authored comparison asset beside the converted
+   SoC barrel; the original custom barrel then exercises full art-direction
+   freedom without changing the format. Plain, GPU-assisted, and synchronization validation
    are clean, and the complete configured gallery has been visually checked.
    The wedge remains the repository-owned multi-geometry/shared-BLAS regression
    asset; it is not displaced by later content entries.
 
    The permanent additive content ordering is **quad → plitka1 → Blender
    pyramid/spheres → Blender leaf card → wedge probes →
-   `bochka_close_1` → `item_psevdodog_tail`**. The
+   `bochka_close_1` → remade `bochka_close_1` → custom Stalker barrel →
+   `item_psevdodog_tail`**. The
    gallery is a preview/integration scene, not another format or runtime path:
    every entry travels through the same OGFx
    decoder, `SceneData`, GPU upload, BLAS/TLAS construction, material/texture
@@ -985,7 +1004,9 @@ Decisions and contracts worth preserving:
    `test_pyramid.ogfx`, the flat-shaded dense-triangulation/UV-seam/corner-
    splitting `test_sphere.ogfx`, and its smooth-normal comparison
    `test_smooth_sphere.ogfx`, plus the alpha-tested
-   `test_leaf_card.ogfx`, for the optional gallery beneath
+   `test_leaf_card.ogfx` and opaque-textured
+   `remade_bochka_close_1.ogfx` / `custom_stalker_barrel.ogfx`, for the optional
+   gallery beneath
    `build/<preset>/assets/blender/`. The leaf uses strict XRBM v2 material
    metadata and `trees\trees_new_vetka_green`; its transparent DXT1 samples
    visibly execute `IgnoreHit`. The direct legacy path now also produces
@@ -996,8 +1017,9 @@ Decisions and contracts worth preserving:
    gallery row without any source-specific runtime branch. The tail conversion
    emits one mesh with two geometries—`models\model_aref` alpha-tested and
    `models\model` opaque—sharing `act\act_pseudodog_fur`, a material cutoff of
-   128/255, and one preserved box-body recipe. It is gallery model nine and
-   placement ten; the complete configured scene has eleven geometries. The tail's
+   128/255, and one preserved box-body recipe. It follows the barrel comparison
+   trio; the complete configured scene has eleven BLASes, twelve instances, and
+   thirteen geometries. The tail's
    mip-0 texels are all opaque, so the milestone proves mixed SBT routing and
    sampled-alpha any-hit execution; the leaf provides the visible cutout proof.
    The temporary code-owned tables

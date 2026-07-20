@@ -47,6 +47,8 @@ enum GalleryAssetIndex : uint32_t
     BlenderSmoothSphereAsset,
     BlenderLeafCardAsset,
     BarrelAsset,
+    RemadeBarrelAsset,
+    CustomBarrelAsset,
     PseudodogTailAsset,
 };
 
@@ -110,6 +112,18 @@ constexpr std::array GalleryAssets{
         .configurationName = "XRPHOTON_GALLERY_BARREL_OGFX",
     },
     GalleryAsset{
+        .name = "remade_bochka_close_1",
+        .ogfxPath = XRPHOTON_GALLERY_REMADE_BARREL_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_REMADE_BARREL_OGFX",
+    },
+    GalleryAsset{
+        .name = "custom_stalker_barrel",
+        .ogfxPath = XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX",
+    },
+    GalleryAsset{
         .name = "item_psevdodog_tail",
         .ogfxPath = XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX,
         .optional = true,
@@ -121,52 +135,52 @@ static_assert(PseudodogTailAsset + 1 == GalleryAssets.size());
 const std::array GalleryPlacements{
     // Place every preview's vertical center on the y=0 screen row and keep every
     // placement origin at z=8.5. These X positions come from the actual compiled
-    // vertices: at the startup 16:9 camera they center the complete ten-placement
+    // vertices: at the startup 16:9 camera they center the complete twelve-placement
     // row and leave at least a 0.014-NDC gap between adjacent silhouettes.
     GalleryPlacement{
         .assetIndex = QuadAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-10.010300f, 0.0f, 8.5f}),
+            glm::vec3{-10.904300f, 0.0f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = PlitkaAsset,
         // Preserve the SoC model's authored size: gallery policy only translates it.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-9.348670f, -1.431630f, 8.5f}),
+            glm::vec3{-10.242670f, -1.431630f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderPyramidAsset,
         // Perspective-center the source Y=[0, 2] bounds on the preview row.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-5.816400f, -0.950000f, 8.5f}),
+            glm::vec3{-6.710400f, -0.950000f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-3.535670f, 0.0f, 8.5f}),
+            glm::vec3{-4.429670f, 0.0f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSmoothSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-0.886175f, 0.0f, 8.5f}),
+            glm::vec3{-1.780175f, 0.0f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderLeafCardAsset,
         // The source card is X=[-1, 1], Y=[0, 2] after conversion.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{1.692470f, -1.0f, 8.5f}),
+            glm::vec3{0.798470f, -1.0f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{3.929450f, 0.0f, 8.5f}),
+            glm::vec3{3.035450f, 0.0f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
@@ -174,7 +188,7 @@ const std::array GalleryPlacements{
         // rotate around world-up, then move the result into the gallery row.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{6.710800f, -0.019107f, 8.5f})
+                         glm::vec3{5.816800f, -0.019107f, 8.5f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(30.0f),
@@ -189,7 +203,25 @@ const std::array GalleryPlacements{
         // Y=[0.001489, 1.090266] bounds on the row.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{9.242240f, -0.538824f, 8.5f}),
+            glm::vec3{8.348240f, -0.538824f, 8.5f}),
+    },
+    GalleryPlacement{
+        .assetIndex = RemadeBarrelAsset,
+        // The replacement deliberately preserves the SoC barrel's authored
+        // dimensions; translate only, so the adjacent pair is a scale-faithful
+        // visual quality comparison.
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{9.242240f, -0.537940f, 8.5f}),
+    },
+    GalleryPlacement{
+        .assetIndex = CustomBarrelAsset,
+        // This is a new design rather than a remake, but it intentionally keeps
+        // the same believable one-metre drum scale. Translate only so all three
+        // barrels remain an honest side-by-side comparison.
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{10.136240f, -0.549017f, 8.5f}),
     },
     GalleryPlacement{
         .assetIndex = PseudodogTailAsset,
@@ -197,7 +229,7 @@ const std::array GalleryPlacements{
         // then translate it into the row; rotation does not alter scale.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{10.407000f, 0.007708f, 8.5f})
+                         glm::vec3{11.301000f, 0.007708f, 8.5f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(90.0f),
@@ -350,8 +382,12 @@ GalleryLoadResult loadGalleryScene()
             return fail("Gallery scene validation failed: " + assemblyError);
         }
 
-        const std::filesystem::path textureRoot{XRPHOTON_GALLERY_TEXTURE_ROOT};
-        const ResolveTexturesResult textures = resolveSceneTextures(&scene, textureRoot);
+        const std::array textureRoots{
+            std::filesystem::path{XRPHOTON_GALLERY_AUTHORED_TEXTURE_ROOT},
+            std::filesystem::path{XRPHOTON_GALLERY_TEXTURE_ROOT},
+        };
+        const ResolveTexturesResult textures = resolveSceneTexturesFromRoots(
+            &scene, textureRoots);
         if (!textures) {
             if (textures.failedMaterial.has_value()) {
                 const uint64_t failedMaterial = *textures.failedMaterial;

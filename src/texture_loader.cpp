@@ -9,6 +9,7 @@
 #include <fstream>
 #include <limits>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -27,13 +28,16 @@ constexpr std::size_t DdsFileHeaderSize = 128;
 constexpr uint32_t DdsdCaps = 0x00000001;
 constexpr uint32_t DdsdHeight = 0x00000002;
 constexpr uint32_t DdsdWidth = 0x00000004;
+constexpr uint32_t DdsdPitch = 0x00000008;
 constexpr uint32_t DdsdPixelFormat = 0x00001000;
 constexpr uint32_t DdsdMipMapCount = 0x00020000;
 constexpr uint32_t DdsdDepth = 0x00800000;
 constexpr uint32_t RequiredDdsFlags =
     DdsdCaps | DdsdHeight | DdsdWidth | DdsdPixelFormat;
 
+constexpr uint32_t DdpfAlphaPixels = 0x00000001;
 constexpr uint32_t DdpfFourCc = 0x00000004;
+constexpr uint32_t DdpfRgb = 0x00000040;
 constexpr uint32_t DdsCapsTexture = 0x00001000;
 constexpr uint32_t DdsCapsMipMap = 0x00400000;
 constexpr uint32_t DdsCaps2CubeMap = 0x00000200;
@@ -106,11 +110,16 @@ uint32_t fullMipCount(uint32_t width, uint32_t height)
     return count;
 }
 
-uint64_t levelByteSize(uint32_t width, uint32_t height, uint32_t blockSize)
+uint64_t blockLevelByteSize(uint32_t width, uint32_t height, uint32_t blockSize)
 {
     const uint64_t blockWidth = std::max<uint64_t>(1, (uint64_t{width} + 3) / 4);
     const uint64_t blockHeight = std::max<uint64_t>(1, (uint64_t{height} + 3) / 4);
     return blockWidth * blockHeight * blockSize;
+}
+
+uint64_t rgba8LevelByteSize(uint32_t width, uint32_t height)
+{
+    return uint64_t{width} * height * 4;
 }
 
 TextureLoadResult rejectLoad(std::string error)
@@ -324,33 +333,60 @@ TextureLoadResult loadTextureFile(const std::filesystem::path& path)
                 + std::to_string(readU32(header, 76)));
         }
         const uint32_t pixelFlags = readU32(header, 80);
-        if (pixelFlags != DdpfFourCc) {
-            return rejectLoad(
-                "DDS_PIXELFORMAT.dwFlags: expected exactly DDPF_FOURCC; "
-                "uncompressed masks, palettes, and extra format flags are unsupported");
-        }
-        if (readU32(header, 88) != 0
-            || readU32(header, 92) != 0
-            || readU32(header, 96) != 0
-            || readU32(header, 100) != 0
-            || readU32(header, 104) != 0) {
-            return rejectLoad(
-                "DDS_PIXELFORMAT RGB bit count/color masks: expected zero for DXT1/DXT5");
-        }
-
         const uint32_t fourCc = readU32(header, 84);
         uint32_t blockSize = 0;
+        bool isRgba8 = false;
         SceneImageFormat format = SceneImageFormat::Rgba8Srgb;
-        if (fourCc == FourCcDxt1) {
-            blockSize = 8;
-            format = SceneImageFormat::Bc1RgbaSrgb;
-        } else if (fourCc == FourCcDxt5) {
-            blockSize = 16;
-            format = SceneImageFormat::Bc3Srgb;
+        if (pixelFlags == DdpfFourCc) {
+            if (readU32(header, 88) != 0
+                || readU32(header, 92) != 0
+                || readU32(header, 96) != 0
+                || readU32(header, 100) != 0
+                || readU32(header, 104) != 0) {
+                return rejectLoad(
+                    "DDS_PIXELFORMAT RGB bit count/color masks: expected zero for DXT1/DXT5");
+            }
+            if (fourCc == FourCcDxt1) {
+                blockSize = 8;
+                format = SceneImageFormat::Bc1RgbaSrgb;
+            } else if (fourCc == FourCcDxt5) {
+                blockSize = 16;
+                format = SceneImageFormat::Bc3Srgb;
+            } else {
+                return rejectLoad(
+                    "DDS_PIXELFORMAT.dwFourCC: unsupported fourCC '"
+                    + fourCcName(fourCc) + "' (expected DXT1 or DXT5)");
+            }
+        } else if (pixelFlags == (DdpfRgb | DdpfAlphaPixels)) {
+            if (fourCc != 0) {
+                return rejectLoad(
+                    "DDS_PIXELFORMAT.dwFourCC: expected zero for uncompressed RGBA8");
+            }
+            if (readU32(header, 88) != 32
+                || readU32(header, 92) != 0x000000FF
+                || readU32(header, 96) != 0x0000FF00
+                || readU32(header, 100) != 0x00FF0000
+                || readU32(header, 104) != 0xFF000000) {
+                return rejectLoad(
+                    "DDS_PIXELFORMAT RGBA8 layout: expected 32 bits and canonical "
+                    "little-endian R/G/B/A masks");
+            }
+            if ((flags & DdsdPitch) == 0) {
+                return rejectLoad(
+                    "DDS_HEADER.dwFlags: DDSD_PITCH is required for uncompressed RGBA8");
+            }
+            const uint64_t expectedPitch = uint64_t{width} * 4;
+            if (readU32(header, 20) != expectedPitch) {
+                return rejectLoad(
+                    "DDS_HEADER.dwPitchOrLinearSize: expected RGBA8 row pitch "
+                    + std::to_string(expectedPitch) + ", found "
+                    + std::to_string(readU32(header, 20)));
+            }
+            isRgba8 = true;
         } else {
             return rejectLoad(
-                "DDS_PIXELFORMAT.dwFourCC: unsupported fourCC '"
-                + fourCcName(fourCc) + "' (expected DXT1 or DXT5)");
+                "DDS_PIXELFORMAT.dwFlags: expected exactly DDPF_FOURCC for "
+                "DXT1/DXT5 or DDPF_RGB|DDPF_ALPHAPIXELS for RGBA8");
         }
 
         const uint32_t caps = readU32(header, 108);
@@ -381,12 +417,19 @@ TextureLoadResult loadTextureFile(const std::filesystem::path& path)
                 "DDS mip framing: dwMipMapCount declares multiple levels without mip flags/caps");
         }
 
-        const uint64_t mipZeroSize = levelByteSize(width, height, blockSize);
+        const auto levelByteSize = [isRgba8, blockSize](
+                                       uint32_t levelWidth,
+                                       uint32_t levelHeight) {
+            return isRgba8
+                ? rgba8LevelByteSize(levelWidth, levelHeight)
+                : blockLevelByteSize(levelWidth, levelHeight, blockSize);
+        };
+        const uint64_t mipZeroSize = levelByteSize(width, height);
         uint64_t payloadSize = 0;
         uint32_t mipWidth = width;
         uint32_t mipHeight = height;
         for (uint32_t level = 0; level < declaredMipCount; ++level) {
-            payloadSize += levelByteSize(mipWidth, mipHeight, blockSize);
+            payloadSize += levelByteSize(mipWidth, mipHeight);
             mipWidth = std::max<uint32_t>(1, mipWidth >> 1);
             mipHeight = std::max<uint32_t>(1, mipHeight >> 1);
         }
@@ -428,11 +471,27 @@ TextureLoadResult loadTextureFile(const std::filesystem::path& path)
     }
 }
 
+static ResolveTexturesResult resolveSceneTexturesWithRootsAndByteLimit(
+    SceneData* scene,
+    std::span<const std::filesystem::path> textureRoots,
+    uint64_t byteLimit);
+
 namespace texture_loader_detail
 {
 ResolveTexturesResult resolveSceneTexturesWithByteLimit(
     SceneData* scene,
     const std::filesystem::path& textureRoot,
+    uint64_t byteLimit)
+{
+    const std::array textureRoots{textureRoot};
+    return resolveSceneTexturesWithRootsAndByteLimit(
+        scene, textureRoots, byteLimit);
+}
+}
+
+static ResolveTexturesResult resolveSceneTexturesWithRootsAndByteLimit(
+    SceneData* scene,
+    std::span<const std::filesystem::path> textureRoots,
     uint64_t byteLimit)
 {
     if (scene == nullptr) {
@@ -469,7 +528,11 @@ ResolveTexturesResult resolveSceneTexturesWithByteLimit(
                 continue;
             }
 
-            if (textureRoot.empty()) {
+            const bool hasConfiguredRoot = std::any_of(
+                textureRoots.begin(),
+                textureRoots.end(),
+                [](const std::filesystem::path& root) { return !root.empty(); });
+            if (!hasConfiguredRoot) {
                 return rejectResolve(
                     materialPrefix(materialIndex, reference)
                         + ": texture root is not configured (expected "
@@ -493,7 +556,35 @@ ResolveTexturesResult resolveSceneTexturesWithByteLimit(
                 continue;
             }
 
-            const std::filesystem::path resolvedPath = textureRoot / relativePath;
+            std::filesystem::path resolvedPath;
+            for (const std::filesystem::path& textureRoot : textureRoots) {
+                if (textureRoot.empty()) {
+                    continue;
+                }
+                const std::filesystem::path candidate = textureRoot / relativePath;
+                std::error_code statusError;
+                const bool isFile = std::filesystem::is_regular_file(
+                    candidate, statusError);
+                if (statusError
+                    && statusError
+                        != std::make_error_code(
+                            std::errc::no_such_file_or_directory)
+                    && statusError
+                        != std::make_error_code(std::errc::not_a_directory)) {
+                    return rejectResolve(
+                        materialPrefix(materialIndex, reference)
+                            + ": could not inspect candidate "
+                            + candidate.string() + ": " + statusError.message(),
+                        materialIndex);
+                }
+                if (resolvedPath.empty()) {
+                    resolvedPath = candidate;
+                }
+                if (isFile) {
+                    resolvedPath = candidate;
+                    break;
+                }
+            }
             TextureLoadResult loaded = loadTextureFile(resolvedPath);
             if (!loaded) {
                 return rejectResolve(
@@ -538,7 +629,6 @@ ResolveTexturesResult resolveSceneTexturesWithByteLimit(
         return rejectResolve("texture resolver: resource allocation failed");
     }
 }
-}
 
 ResolveTexturesResult resolveSceneTextures(
     SceneData* scene,
@@ -547,6 +637,16 @@ ResolveTexturesResult resolveSceneTextures(
     return texture_loader_detail::resolveSceneTexturesWithByteLimit(
         scene,
         textureRoot,
+        MaxSceneTextureBytes);
+}
+
+ResolveTexturesResult resolveSceneTexturesFromRoots(
+    SceneData* scene,
+    std::span<const std::filesystem::path> textureRoots)
+{
+    return resolveSceneTexturesWithRootsAndByteLimit(
+        scene,
+        textureRoots,
         MaxSceneTextureBytes);
 }
 }

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -28,7 +29,8 @@ struct TextureLoadResult
     explicit operator bool() const { return error.empty(); }
 };
 
-// Read and strictly validate the Phase-4 DDS profile, retaining mip 0 only.
+// Read and strictly validate the DDS DXT1, DXT5, or canonical uncompressed RGBA8
+// profile, retaining mip 0 only.
 [[nodiscard]] TextureLoadResult loadTextureFile(const std::filesystem::path& path);
 
 struct ResolveTexturesResult
@@ -44,4 +46,12 @@ struct ResolveTexturesResult
 [[nodiscard]] ResolveTexturesResult resolveSceneTextures(
     SceneData* scene,
     const std::filesystem::path& textureRoot);
+
+// Resolve against an ordered overlay of roots. The first root containing a
+// logical path owns it; this lets the development gallery combine tracked
+// xrPhoton-authored textures with owner-local legacy game data without copying
+// either tree or changing persistent material references.
+[[nodiscard]] ResolveTexturesResult resolveSceneTexturesFromRoots(
+    SceneData* scene,
+    std::span<const std::filesystem::path> textureRoots);
 }
