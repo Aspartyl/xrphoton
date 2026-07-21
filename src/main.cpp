@@ -26,6 +26,12 @@ constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
 constexpr double MaxFrameDt = 0.1;
+bool framebufferResized = false;
+
+void markFramebufferResized(GLFWwindow*, int, int)
+{
+    framebufferResized = true;
+}
 
 // Compile-time request from the XRPHOTON_ENABLE_VALIDATION CMake option. The runtime
 // decision (validationEnabled in main) additionally requires the layer and debug-utils
@@ -311,6 +317,11 @@ int main()
               << swap.extent.width << 'x'
               << swap.extent.height << ").\n";
 
+    // Do not rely solely on acquire/present to report a stale Wayland swapchain:
+    // some compositor/driver pairs keep accepting and scaling it after a resize.
+    framebufferResized = false;
+    glfwSetFramebufferSizeCallback(ctx.window, markFramebufferResized);
+
     const VkResult commandPoolResult = createCommandPool(
         ctx.device,
         queueFamilies,
@@ -393,6 +404,7 @@ int main()
         rayTracingFunctions,
         sceneData,
         gpuScene,
+        MaxFramesInFlight,
         ctx.frames[0].commandBuffer,
         traceQueue,
         ctx.frames[0].inFlightFence);
@@ -464,7 +476,8 @@ int main()
         .traceQueue = traceQueue,
         .presentQueue = presentQueue,
         .frames = ctx.frames.data(),
-        .tlas = accelerationStructure.tlas,
+        .accel = &accelerationStructure,
+        .scene = &sceneData,
         .functions = &rayTracingFunctions,
         .rtPipeline = &rtPipeline,
         .swap = &swap,
@@ -484,8 +497,13 @@ int main()
         glfwSetInputMode(ctx.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
-    Camera camera;
+    Camera camera{
+        .position = loadedGallery.spawn.position,
+        .yaw = loadedGallery.spawn.yaw,
+        .pitch = loadedGallery.spawn.pitch,
+    };
     double lastTime = glfwGetTime();
+    double simulationTime = 0.0;
     uint32_t currentFrame = 0;
 
     while (!glfwWindowShouldClose(ctx.window)) {
@@ -494,16 +512,24 @@ int main()
         const double now = glfwGetTime();
         const float dt = static_cast<float>(std::min(now - lastTime, MaxFrameDt));
         lastTime = now;
+        simulationTime += dt;
 
         updateCamera(&camera, ctx.window, dt);
 
+        sceneData.instances[loadedGallery.animatedInstance].transform =
+            yardAnimatedTransform(simulationTime);
+
         const float aspect = static_cast<float>(swap.extent.width)
             / static_cast<float>(swap.extent.height);
-        const VkResult frameResult = drawFrame(
-            renderer,
-            currentFrame,
-            makeCameraPushConstants(camera, aspect));
-        currentFrame = (currentFrame + 1) % MaxFramesInFlight;
+
+        VkResult frameResult = VK_ERROR_OUT_OF_DATE_KHR;
+        if (!framebufferResized) {
+            frameResult = drawFrame(
+                renderer,
+                currentFrame,
+                makeCameraPushConstants(camera, aspect));
+            currentFrame = (currentFrame + 1) % MaxFramesInFlight;
+        }
 
         // The surface no longer matches the swapchain (typically a resize): rebuild it
         // and skip presenting this frame.
@@ -531,6 +557,7 @@ int main()
                 return 1;
             }
 
+            framebufferResized = false;
             continue;
         }
 

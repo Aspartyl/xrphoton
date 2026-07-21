@@ -1,5 +1,6 @@
 #include "ogfx.hpp"
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,6 +10,128 @@
 
 namespace
 {
+xrphoton::ogfx::Model buildAxisAlignedBox(
+    xrphoton::ogfx::Position minimum,
+    xrphoton::ogfx::Position maximum,
+    const std::array<float, 4>& baseColorFactor)
+{
+    using namespace xrphoton::ogfx;
+
+    Model model{};
+    // Each face owns four vertices so its normal and complete 0..1 UV square are
+    // unambiguous. Vertices and triangles are ordered counter-clockwise when
+    // viewed from outside the box.
+    model.positions = {
+        // -X
+        {minimum.x, minimum.y, minimum.z},
+        {minimum.x, minimum.y, maximum.z},
+        {minimum.x, maximum.y, maximum.z},
+        {minimum.x, maximum.y, minimum.z},
+        // +X
+        {maximum.x, minimum.y, maximum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, maximum.y, minimum.z},
+        {maximum.x, maximum.y, maximum.z},
+        // -Y
+        {minimum.x, minimum.y, maximum.z},
+        {minimum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, maximum.z},
+        // +Y
+        {minimum.x, maximum.y, minimum.z},
+        {minimum.x, maximum.y, maximum.z},
+        {maximum.x, maximum.y, maximum.z},
+        {maximum.x, maximum.y, minimum.z},
+        // -Z
+        {maximum.x, minimum.y, minimum.z},
+        {minimum.x, minimum.y, minimum.z},
+        {minimum.x, maximum.y, minimum.z},
+        {maximum.x, maximum.y, minimum.z},
+        // +Z
+        {minimum.x, minimum.y, maximum.z},
+        {maximum.x, minimum.y, maximum.z},
+        {maximum.x, maximum.y, maximum.z},
+        {minimum.x, maximum.y, maximum.z},
+    };
+
+    constexpr std::array<std::array<float, 3>, 6> FaceNormals{{
+        {-1.0f,  0.0f,  0.0f},
+        { 1.0f,  0.0f,  0.0f},
+        { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  1.0f,  0.0f},
+        { 0.0f,  0.0f, -1.0f},
+        { 0.0f,  0.0f,  1.0f},
+    }};
+    constexpr std::array<std::array<float, 2>, 4> FaceUvs{{
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},
+        {1.0f, 1.0f},
+        {0.0f, 1.0f},
+    }};
+    model.attributes.reserve(24);
+    model.indices.reserve(36);
+    for (std::uint32_t face = 0; face < FaceNormals.size(); ++face) {
+        for (const std::array<float, 2>& uv : FaceUvs) {
+            model.attributes.push_back({
+                FaceNormals[face][0],
+                FaceNormals[face][1],
+                FaceNormals[face][2],
+                uv[0],
+                uv[1],
+            });
+        }
+        const std::uint32_t firstVertex = face * 4;
+        model.indices.insert(model.indices.end(), {
+            firstVertex,
+            firstVertex + 1,
+            firstVertex + 2,
+            firstVertex,
+            firstVertex + 2,
+            firstVertex + 3,
+        });
+    }
+
+    model.geometries.push_back({
+        .firstVertex = 0,
+        .vertexCount = 24,
+        .firstIndex = 0,
+        .indexCount = 36,
+        .materialIndex = 0,
+        .alphaTested = false,
+    });
+    model.meshes.push_back({
+        .firstGeometry = 0,
+        .geometryCount = 1,
+    });
+    model.materials.emplace_back();
+    model.materials[0].baseColorFactor = baseColorFactor;
+    return model;
+}
+
+xrphoton::ogfx::Model buildTestYardGround()
+{
+    return buildAxisAlignedBox(
+        {-10.0f, -0.4f, -10.0f},
+        { 10.0f,  0.0f,  10.0f},
+        {0.42f, 0.42f, 0.45f, 1.0f});
+}
+
+xrphoton::ogfx::Model buildTestYardWall()
+{
+    return buildAxisAlignedBox(
+        {-4.0f, 0.0f, -0.15f},
+        { 4.0f, 3.0f,  0.15f},
+        {0.55f, 0.24f, 0.18f, 1.0f});
+}
+
+xrphoton::ogfx::Model buildTestYardBox()
+{
+    return buildAxisAlignedBox(
+        {-0.5f, -0.5f, -0.5f},
+        { 0.5f,  0.5f,  0.5f},
+        {0.80f, 0.62f, 0.22f, 1.0f});
+}
+
 xrphoton::ogfx::Model buildTestQuad()
 {
     using namespace xrphoton::ogfx;
@@ -22,7 +145,7 @@ xrphoton::ogfx::Model buildTestQuad()
         { 0.5f,  0.5f, 0.0f},
         {-0.5f,  0.5f, 0.0f},
     };
-    // The startup camera approaches along +Z, so the preview-facing side has a
+    // The startup camera approaches along +Z, so the yard-facing side has a
     // -Z normal and front-face winding from that reference pose.
     model.attributes = {
         {0.0f, 0.0f, -1.0f, 0.0f, 0.0f},
@@ -172,36 +295,52 @@ bool publishOutput(
 
 int main(int argumentCount, char** arguments)
 {
-    if (argumentCount != 3) {
+    if (argumentCount != 6) {
         std::cerr
-            << "Usage: xrPhotonProbeAssetCompiler <test-quad.ogfx> <test-wedge.ogfx>\n";
+            << "Usage: xrPhotonProbeAssetCompiler <test-quad.ogfx> "
+               "<test-wedge.ogfx> <test-yard-ground.ogfx> "
+               "<test-yard-wall.ogfx> <test-yard-box.ogfx>\n";
         return 1;
     }
 
-    const std::filesystem::path quadOutputPath = arguments[1];
-    const std::filesystem::path wedgeOutputPath = arguments[2];
-    if (quadOutputPath == wedgeOutputPath) {
-        std::cerr << "Probe asset output paths must be distinct.\n";
-        return 1;
+    const std::array<std::filesystem::path, 5> outputPaths{
+        arguments[1],
+        arguments[2],
+        arguments[3],
+        arguments[4],
+        arguments[5],
+    };
+    for (std::size_t left = 0; left < outputPaths.size(); ++left) {
+        for (std::size_t right = left + 1; right < outputPaths.size(); ++right) {
+            if (outputPaths[left] == outputPaths[right]) {
+                std::cerr << "Probe asset output paths must be pairwise distinct.\n";
+                return 1;
+            }
+        }
     }
 
-    const xrphoton::ogfx::SerializeResult quad =
-        xrphoton::ogfx::serializeModel(buildTestQuad(), quadOutputPath.string());
-    if (!quad) {
-        std::cerr << quad.error << '\n';
-        return 1;
+    const std::array<xrphoton::ogfx::Model, 5> models{
+        buildTestQuad(),
+        buildTestWedge(),
+        buildTestYardGround(),
+        buildTestYardWall(),
+        buildTestYardBox(),
+    };
+    std::array<xrphoton::ogfx::SerializeResult, 5> serialized;
+    for (std::size_t index = 0; index < models.size(); ++index) {
+        serialized[index] = xrphoton::ogfx::serializeModel(
+            models[index],
+            outputPaths[index].string());
+        if (!serialized[index]) {
+            std::cerr << serialized[index].error << '\n';
+            return 1;
+        }
     }
 
-    const xrphoton::ogfx::SerializeResult wedge =
-        xrphoton::ogfx::serializeModel(buildTestWedge(), wedgeOutputPath.string());
-    if (!wedge) {
-        std::cerr << wedge.error << '\n';
-        return 1;
-    }
-
-    if (!publishOutput(quadOutputPath, quad.bytes)
-        || !publishOutput(wedgeOutputPath, wedge.bytes)) {
-        return 1;
+    for (std::size_t index = 0; index < serialized.size(); ++index) {
+        if (!publishOutput(outputPaths[index], serialized[index].bytes)) {
+            return 1;
+        }
     }
     return 0;
 }

@@ -1,12 +1,27 @@
 #include "ogfx.hpp"
 #include "ogfx_loader.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <string>
 #include <string_view>
 #include <vector>
+
+#ifndef XRPHOTON_TEST_YARD_GROUND_ASSET_PATH
+#error "XRPHOTON_TEST_YARD_GROUND_ASSET_PATH must name the generated ground OGFx"
+#endif
+#ifndef XRPHOTON_TEST_YARD_WALL_ASSET_PATH
+#error "XRPHOTON_TEST_YARD_WALL_ASSET_PATH must name the generated wall OGFx"
+#endif
+#ifndef XRPHOTON_TEST_YARD_BOX_ASSET_PATH
+#error "XRPHOTON_TEST_YARD_BOX_ASSET_PATH must name the generated box OGFx"
+#endif
 
 namespace
 {
@@ -82,6 +97,213 @@ bool sceneIsEmpty(const xrphoton::SceneData& scene)
         && scene.instances.empty()
         && scene.materials.empty()
         && scene.images.empty();
+}
+
+struct Vec3
+{
+    float x;
+    float y;
+    float z;
+};
+
+Vec3 positionAt(const xrphoton::SceneData& scene, std::size_t vertex)
+{
+    return {
+        scene.positions[vertex * 3],
+        scene.positions[vertex * 3 + 1],
+        scene.positions[vertex * 3 + 2],
+    };
+}
+
+Vec3 subtract(Vec3 left, Vec3 right)
+{
+    return {left.x - right.x, left.y - right.y, left.z - right.z};
+}
+
+Vec3 cross(Vec3 left, Vec3 right)
+{
+    return {
+        left.y * right.z - left.z * right.y,
+        left.z * right.x - left.x * right.z,
+        left.x * right.y - left.y * right.x,
+    };
+}
+
+float dot(Vec3 left, Vec3 right)
+{
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+void testGeneratedYardAsset(
+    const std::filesystem::path& path,
+    std::string_view name,
+    Vec3 expectedMinimum,
+    Vec3 expectedMaximum,
+    const std::array<float, 4>& expectedColor)
+{
+    const xrphoton::OgfxLoadResult loaded = xrphoton::loadOgfxModel(path);
+    expect(static_cast<bool>(loaded),
+        std::string("generated ") + std::string(name) + " asset loads");
+    if (!loaded) {
+        std::cerr << loaded.error << '\n';
+        return;
+    }
+
+    const xrphoton::SceneData& scene = loaded.scene;
+    const bool canonicalShape = scene.positions.size() == 24 * 3
+        && scene.attributes.size() == 24
+        && scene.indices.size() == 36
+        && scene.geometries.size() == 1
+        && scene.meshes.size() == 1
+        && scene.materials.size() == 1;
+    expect(canonicalShape,
+        std::string(name) + " has one 24-vertex/36-index box mesh and material");
+    if (!canonicalShape) {
+        return;
+    }
+
+    const xrphoton::SceneGeometry& geometry = scene.geometries[0];
+    expect(geometry.firstVertex == 0
+            && geometry.vertexCount == 24
+            && geometry.firstIndex == 0
+            && geometry.indexCount == 36
+            && geometry.materialIndex == 0
+            && !geometry.alphaTested,
+        std::string(name) + " geometry is the canonical opaque box range");
+    expect(scene.meshes[0].firstGeometry == 0
+            && scene.meshes[0].geometryCount == 1,
+        std::string(name) + " owns exactly one geometry");
+    expect(scene.instances.empty() && scene.images.empty(),
+        std::string(name) + " model contains no placement or runtime image state");
+
+    std::vector<std::uint32_t> expectedIndices;
+    expectedIndices.reserve(36);
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        const std::uint32_t first = face * 4;
+        expectedIndices.insert(expectedIndices.end(), {
+            first, first + 1, first + 2,
+            first, first + 2, first + 3,
+        });
+    }
+    expect(scene.indices == expectedIndices,
+        std::string(name) + " retains the canonical six-face indexed topology");
+
+    Vec3 minimum{
+        std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::infinity(),
+    };
+    Vec3 maximum{
+        -std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+    };
+    for (std::size_t vertex = 0; vertex < 24; ++vertex) {
+        const Vec3 position = positionAt(scene, vertex);
+        minimum.x = std::min(minimum.x, position.x);
+        minimum.y = std::min(minimum.y, position.y);
+        minimum.z = std::min(minimum.z, position.z);
+        maximum.x = std::max(maximum.x, position.x);
+        maximum.y = std::max(maximum.y, position.y);
+        maximum.z = std::max(maximum.z, position.z);
+    }
+    expect(minimum.x == expectedMinimum.x
+            && minimum.y == expectedMinimum.y
+            && minimum.z == expectedMinimum.z
+            && maximum.x == expectedMaximum.x
+            && maximum.y == expectedMaximum.y
+            && maximum.z == expectedMaximum.z,
+        std::string(name) + " retains its exact model-space bounds");
+
+    const xrphoton::SceneMaterial& material = scene.materials[0];
+    expect(material.baseColorFactor[0] == expectedColor[0]
+            && material.baseColorFactor[1] == expectedColor[1]
+            && material.baseColorFactor[2] == expectedColor[2]
+            && material.baseColorFactor[3] == expectedColor[3]
+            && material.baseColorImage == 0
+            && material.alphaCutoff == 0.5f
+            && material.baseColorTexture.empty(),
+        std::string(name) + " retains its untextured opaque material");
+
+    constexpr std::array<std::array<float, 3>, 6> ExpectedNormals{{
+        {-1.0f,  0.0f,  0.0f},
+        { 1.0f,  0.0f,  0.0f},
+        { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  1.0f,  0.0f},
+        { 0.0f,  0.0f, -1.0f},
+        { 0.0f,  0.0f,  1.0f},
+    }};
+    constexpr std::array<std::array<float, 2>, 4> ExpectedUvs{{
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},
+        {1.0f, 1.0f},
+        {0.0f, 1.0f},
+    }};
+    bool attributesMatch = true;
+    for (std::size_t face = 0; face < ExpectedNormals.size(); ++face) {
+        for (std::size_t corner = 0; corner < ExpectedUvs.size(); ++corner) {
+            const xrphoton::VertexAttributes& attributes =
+                scene.attributes[face * 4 + corner];
+            attributesMatch = attributesMatch
+                && attributes.nx == ExpectedNormals[face][0]
+                && attributes.ny == ExpectedNormals[face][1]
+                && attributes.nz == ExpectedNormals[face][2]
+                && attributes.u == ExpectedUvs[corner][0]
+                && attributes.v == ExpectedUvs[corner][1];
+        }
+    }
+    expect(attributesMatch,
+        std::string(name) + " retains per-face outward normals and 0..1 UVs");
+
+    const Vec3 center{
+        (expectedMinimum.x + expectedMaximum.x) * 0.5f,
+        (expectedMinimum.y + expectedMaximum.y) * 0.5f,
+        (expectedMinimum.z + expectedMaximum.z) * 0.5f,
+    };
+    bool windingIsOutward = true;
+    for (std::size_t triangle = 0; triangle < scene.indices.size(); triangle += 3) {
+        const std::uint32_t index0 = scene.indices[triangle];
+        const std::uint32_t index1 = scene.indices[triangle + 1];
+        const std::uint32_t index2 = scene.indices[triangle + 2];
+        const Vec3 p0 = positionAt(scene, index0);
+        const Vec3 p1 = positionAt(scene, index1);
+        const Vec3 p2 = positionAt(scene, index2);
+        const Vec3 geometricNormal = cross(subtract(p1, p0), subtract(p2, p0));
+        const xrphoton::VertexAttributes& declared = scene.attributes[index0];
+        const Vec3 declaredNormal{declared.nx, declared.ny, declared.nz};
+        const Vec3 centroid{
+            (p0.x + p1.x + p2.x) / 3.0f,
+            (p0.y + p1.y + p2.y) / 3.0f,
+            (p0.z + p1.z + p2.z) / 3.0f,
+        };
+        windingIsOutward = windingIsOutward
+            && dot(geometricNormal, declaredNormal) > 0.0f
+            && dot(geometricNormal, subtract(centroid, center)) > 0.0f;
+    }
+    expect(windingIsOutward,
+        std::string(name) + " triangles wind outward on every face");
+}
+
+void testGeneratedYardAssets()
+{
+    testGeneratedYardAsset(
+        std::filesystem::path(XRPHOTON_TEST_YARD_GROUND_ASSET_PATH),
+        "yard ground",
+        {-10.0f, -0.4f, -10.0f},
+        { 10.0f,  0.0f,  10.0f},
+        {0.42f, 0.42f, 0.45f, 1.0f});
+    testGeneratedYardAsset(
+        std::filesystem::path(XRPHOTON_TEST_YARD_WALL_ASSET_PATH),
+        "yard wall",
+        {-4.0f, 0.0f, -0.15f},
+        { 4.0f, 3.0f,  0.15f},
+        {0.55f, 0.24f, 0.18f, 1.0f});
+    testGeneratedYardAsset(
+        std::filesystem::path(XRPHOTON_TEST_YARD_BOX_ASSET_PATH),
+        "yard box",
+        {-0.5f, -0.5f, -0.5f},
+        { 0.5f,  0.5f,  0.5f},
+        {0.80f, 0.62f, 0.22f, 1.0f});
 }
 
 void testSceneConversion()
@@ -307,6 +529,7 @@ void testFileBoundary()
 
 int main()
 {
+    testGeneratedYardAssets();
     testSceneConversion();
     testMultiRecordSceneConversion();
     testOptionalPhysicsMetadataBoundary();

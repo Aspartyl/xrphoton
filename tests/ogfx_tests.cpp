@@ -105,6 +105,111 @@ Model makeQuad()
     return model;
 }
 
+Model makeAxisAlignedBox(
+    Position minimum,
+    Position maximum,
+    const std::array<float, 4>& baseColorFactor)
+{
+    Model model{};
+    model.positions = {
+        {minimum.x, minimum.y, minimum.z},
+        {minimum.x, minimum.y, maximum.z},
+        {minimum.x, maximum.y, maximum.z},
+        {minimum.x, maximum.y, minimum.z},
+
+        {maximum.x, minimum.y, maximum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, maximum.y, minimum.z},
+        {maximum.x, maximum.y, maximum.z},
+
+        {minimum.x, minimum.y, maximum.z},
+        {minimum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, maximum.z},
+
+        {minimum.x, maximum.y, minimum.z},
+        {minimum.x, maximum.y, maximum.z},
+        {maximum.x, maximum.y, maximum.z},
+        {maximum.x, maximum.y, minimum.z},
+
+        {maximum.x, minimum.y, minimum.z},
+        {minimum.x, minimum.y, minimum.z},
+        {minimum.x, maximum.y, minimum.z},
+        {maximum.x, maximum.y, minimum.z},
+
+        {minimum.x, minimum.y, maximum.z},
+        {maximum.x, minimum.y, maximum.z},
+        {maximum.x, maximum.y, maximum.z},
+        {minimum.x, maximum.y, maximum.z},
+    };
+
+    constexpr std::array<std::array<float, 3>, 6> FaceNormals{{
+        {-1.0f,  0.0f,  0.0f},
+        { 1.0f,  0.0f,  0.0f},
+        { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  1.0f,  0.0f},
+        { 0.0f,  0.0f, -1.0f},
+        { 0.0f,  0.0f,  1.0f},
+    }};
+    constexpr std::array<std::array<float, 2>, 4> FaceUvs{{
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},
+        {1.0f, 1.0f},
+        {0.0f, 1.0f},
+    }};
+    model.attributes.reserve(24);
+    model.indices.reserve(36);
+    for (std::uint32_t face = 0; face < FaceNormals.size(); ++face) {
+        for (const std::array<float, 2>& uv : FaceUvs) {
+            model.attributes.push_back({
+                FaceNormals[face][0],
+                FaceNormals[face][1],
+                FaceNormals[face][2],
+                uv[0],
+                uv[1],
+            });
+        }
+        const std::uint32_t firstVertex = face * 4;
+        model.indices.insert(model.indices.end(), {
+            firstVertex,
+            firstVertex + 1,
+            firstVertex + 2,
+            firstVertex,
+            firstVertex + 2,
+            firstVertex + 3,
+        });
+    }
+    model.geometries.push_back(Geometry{0, 24, 0, 36, 0, false});
+    model.meshes.push_back(Mesh{0, 1});
+    model.materials.emplace_back();
+    model.materials[0].baseColorFactor = baseColorFactor;
+    return model;
+}
+
+Model makeTestYardGround()
+{
+    return makeAxisAlignedBox(
+        {-10.0f, -0.4f, -10.0f},
+        { 10.0f,  0.0f,  10.0f},
+        {0.42f, 0.42f, 0.45f, 1.0f});
+}
+
+Model makeTestYardWall()
+{
+    return makeAxisAlignedBox(
+        {-4.0f, 0.0f, -0.15f},
+        { 4.0f, 3.0f,  0.15f},
+        {0.55f, 0.24f, 0.18f, 1.0f});
+}
+
+Model makeTestYardBox()
+{
+    return makeAxisAlignedBox(
+        {-0.5f, -0.5f, -0.5f},
+        { 0.5f,  0.5f,  0.5f},
+        {0.80f, 0.62f, 0.22f, 1.0f});
+}
+
 Model makeTwoGeometryModel()
 {
     Model model{};
@@ -369,6 +474,48 @@ void testSupportedSchemaBreadth()
         expect(readU32(result.bytes, 196) == 1, "the second geometry emits alpha-tested bit 0");
     } else {
         std::cerr << result.error << '\n';
+    }
+}
+
+void testYardAssetSerialization()
+{
+    struct Fixture
+    {
+        std::string_view name;
+        Model model;
+        std::size_t expectedByteSize;
+    };
+    const std::array fixtures{
+        Fixture{"yard ground", makeTestYardGround(), 1312},
+        Fixture{"yard wall", makeTestYardWall(), 1312},
+        Fixture{"yard box", makeTestYardBox(), 1312},
+    };
+
+    for (const Fixture& fixture : fixtures) {
+        const SerializeResult first = xrphoton::ogfx::serializeModel(
+            fixture.model,
+            std::string(fixture.name) + "-first.ogfx");
+        const SerializeResult second = xrphoton::ogfx::serializeModel(
+            fixture.model,
+            std::string(fixture.name) + "-second.ogfx");
+        expect(static_cast<bool>(first),
+            std::string(fixture.name) + " serializes");
+        expect(static_cast<bool>(second),
+            std::string(fixture.name) + " serializes under another diagnostic name");
+        if (!first || !second) {
+            if (!first.error.empty()) {
+                std::cerr << first.error << '\n';
+            }
+            if (!second.error.empty()) {
+                std::cerr << second.error << '\n';
+            }
+            continue;
+        }
+        expect(first.bytes == second.bytes,
+            std::string(fixture.name)
+                + " serialization is deterministic and ignores diagnostic names");
+        expect(first.bytes.size() == fixture.expectedByteSize,
+            std::string(fixture.name) + " has its pinned canonical byte size");
     }
 }
 
@@ -1010,6 +1157,7 @@ void testValidation()
 int main()
 {
     testGoldenQuad();
+    testYardAssetSerialization();
     testSupportedSchemaBreadth();
     testSphereEnclosureRounding();
     testAsymmetricBoundsAndMaterialFraming();

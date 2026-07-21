@@ -6,7 +6,7 @@
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
-#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -56,6 +56,34 @@ VkTransformMatrixKHR toVkTransformMatrix(const glm::mat4& matrix)
     }
 
     return transform;
+}
+
+bool hasFiniteElements(const glm::mat4& matrix)
+{
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            if (!std::isfinite(matrix[column][row])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+double linearDeterminant(const glm::mat4& matrix)
+{
+    const double m00 = matrix[0][0];
+    const double m01 = matrix[1][0];
+    const double m02 = matrix[2][0];
+    const double m10 = matrix[0][1];
+    const double m11 = matrix[1][1];
+    const double m12 = matrix[2][1];
+    const double m20 = matrix[0][2];
+    const double m21 = matrix[1][2];
+    const double m22 = matrix[2][2];
+    return m00 * (m11 * m22 - m12 * m21)
+        - m01 * (m10 * m22 - m12 * m20)
+        + m02 * (m10 * m21 - m11 * m20);
 }
 
 bool checkedAdd(VkDeviceSize left, VkDeviceSize right, VkDeviceSize* sum)
@@ -125,7 +153,8 @@ VkResult createHostVisibleBuffer(
     VkDeviceSize size,
     VkBufferUsageFlags usage,
     VkBuffer* buffer,
-    VmaAllocation* allocation)
+    VmaAllocation* allocation,
+    void** mapped)
 {
     VkResult result = createBuffer(
         allocator,
@@ -146,6 +175,7 @@ VkResult createHostVisibleBuffer(
         return VK_ERROR_MEMORY_MAP_FAILED;
     }
 
+    *mapped = allocationInfo.pMappedData;
     std::memcpy(allocationInfo.pMappedData, data, size);
 
     return VK_SUCCESS;
@@ -254,8 +284,19 @@ AccelerationStructure::~AccelerationStructure()
         allocator,
         scratchBuffer,
         scratchBufferAllocation,
-        "acceleration-structure scratch arena");
-    destroyBufferAndAllocation(allocator, instanceBuffer, instanceBufferAllocation, "instance buffer");
+        "BLAS scratch arena");
+    destroyBufferAndAllocation(
+        allocator,
+        tlasScratchBuffer,
+        tlasScratchAllocation,
+        "TLAS scratch buffer");
+    for (TlasInstanceSlot& slot : instanceSlots) {
+        destroyBufferAndAllocation(
+            allocator,
+            slot.buffer,
+            slot.allocation,
+            "TLAS instance slot buffer");
+    }
 }
 
 VkResult buildAccelerationStructures(
@@ -266,12 +307,17 @@ VkResult buildAccelerationStructures(
     const RayTracingFunctions& functions,
     const SceneData& scene,
     const GpuScene& gpuScene,
+    uint32_t frameSlotCount,
     VkCommandBuffer commandBuffer,
     VkQueue traceQueue,
     VkFence fence)
 {
     if (as == nullptr) {
         std::cerr << "Cannot build acceleration structures into a null owner.\n";
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (frameSlotCount == 0) {
+        std::cerr << "Cannot build acceleration structures with zero frame slots.\n";
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
@@ -336,6 +382,8 @@ VkResult buildAccelerationStructures(
         // After this preparation, reserved BLAS adoption and all metadata writes are
         // non-allocating, so an exception cannot strand a fresh handle outside `as`.
         as->blases.reserve(meshCount);
+        as->instanceSlots.resize(frameSlotCount);
+        as->instanceTemplate.resize(instanceCountSize);
         std::vector<std::vector<VkAccelerationStructureGeometryKHR>> blasGeometries(
             meshCount);
         std::vector<std::vector<uint32_t>> blasPrimitiveCounts(meshCount);
@@ -347,7 +395,6 @@ VkResult buildAccelerationStructures(
         std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> blasRangePointers(
             meshCount);
         std::vector<VkDeviceSize> blasScratchOffsets(meshCount);
-        std::vector<VkAccelerationStructureInstanceKHR> vkInstances(instanceCountSize);
 
         VkDeviceSize alignedBlasScratchTotal = 0;
         for (std::size_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
@@ -563,7 +610,7 @@ VkResult buildAccelerationStructures(
             const SceneInstance& source = scene.instances[instanceIndex];
             const SceneMesh& mesh = scene.meshes[source.meshIndex];
             VkAccelerationStructureInstanceKHR& destination =
-                vkInstances[instanceIndex];
+                as->instanceTemplate[instanceIndex];
             destination.transform = toVkTransformMatrix(source.transform);
             const uint64_t sbtOffset =
                 static_cast<uint64_t>(mesh.firstGeometry) * RayTypeCount;
@@ -591,24 +638,34 @@ VkResult buildAccelerationStructures(
                 as->blases[source.meshIndex].address;
         }
 
-        result = createHostVisibleBuffer(
-            allocator,
-            vkInstances.data(),
-            instanceBufferSize,
-            BuildInputBufferUsage,
-            &as->instanceBuffer,
-            &as->instanceBufferAllocation);
-        if (result != VK_SUCCESS) {
-            return result;
-        }
+        for (std::size_t slotIndex = 0;
+             slotIndex < as->instanceSlots.size();
+             ++slotIndex) {
+            TlasInstanceSlot& slot = as->instanceSlots[slotIndex];
+            result = createHostVisibleBuffer(
+                allocator,
+                as->instanceTemplate.data(),
+                instanceBufferSize,
+                BuildInputBufferUsage,
+                &slot.buffer,
+                &slot.allocation,
+                &slot.mapped);
+            if (result != VK_SUCCESS) {
+                return result;
+            }
 
-        const VkDeviceAddress instanceAddress =
-            getBufferAddress(device, functions, as->instanceBuffer);
-        if (!hasRequiredBuildInputAlignment(
-                instanceAddress,
-                InstanceInputAddressAlignment,
-                "instance")) {
-            return VK_ERROR_INITIALIZATION_FAILED;
+            slot.address = getBufferAddress(device, functions, slot.buffer);
+            if (slot.address == 0) {
+                std::cerr << "Vulkan returned a null TLAS instance-input device address for slot["
+                          << slotIndex << "].\n";
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+            if (!hasRequiredBuildInputAlignment(
+                    slot.address,
+                    InstanceInputAddressAlignment,
+                    "instance")) {
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
         }
 
         VkAccelerationStructureGeometryKHR tlasGeometry{};
@@ -617,7 +674,8 @@ VkResult buildAccelerationStructures(
         tlasGeometry.geometry.instances.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
         tlasGeometry.geometry.instances.arrayOfPointers = VK_FALSE;
-        tlasGeometry.geometry.instances.data.deviceAddress = instanceAddress;
+        tlasGeometry.geometry.instances.data.deviceAddress =
+            as->instanceSlots[0].address;
 
         VkAccelerationStructureBuildGeometryInfoKHR tlasBuildInfo{};
         tlasBuildInfo.sType =
@@ -665,21 +723,59 @@ VkResult buildAccelerationStructures(
             std::cerr << "TLAS scratch size alignment overflows VkDeviceSize.\n";
             return VK_ERROR_INITIALIZATION_FAILED;
         }
-        const VkDeviceSize scratchDataSize =
-            std::max(alignedBlasScratchTotal, alignedTlasScratchSize);
-        VkDeviceSize scratchAllocationSize = 0;
+
+        VkDeviceSize tlasScratchAllocationSize = 0;
         if (!checkedAdd(
-                scratchDataSize,
+                alignedTlasScratchSize,
                 scratchAlignment - 1,
-                &scratchAllocationSize)
-            || scratchAllocationSize == 0) {
-            std::cerr << "Acceleration-structure scratch-arena allocation size overflows.\n";
+                &tlasScratchAllocationSize)
+            || tlasScratchAllocationSize == 0) {
+            std::cerr << "TLAS scratch-buffer allocation size overflows.\n";
             return VK_ERROR_INITIALIZATION_FAILED;
         }
 
         result = createBuffer(
             allocator,
-            scratchAllocationSize,
+            tlasScratchAllocationSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            0,
+            &as->tlasScratchBuffer,
+            &as->tlasScratchAllocation);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        const VkDeviceAddress tlasScratchBaseAddress =
+            getBufferAddress(device, functions, as->tlasScratchBuffer);
+        if (tlasScratchBaseAddress == 0) {
+            std::cerr << "Vulkan returned a null TLAS scratch device address.\n";
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        VkDeviceSize alignedTlasScratchBase = 0;
+        if (!checkedAlignUp(
+                tlasScratchBaseAddress,
+                scratchAlignment,
+                &alignedTlasScratchBase)) {
+            std::cerr << "TLAS scratch device address overflows while aligning.\n";
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        as->tlasScratchAddress = alignedTlasScratchBase;
+        tlasBuildInfo.scratchData.deviceAddress = as->tlasScratchAddress;
+
+        VkDeviceSize blasScratchAllocationSize = 0;
+        if (!checkedAdd(
+                alignedBlasScratchTotal,
+                scratchAlignment - 1,
+                &blasScratchAllocationSize)
+            || blasScratchAllocationSize == 0) {
+            std::cerr << "BLAS scratch-arena allocation size overflows.\n";
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        result = createBuffer(
+            allocator,
+            blasScratchAllocationSize,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             0,
@@ -689,20 +785,24 @@ VkResult buildAccelerationStructures(
             return result;
         }
 
-        const VkDeviceAddress scratchBaseAddress =
+        const VkDeviceAddress blasScratchBaseAddress =
             getBufferAddress(device, functions, as->scratchBuffer);
-        VkDeviceSize alignedScratchBase = 0;
+        if (blasScratchBaseAddress == 0) {
+            std::cerr << "Vulkan returned a null BLAS scratch device address.\n";
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        VkDeviceSize alignedBlasScratchBase = 0;
         if (!checkedAlignUp(
-                scratchBaseAddress,
+                blasScratchBaseAddress,
                 scratchAlignment,
-                &alignedScratchBase)) {
-            std::cerr << "Acceleration-structure scratch device address overflows while aligning.\n";
+                &alignedBlasScratchBase)) {
+            std::cerr << "BLAS scratch device address overflows while aligning.\n";
             return VK_ERROR_INITIALIZATION_FAILED;
         }
         for (std::size_t meshIndex = 0; meshIndex < meshCount; ++meshIndex) {
             VkDeviceSize scratchAddress = 0;
             if (!checkedAdd(
-                    alignedScratchBase,
+                    alignedBlasScratchBase,
                     blasScratchOffsets[meshIndex],
                     &scratchAddress)) {
                 std::cerr << "BLAS scratch device address overflows for mesh["
@@ -711,7 +811,6 @@ VkResult buildAccelerationStructures(
             }
             blasBuildInfos[meshIndex].scratchData.deviceAddress = scratchAddress;
         }
-        tlasBuildInfo.scratchData.deviceAddress = alignedScratchBase;
 
         VkAccelerationStructureBuildRangeInfoKHR tlasRange{};
         tlasRange.primitiveCount = instanceCount;
@@ -736,9 +835,10 @@ VkResult buildAccelerationStructures(
             blasBuildInfos.data(),
             blasRangePointers.data());
 
-        // The read dependency exposes BLAS contents to the TLAS. The write dependency
-        // additionally orders TLAS scratch writes after every batched BLAS scratch write
-        // before the TLAS reuses the same arena base.
+        // The read dependency exposes the freshly built BLAS contents to the startup
+        // TLAS build. Its persistent scratch is separate from the batched BLAS arena;
+        // retaining the write destination scope keeps this startup dependency identical
+        // to the per-frame TLAS build scope.
         VkMemoryBarrier buildBarrier{};
         buildBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         buildBarrier.srcAccessMask =
@@ -817,13 +917,14 @@ VkResult buildAccelerationStructures(
             return result;
         }
 
-        // Build completion ends the arena's lifetime; null-resetting preserves the
-        // same partial-failure teardown contract in the owner destructor.
+        // Build completion ends only the BLAS arena's lifetime. TLAS scratch remains
+        // owner-held for every per-frame rebuild; null-resetting the transient members
+        // preserves the same partial-failure teardown contract in the destructor.
         destroyBufferAndAllocation(
             allocator,
             as->scratchBuffer,
             as->scratchBufferAllocation,
-            "acceleration-structure scratch arena (post-build)");
+            "BLAS scratch arena (post-build)");
         as->scratchBuffer = VK_NULL_HANDLE;
         as->scratchBufferAllocation = nullptr;
         return VK_SUCCESS;
@@ -834,5 +935,146 @@ VkResult buildAccelerationStructures(
         std::cerr << "Acceleration-structure CPU metadata size exceeds its container limit.\n";
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
+}
+
+bool writeTlasInstances(
+    AccelerationStructure* as,
+    const SceneData& scene,
+    uint32_t frameSlot)
+{
+    if (as == nullptr) {
+        std::cerr << "Cannot write TLAS instances through a null owner.\n";
+        return false;
+    }
+    if (scene.instances.size() != as->instanceTemplate.size()) {
+        std::cerr << "Cannot write TLAS instances: runtime instance count "
+                  << scene.instances.size() << " differs from the startup count "
+                  << as->instanceTemplate.size() << ".\n";
+        return false;
+    }
+    if (frameSlot >= as->instanceSlots.size()) {
+        std::cerr << "Cannot write TLAS instances: frame slot " << frameSlot
+                  << " is outside " << as->instanceSlots.size() << " slots.\n";
+        return false;
+    }
+
+    TlasInstanceSlot& slot = as->instanceSlots[frameSlot];
+    if (slot.mapped == nullptr) {
+        std::cerr << "Cannot write TLAS instances: frame slot " << frameSlot
+                  << " has no mapped storage.\n";
+        return false;
+    }
+
+    // Validate the complete runtime transform set before mutating the template or its
+    // mapped destination, so a bad later instance cannot leave a partial frame update.
+    for (std::size_t instanceIndex = 0;
+         instanceIndex < scene.instances.size();
+         ++instanceIndex) {
+        const glm::mat4& transform = scene.instances[instanceIndex].transform;
+        if (!hasFiniteElements(transform)) {
+            std::cerr << "Cannot write TLAS instance[" << instanceIndex
+                      << "]: transform contains a non-finite element.\n";
+            return false;
+        }
+        if (linearDeterminant(transform) == 0.0) {
+            std::cerr << "Cannot write TLAS instance[" << instanceIndex
+                      << "]: transform has a zero-determinant 3x3 linear block.\n";
+            return false;
+        }
+    }
+
+    for (std::size_t instanceIndex = 0;
+         instanceIndex < scene.instances.size();
+         ++instanceIndex) {
+        as->instanceTemplate[instanceIndex].transform =
+            toVkTransformMatrix(scene.instances[instanceIndex].transform);
+    }
+
+    std::memcpy(
+        slot.mapped,
+        as->instanceTemplate.data(),
+        as->instanceTemplate.size()
+            * sizeof(VkAccelerationStructureInstanceKHR));
+    return true;
+}
+
+void recordTlasRebuild(
+    VkCommandBuffer commandBuffer,
+    const RayTracingFunctions& functions,
+    const AccelerationStructure& as,
+    uint32_t frameSlot)
+{
+    // The RAY_TRACING_SHADER source stage execution-orders this write behind the
+    // previous frame's TLAS traversal reads. The AS BUILD source stage and write access
+    // additionally make prior TLAS and shared-scratch writes available before reuse.
+    VkMemoryBarrier preBuildBarrier{};
+    preBuildBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    preBuildBarrier.srcAccessMask =
+        VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    preBuildBarrier.dstAccessMask =
+        VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
+        | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+            | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        0,
+        1,
+        &preBuildBarrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+
+    VkAccelerationStructureGeometryKHR tlasGeometry{};
+    tlasGeometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    tlasGeometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    tlasGeometry.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    tlasGeometry.geometry.instances.arrayOfPointers = VK_FALSE;
+    tlasGeometry.geometry.instances.data.deviceAddress =
+        as.instanceSlots[frameSlot].address;
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    buildInfo.flags =
+        VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.dstAccelerationStructure = as.tlas;
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries = &tlasGeometry;
+    buildInfo.scratchData.deviceAddress = as.tlasScratchAddress;
+
+    VkAccelerationStructureBuildRangeInfoKHR range{};
+    range.primitiveCount =
+        static_cast<uint32_t>(as.instanceTemplate.size());
+    const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
+    functions.cmdBuildAccelerationStructures(
+        commandBuffer,
+        1,
+        &buildInfo,
+        &rangePointer);
+
+    // Make this frame's rebuilt TLAS visible before its ray-tracing dispatch reads it.
+    VkMemoryBarrier traversalBarrier{};
+    traversalBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    traversalBarrier.srcAccessMask =
+        VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    traversalBarrier.dstAccessMask =
+        VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        0,
+        1,
+        &traversalBarrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
 }
 }

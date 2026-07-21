@@ -5,6 +5,7 @@
 #include "texture_loader.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -35,11 +36,15 @@ struct GalleryPlacement
 {
     uint32_t assetIndex;
     glm::mat4 transform;
+    bool animated = false;
 };
 
 enum GalleryAssetIndex : uint32_t
 {
-    QuadAsset = 0,
+    YardGroundAsset = 0,
+    YardWallAsset,
+    YardBoxAsset,
+    QuadAsset,
     WedgeAsset,
     PlitkaAsset,
     BlenderPyramidAsset,
@@ -62,7 +67,37 @@ struct LoadedGalleryAsset
     uint32_t materialCount = 0;
 };
 
+constexpr double Pi = 3.14159265358979323846;
+constexpr double OrbitRadius = 3.0;
+constexpr double OrbitHeight = 0.9;
+constexpr double OrbitRadiansPerSecond = 0.6;
+constexpr double SpinRadiansPerSecond = 1.7;
+
+const GallerySpawn YardSpawn{
+    .position = {-7.0f, 1.7f, -7.0f},
+    .yaw = glm::radians(45.0f),
+    .pitch = glm::radians(-5.0f),
+};
+
 constexpr std::array GalleryAssets{
+    GalleryAsset{
+        .name = "test_yard_ground",
+        .ogfxPath = XRPHOTON_TEST_YARD_GROUND_ASSET_PATH,
+        .optional = false,
+        .configurationName = "XRPHOTON_TEST_YARD_GROUND_ASSET_PATH",
+    },
+    GalleryAsset{
+        .name = "test_yard_wall",
+        .ogfxPath = XRPHOTON_TEST_YARD_WALL_ASSET_PATH,
+        .optional = false,
+        .configurationName = "XRPHOTON_TEST_YARD_WALL_ASSET_PATH",
+    },
+    GalleryAsset{
+        .name = "test_yard_box",
+        .ogfxPath = XRPHOTON_TEST_YARD_BOX_ASSET_PATH,
+        .optional = false,
+        .configurationName = "XRPHOTON_TEST_YARD_BOX_ASSET_PATH",
+    },
     GalleryAsset{
         .name = "test_quad",
         .ogfxPath = XRPHOTON_TEST_QUAD_ASSET_PATH,
@@ -133,62 +168,149 @@ constexpr std::array GalleryAssets{
 static_assert(PseudodogTailAsset + 1 == GalleryAssets.size());
 
 const std::array GalleryPlacements{
-    // Place every preview's vertical center on the y=0 screen row and keep every
-    // placement origin at z=8.5. These X positions come from the actual compiled
-    // vertices: at the startup 16:9 camera they center the complete twelve-placement
-    // row and leave at least a 0.014-NDC gap between adjacent silhouettes.
+    GalleryPlacement{
+        .assetIndex = YardGroundAsset,
+        .transform = glm::mat4{1.0f},
+    },
+    GalleryPlacement{
+        .assetIndex = YardWallAsset,
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{6.0f, -0.01f, 9.85f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardWallAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{9.84f, -0.01f, 5.71f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(90.0f),
+                glm::vec3{0.0f, 1.0f, 0.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{5.0f, 0.49f, 5.0f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{2.0f, 1.0f, 2.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{5.0f, 0.115f, 1.59f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{1.92f, 0.25f, 0.7f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{5.0f, 0.24f, 2.28f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{1.94f, 0.5f, 0.7f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{5.0f, 0.365f, 2.97f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{1.96f, 0.75f, 0.7f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{5.0f, 0.49f, 3.66f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{1.98f, 1.0f, 0.7f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{-3.0f, 0.49f, 4.0f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(30.0f),
+                glm::vec3{0.0f, 1.0f, 0.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = YardBoxAsset,
+        .transform = yardAnimatedTransform(0.0),
+        .animated = true,
+    },
+    // Keep the low-level probes along the north-west edge, outside the yard's
+    // central movement area but visible from the deliberate spawn.
     GalleryPlacement{
         .assetIndex = QuadAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-10.904300f, 0.0f, 8.5f}),
+            glm::vec3{-6.0f, 1.0f, 9.5f}),
     },
     GalleryPlacement{
         .assetIndex = PlitkaAsset,
-        // Preserve the SoC model's authored size: gallery policy only translates it.
+        // Rotate the authored shallow Z depth against the east wall and bury the
+        // base by one centimetre without changing the source scale.
         .transform = glm::translate(
-            glm::mat4{1.0f},
-            glm::vec3{-10.242670f, -1.431630f, 8.5f}),
+                         glm::mat4{1.0f},
+                         glm::vec3{9.64f, -0.01f, 7.0f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(90.0f),
+                glm::vec3{0.0f, 1.0f, 0.0f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderPyramidAsset,
-        // Perspective-center the source Y=[0, 2] bounds on the preview row.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-6.710400f, -0.950000f, 8.5f}),
+            glm::vec3{-8.0f, -0.01f, 1.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-4.429670f, 0.0f, 8.5f}),
+            glm::vec3{-8.0f, 0.99f, 4.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderSmoothSphereAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{-1.780175f, 0.0f, 8.5f}),
+            glm::vec3{-8.0f, 0.99f, 7.0f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderLeafCardAsset,
-        // The source card is X=[-1, 1], Y=[0, 2] after conversion.
+        // Turn the card's -Z face toward the south-west spawn while keeping it
+        // clear of the east wall's inner face.
         .transform = glm::translate(
-            glm::mat4{1.0f},
-            glm::vec3{0.798470f, -1.0f, 8.5f}),
+                         glm::mat4{1.0f},
+                         glm::vec3{8.5f, -0.01f, 2.5f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(45.0f),
+                glm::vec3{0.0f, 1.0f, 0.0f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{3.035450f, 0.0f, 8.5f}),
+            glm::vec3{-4.25f, 1.0f, 9.35f}),
     },
     GalleryPlacement{
         .assetIndex = WedgeAsset,
         // GLM applies the rightmost operation first: scale in model space,
-        // rotate around world-up, then move the result into the gallery row.
+        // rotate around world-up, then move the result along the probe shelf.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{5.816800f, -0.019107f, 8.5f})
+                         glm::vec3{-2.1f, 1.0f, 9.0f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(30.0f),
@@ -199,11 +321,11 @@ const std::array GalleryPlacements{
     },
     GalleryPlacement{
         .assetIndex = BarrelAsset,
-        // Preserve the SoC model's authored size and perspective-center its source
-        // Y=[0.001489, 1.090266] bounds on the row.
+        // Translation-only placements preserve the three barrels' scale-faithful
+        // comparison against the north wall.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{8.348240f, -0.538824f, 8.5f}),
+            glm::vec3{4.2f, 0.0f, 9.2f}),
     },
     GalleryPlacement{
         .assetIndex = RemadeBarrelAsset,
@@ -212,7 +334,7 @@ const std::array GalleryPlacements{
         // visual quality comparison.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{9.242240f, -0.537940f, 8.5f}),
+            glm::vec3{5.1f, 0.0f, 9.2f}),
     },
     GalleryPlacement{
         .assetIndex = CustomBarrelAsset,
@@ -221,15 +343,15 @@ const std::array GalleryPlacements{
         // barrels remain an honest side-by-side comparison.
         .transform = glm::translate(
             glm::mat4{1.0f},
-            glm::vec3{10.136240f, -0.549017f, 8.5f}),
+            glm::vec3{6.0f, 0.0f, 9.2f}),
     },
     GalleryPlacement{
         .assetIndex = PseudodogTailAsset,
-        // Preserve the SoC model's authored size. Turn its long Z axis screen-up,
-        // then translate it into the row; rotation does not alter scale.
+        // Turn the long Z axis upward and rest its rotated lower bound just inside
+        // the platform top; rotation does not alter authored scale.
         .transform = glm::translate(
                          glm::mat4{1.0f},
-                         glm::vec3{11.301000f, 0.007708f, 8.5f})
+                         glm::vec3{5.0f, 1.26821f, 5.0f})
             * glm::rotate(
                 glm::mat4{1.0f},
                 glm::radians(90.0f),
@@ -242,6 +364,8 @@ GalleryLoadResult fail(std::string error)
     return {
         .scene = {},
         .error = std::move(error),
+        .animatedInstance = 0,
+        .spawn = YardSpawn,
     };
 }
 
@@ -293,9 +417,42 @@ std::size_t resolvedTextureCount(
 }
 }
 
+glm::mat4 yardAnimatedTransform(double seconds)
+{
+    const double orbitAngle = std::remainder(
+        seconds,
+        2.0 * Pi / OrbitRadiansPerSecond) * OrbitRadiansPerSecond;
+    const double spinAngle = std::remainder(
+        seconds,
+        2.0 * Pi / SpinRadiansPerSecond) * SpinRadiansPerSecond;
+
+    const glm::vec3 position{
+        static_cast<float>(OrbitRadius * std::cos(orbitAngle)),
+        static_cast<float>(OrbitHeight),
+        static_cast<float>(-OrbitRadius * std::sin(orbitAngle)),
+    };
+    return glm::translate(glm::mat4{1.0f}, position)
+        * glm::rotate(
+            glm::mat4{1.0f},
+            static_cast<float>(spinAngle),
+            glm::vec3{0.0f, 1.0f, 0.0f});
+}
+
 GalleryLoadResult loadGalleryScene()
 {
     try {
+        std::size_t animatedPlacementCount = 0;
+        for (const GalleryPlacement& placement : GalleryPlacements) {
+            if (placement.animated) {
+                ++animatedPlacementCount;
+            }
+        }
+        if (animatedPlacementCount != 1) {
+            return fail(
+                "Gallery yard must contain exactly one animated placement; found "
+                + std::to_string(animatedPlacementCount));
+        }
+
         SceneData scene{};
         std::array<LoadedGalleryAsset, GalleryAssets.size()> loadedAssets{};
         std::string assemblyError;
@@ -342,6 +499,8 @@ GalleryLoadResult loadGalleryScene()
             metadata.materialCount = static_cast<uint32_t>(materialCount);
         }
 
+        std::size_t animatedInstance = 0;
+        bool animatedInstanceRecorded = false;
         for (std::size_t placementIndex = 0;
              placementIndex < GalleryPlacements.size();
              ++placementIndex) {
@@ -356,7 +515,22 @@ GalleryLoadResult loadGalleryScene()
 
             const LoadedGalleryAsset& asset = loadedAssets[placement.assetIndex];
             if (!asset.loaded) {
+                if (placement.animated) {
+                    return fail(
+                        "Gallery placement[" + std::to_string(placementIndex)
+                        + "] is animated but its asset is not configured");
+                }
                 continue;
+            }
+            if (placement.animated) {
+                if (asset.meshCount != 1) {
+                    return fail(
+                        "Gallery placement[" + std::to_string(placementIndex)
+                        + "] is animated but its asset contains "
+                        + std::to_string(asset.meshCount) + " meshes; expected exactly 1");
+                }
+                animatedInstance = scene.instances.size();
+                animatedInstanceRecorded = true;
             }
             for (uint64_t localMesh = 0; localMesh < asset.meshCount; ++localMesh) {
                 const uint64_t meshIndex =
@@ -376,6 +550,10 @@ GalleryLoadResult loadGalleryScene()
                         + "]: " + assemblyError);
                 }
             }
+        }
+
+        if (!animatedInstanceRecorded) {
+            return fail("Gallery yard did not produce its animated scene instance");
         }
 
         if (!validateAssembledScene(scene, &assemblyError)) {
@@ -442,6 +620,8 @@ GalleryLoadResult loadGalleryScene()
         return {
             .scene = std::move(scene),
             .error = {},
+            .animatedInstance = animatedInstance,
+            .spawn = YardSpawn,
         };
     } catch (const std::bad_alloc&) {
         return fail("Gallery scene assembly failed: resource allocation failed");

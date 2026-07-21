@@ -61,6 +61,12 @@ set(XRPHOTON_SOC_ASSET_DIR ${XRPHOTON_ASSET_DIR}/soc)
 set(XRPHOTON_BLENDER_ASSET_DIR ${XRPHOTON_ASSET_DIR}/blender)
 set(XRPHOTON_TEST_QUAD_ASSET ${XRPHOTON_PROBE_ASSET_DIR}/test_quad.ogfx)
 set(XRPHOTON_TEST_WEDGE_ASSET ${XRPHOTON_PROBE_ASSET_DIR}/test_wedge.ogfx)
+set(XRPHOTON_TEST_YARD_GROUND_ASSET
+    ${XRPHOTON_PROBE_ASSET_DIR}/test_yard_ground.ogfx)
+set(XRPHOTON_TEST_YARD_WALL_ASSET
+    ${XRPHOTON_PROBE_ASSET_DIR}/test_yard_wall.ogfx)
+set(XRPHOTON_TEST_YARD_BOX_ASSET
+    ${XRPHOTON_PROBE_ASSET_DIR}/test_yard_box.ogfx)
 set(XRPHOTON_TEST_PYRAMID_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_pyramid.ogfx)
 set(XRPHOTON_TEST_SPHERE_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_sphere.ogfx)
 set(XRPHOTON_TEST_SMOOTH_SPHERE_ASSET
@@ -78,12 +84,18 @@ add_custom_command(
     OUTPUT
         ${XRPHOTON_TEST_QUAD_ASSET}
         ${XRPHOTON_TEST_WEDGE_ASSET}
+        ${XRPHOTON_TEST_YARD_GROUND_ASSET}
+        ${XRPHOTON_TEST_YARD_WALL_ASSET}
+        ${XRPHOTON_TEST_YARD_BOX_ASSET}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_PROBE_ASSET_DIR}
     COMMAND $<TARGET_FILE:xrPhotonProbeAssetCompiler>
         ${XRPHOTON_TEST_QUAD_ASSET}
         ${XRPHOTON_TEST_WEDGE_ASSET}
+        ${XRPHOTON_TEST_YARD_GROUND_ASSET}
+        ${XRPHOTON_TEST_YARD_WALL_ASSET}
+        ${XRPHOTON_TEST_YARD_BOX_ASSET}
     DEPENDS xrPhotonProbeAssetCompiler
-    COMMENT "Compiling the procedural quad and wedge probes to OGFx"
+    COMMENT "Compiling the procedural probes and test-yard assets to OGFx"
     VERBATIM
 )
 # Asset generation is explicit for compiler-only builds; the engine dependency below
@@ -91,6 +103,9 @@ add_custom_command(
 add_custom_target(xrPhotonAssets DEPENDS
     ${XRPHOTON_TEST_QUAD_ASSET}
     ${XRPHOTON_TEST_WEDGE_ASSET}
+    ${XRPHOTON_TEST_YARD_GROUND_ASSET}
+    ${XRPHOTON_TEST_YARD_WALL_ASSET}
+    ${XRPHOTON_TEST_YARD_BOX_ASSET}
 )
 
 if(BUILD_TESTING)
@@ -469,6 +484,12 @@ if(BUILD_TESTING)
     )
     target_link_libraries(xrPhotonOgfxLoaderTests PRIVATE xrPhotonOgfxRuntime)
     target_compile_options(xrPhotonOgfxLoaderTests PRIVATE -Wall -Wextra)
+    target_compile_definitions(xrPhotonOgfxLoaderTests PRIVATE
+        XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
+        XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
+        XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
+    )
+    add_dependencies(xrPhotonOgfxLoaderTests xrPhotonAssets)
     add_test(NAME ogfx_runtime_loader COMMAND xrPhotonOgfxLoaderTests)
 
     add_executable(xrPhotonSceneAssemblyTests
@@ -484,6 +505,33 @@ if(BUILD_TESTING)
     target_link_libraries(xrPhotonTextureLoaderTests PRIVATE xrPhotonOgfxRuntime)
     target_compile_options(xrPhotonTextureLoaderTests PRIVATE -Wall -Wextra)
     add_test(NAME texture_loader COMMAND xrPhotonTextureLoaderTests)
+
+    add_executable(xrPhotonGalleryTests
+        tests/gallery_tests.cpp
+        src/gallery.cpp
+    )
+    target_link_libraries(xrPhotonGalleryTests PRIVATE xrPhotonOgfxRuntime)
+    target_compile_options(xrPhotonGalleryTests PRIVATE -Wall -Wextra)
+    target_compile_definitions(xrPhotonGalleryTests PRIVATE
+        XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
+        XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
+        XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
+        XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
+        XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
+        XRPHOTON_GALLERY_PLITKA_OGFX=u8\"\"
+        XRPHOTON_GALLERY_BLENDER_OGFX=u8\"\"
+        XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"\"
+        XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"\"
+        XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=u8\"\"
+        XRPHOTON_GALLERY_BARREL_OGFX=u8\"\"
+        XRPHOTON_GALLERY_REMADE_BARREL_OGFX=u8\"\"
+        XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX=u8\"\"
+        XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=u8\"\"
+        XRPHOTON_GALLERY_AUTHORED_TEXTURE_ROOT=u8\"\"
+        XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"\"
+    )
+    add_dependencies(xrPhotonGalleryTests xrPhotonAssets)
+    add_test(NAME gallery_policy COMMAND xrPhotonGalleryTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -539,13 +587,16 @@ if(XRPHOTON_ENABLE_VALIDATION)
     target_compile_definitions(xrPhoton PRIVATE XRPHOTON_ENABLE_VALIDATION)
 endif()
 
-# The preview inputs are build-tree probes and optional owner-supplied local content,
+# The yard inputs are build-tree probes and optional owner-supplied local content,
 # not packaged game assets. Embed absolute UTF-8 paths so launching from any working
 # directory exercises the same configured gallery; a future asset root replaces this
 # temporary bring-up policy.
 target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
     XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
+    XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
+    XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
+    XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
     XRPHOTON_GALLERY_PLITKA_OGFX=u8\"${XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"

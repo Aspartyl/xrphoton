@@ -23,6 +23,7 @@ using xrphoton::ogfx::Model;
 using xrphoton::ogfx::PhysicsBody;
 using xrphoton::ogfx::PhysicsCollider;
 using xrphoton::ogfx::PhysicsShapeType;
+using xrphoton::ogfx::Position;
 using xrphoton::ogfx::SerializeResult;
 using xrphoton::ogfx::VertexAttributes;
 
@@ -109,6 +110,95 @@ Model makeQuad()
     model.meshes.push_back(Mesh{0, 1});
     model.materials.emplace_back();
     return model;
+}
+
+Model makeAxisAlignedBox(
+    Position minimum,
+    Position maximum,
+    const std::array<float, 4>& baseColorFactor)
+{
+    Model model{};
+    model.positions = {
+        {minimum.x, minimum.y, minimum.z},
+        {minimum.x, minimum.y, maximum.z},
+        {minimum.x, maximum.y, maximum.z},
+        {minimum.x, maximum.y, minimum.z},
+
+        {maximum.x, minimum.y, maximum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, maximum.y, minimum.z},
+        {maximum.x, maximum.y, maximum.z},
+
+        {minimum.x, minimum.y, maximum.z},
+        {minimum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, minimum.z},
+        {maximum.x, minimum.y, maximum.z},
+
+        {minimum.x, maximum.y, minimum.z},
+        {minimum.x, maximum.y, maximum.z},
+        {maximum.x, maximum.y, maximum.z},
+        {maximum.x, maximum.y, minimum.z},
+
+        {maximum.x, minimum.y, minimum.z},
+        {minimum.x, minimum.y, minimum.z},
+        {minimum.x, maximum.y, minimum.z},
+        {maximum.x, maximum.y, minimum.z},
+
+        {minimum.x, minimum.y, maximum.z},
+        {maximum.x, minimum.y, maximum.z},
+        {maximum.x, maximum.y, maximum.z},
+        {minimum.x, maximum.y, maximum.z},
+    };
+
+    constexpr std::array<std::array<float, 3>, 6> FaceNormals{{
+        {-1.0f,  0.0f,  0.0f},
+        { 1.0f,  0.0f,  0.0f},
+        { 0.0f, -1.0f,  0.0f},
+        { 0.0f,  1.0f,  0.0f},
+        { 0.0f,  0.0f, -1.0f},
+        { 0.0f,  0.0f,  1.0f},
+    }};
+    constexpr std::array<std::array<float, 2>, 4> FaceUvs{{
+        {0.0f, 0.0f},
+        {1.0f, 0.0f},
+        {1.0f, 1.0f},
+        {0.0f, 1.0f},
+    }};
+    model.attributes.reserve(24);
+    model.indices.reserve(36);
+    for (std::uint32_t face = 0; face < FaceNormals.size(); ++face) {
+        for (const std::array<float, 2>& uv : FaceUvs) {
+            model.attributes.push_back({
+                FaceNormals[face][0],
+                FaceNormals[face][1],
+                FaceNormals[face][2],
+                uv[0],
+                uv[1],
+            });
+        }
+        const std::uint32_t firstVertex = face * 4;
+        model.indices.insert(model.indices.end(), {
+            firstVertex,
+            firstVertex + 1,
+            firstVertex + 2,
+            firstVertex,
+            firstVertex + 2,
+            firstVertex + 3,
+        });
+    }
+    model.geometries.push_back(Geometry{0, 24, 0, 36, 0, false});
+    model.meshes.push_back(Mesh{0, 1});
+    model.materials.emplace_back();
+    model.materials[0].baseColorFactor = baseColorFactor;
+    return model;
+}
+
+Model makeTestYardBox()
+{
+    return makeAxisAlignedBox(
+        {-0.5f, -0.5f, -0.5f},
+        { 0.5f,  0.5f,  0.5f},
+        {0.80f, 0.62f, 0.22f, 1.0f});
 }
 
 Model makeTwoGeometryModel()
@@ -524,6 +614,29 @@ void expectRuntimeMatchesSchema(
             std::cerr << runtime.error << '\n';
         }
     }
+}
+
+void testYardBoxRoundTrip()
+{
+    const Model source = makeTestYardBox();
+    const std::vector<std::uint8_t> canonical = serialize(source);
+    const DecodeResult decoded = xrphoton::ogfx::decodeModel(
+        canonical,
+        "test-yard-box.ogfx");
+    expect(static_cast<bool>(decoded), "the canonical yard box decodes");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+
+    expect(modelsEqual(decoded.model, source),
+        "yard-box decoding preserves all topology, attributes, and material fields");
+    const SerializeResult reserialized = xrphoton::ogfx::serializeModel(
+        decoded.model,
+        "test-yard-box-round-trip.ogfx");
+    expect(static_cast<bool>(reserialized), "the decoded yard box serializes again");
+    expect(reserialized.bytes == canonical,
+        "yard-box writer-decoder-writer reproduces every canonical byte");
 }
 
 void testRoundTripAndExtensions()
@@ -1375,6 +1488,7 @@ void testStringValidationAndTextureGate()
 
 int main()
 {
+    testYardBoxRoundTrip();
     testRoundTripAndExtensions();
     testSchemaProfile();
     testRigidPhysicsSchemaAndValidation();

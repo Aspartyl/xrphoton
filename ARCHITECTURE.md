@@ -5,29 +5,33 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 ## Status
 
-xrPhoton renders an interactive, additive ray-traced OGFx preview gallery. It
+xrPhoton renders an interactive ray-traced OGFx test yard. It
 brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
-TLAS over every gallery placement, then fires one ray per pixel from a perspective
+TLAS over every yard placement, then fires one ray per pixel from a perspective
 fly camera (WASD + mouse look). The ray-tracing shader samples scene materials and
 writes a device-local storage image that is blitted to the swapchain. The present
 path has two frames in flight, resize handling, and the required descriptor rewrite;
 the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
+One repository-owned crate follows a deterministic orbit and spin: the CPU rewrites
+that instance in `SceneData`, and the renderer writes one mapped instance-input slot
+and fully rebuilds the existing TLAS in place before every trace.
 
-Generated-only builds load `test_quad.ogfx` and the permanent two-geometry
-`test_wedge.ogfx` regression probe: two BLASes and three TLAS instances, with the
-wedge BLAS shared by two transformed placements. A configured reference build adds
-the converted legacy `plitka1.ogfx` and resolves its
-`ston\ston_stena_marbl_m_03_back` DDS beneath an owner-supplied texture root. That
-configuration assembles three assets as four placements through three BLASes and
-four TLAS instances, and exercises plitka's real BC1/nonzero-descriptor path through
-the interactive render loop. Its final on-screen orientation, scale, winding, and
-texture appearance still require owner visual sign-off. Every entry uses the same
-OGFx decoder, `SceneData`, GPU upload, acceleration-structure, material/texture, and
-shader path.
+Generated-only builds load `test_yard_ground.ogfx`, `test_yard_wall.ogfx`, and
+`test_yard_box.ogfx` beside the permanent quad and two-geometry wedge probes. The
+generated-only scene has **5 models / 13 placements / 5 BLASes / 6 geometries**:
+a 20-by-20-metre ground, an L-shaped wall corner, a stepped platform, one static
+crate, the animated crate, a face-on quad, and two transformed wedges sharing one
+BLAS. A fully configured build adds the nine legacy/Blender exhibits below for a
+total of **14 models / 22 placements / 14 BLASes / 16 geometries**. Every entry
+uses the same OGFx decoder, `SceneData`, GPU upload,
+acceleration-structure, material/texture, and shader path.
 
-The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`,
+The converted legacy `plitka1.ogfx` resolves its
+`ston\ston_stena_marbl_m_03_back` DDS beneath an owner-supplied texture root and
+exercises the real BC1/nonzero-descriptor path. The converted
+`test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`,
 `test_smooth_sphere.ogfx`, and alpha-tested `test_leaf_card.ogfx` are independent
-optional gallery assets. The converted regular `bochka_close_1.ogfx` adds its
+optional yard exhibits. The converted regular `bochka_close_1.ogfx` adds its
 existing `mtl\mtl_barrel_01.dds`; the adjacent scale-faithful Blender remake adds
 one opaque geometry using the owner-local
 `xrphoton\remade_bochka_close_1_basecolor.dds` and intentionally no physics
@@ -38,13 +42,12 @@ in one owner-local uncompressed RGBA8 DDS and no physics metadata.
 The mixed `item_psevdodog_tail.ogfx` follows that three-barrel comparison: its single
 mesh contains one `models\model_aref` alpha-tested geometry and one
 `models\model` opaque geometry, sharing `act\act_pseudodog_fur` and one material
-whose cutoff is exactly 128/255. With all optional entries configured, eleven
-models become twelve placements through eleven BLASes and contain thirteen geometries;
-the wedge remains the shared-BLAS probe. The sphere pair has identical indexed
+whose cutoff is exactly 128/255. The wedge remains the shared-BLAS probe. The sphere
+pair has identical indexed
 position/UV corner streams but deliberately different normals: flat-face splits
 versus shared smooth normals that remain split only at the UV seam.
-The three SoC gallery entries retain authored scale: plitka and the barrel use
-translation-only placement, and the tail adds rotation but no resize.
+The three SoC yard exhibits retain authored scale: the barrel uses
+translation-only placement, while plitka and the tail add rotation but no resize.
 
 The landed texture foundation validates strict DDS DXT1/DXT5 and canonical
 uncompressed RGBA8 input, uploads mip-0 BC1/BC3/RGBA8 payloads directly, always
@@ -55,21 +58,22 @@ and texture-alpha any-hit evaluation. Its shipped DDS has no transparent texels
 in mip 0, so it proves mixed routing plus actual texture sampling/any-hit
 execution. The Blender leaf card supplies the complementary visible acceptance:
 its pinned `trees\trees_new_vetka_green` DXT1 mip contains 153,894 transparent
-texels, and rejected hits reveal the miss background. M1 through M4a and the
-gallery work that instantiated their consumers are recorded in the roadmap below.
+texels, and rejected hits reveal the miss background. M1 through M4a and the yard
+work that instantiated their consumers are recorded in the roadmap below.
 
-The regular barrel is rendered as a static gallery placement, but its offline
+The regular barrel is rendered as a static yard placement, but its offline
 source adapter also preserves one compound-body recipe—three named cylinders,
 their masses and centers of mass, and the source physics material—in optional
 OGFx records. Both byte decoders validate those records. `ogfx_loader` does not
-copy them into `SceneData` yet, so they create no live physics body and imply no
-physics-backend choice or dynamic TLAS work. The tail follows the same boundary:
+copy them into `SceneData` yet, so they create no live physics body, select no
+physics backend, and do not themselves drive the per-frame TLAS updates. The tail
+follows the same boundary:
 its one rigid box-body recipe is preserved in OGFx metadata but creates no
 simulation state. The opt-in `xrPhotonAlphaOgfOfflineProof` target takes its OGF
 from `XRPHOTON_ALPHA_TAIL_CORPUS_OGF`, pins the companion DDS selected by
 `XRPHOTON_ALPHA_TAIL_TEXTURE_DDS`, and writes
 `build/<preset>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`; the
-runtime gallery entry is selected independently with
+runtime yard entry is selected independently with
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`.
 
 The first direct modern-content adapter is also landed as a narrow headless
@@ -138,7 +142,7 @@ the offline-compiler/runtime boundary.
 │ cpp}                 │ │   Swapchain owner  │ │ structure.      │ │ {hpp,cpp}     │
 │   VulkanContext owner│ │   create/recreate/ │ │ {hpp,cpp}       │ │   RtPipeline  │
 │ instance/device/VMA  │ │   support query    │ │   BLAS/TLAS     │ │   owner; SBT; │
-│   queues, RT fns     │ │                    │ │   startup build │ │   descriptors │
+│   queues, RT fns     │ │                    │ │   build/rebuild │ │   descriptors │
 └──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
 
@@ -158,17 +162,17 @@ stage; the diagram shows the frame-path layering.)
 | [src/blender_mesh.hpp](src/blender_mesh.hpp) / [.cpp](src/blender_mesh.cpp) | Transactional decoder for the private versioned `XRBM` extraction stream; validates the narrow static profile, bakes units/transforms, converts axes, normals, and winding, deduplicates corners, and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build; no Blender or renderer dependency |
 | [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named static mesh; emits material-free XRBM v1 or the strict one-opaque-or-alpha-tested-DDS-material v2 profile, invokes `convert-blender`, and supplies the exchange on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
 | [tools/asset_compiler.cpp](tools/asset_compiler.cpp) | `xrPhotonAssetCompiler convert-ogf` / `convert-blender` dispatch, bounded source input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
-| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render data into owned `SceneData`; optional physics metadata is validated upstream but deliberately has no scene/backend consumer yet; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the gallery |
+| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render data into owned `SceneData`; optional physics metadata is validated upstream but deliberately has no scene/backend consumer yet; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the yard policy |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned `RayTypeCount` constant and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; currently fixed at one radiance ray type |
-| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private bring-up asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns ordinary validated `SceneData` | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
-| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad and multi-geometry wedge probe front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the uncommitted `assets/probes/test_quad.ogfx` and `assets/probes/test_wedge.ogfx` in each binary directory |
+| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and exactly one animated-instance index; `yardAnimatedTransform` is the temporary deterministic motion policy | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
+| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
-| [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (N-instance buffer, vector of BLAS handles/backings, TLAS, and shared scratch arena) and `buildAccelerationStructures` over borrowed `GpuScene` geometry, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — built once at startup |
+| [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, four-stage/four-group ray tracing pipeline, per-geometry SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
-| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses), `drawFrame`, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
+| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
 
 ### Header dependency rule
@@ -178,8 +182,9 @@ Includes are kept acyclic by a deliberate rule:
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
   the scene/RT types they borrow; `gpu_scene.hpp` forward-declares `SceneData`.
-- `renderer.hpp` only **forward-declares** `CameraPushConstants`,
-  `FrameResources`, `RayTracingFunctions`, `RtPipeline`, and `Swapchain`; it
+- `renderer.hpp` only **forward-declares** `AccelerationStructure`,
+  `CameraPushConstants`, `FrameResources`, `RayTracingFunctions`, `RtPipeline`,
+  `SceneData`, and `Swapchain`; it
   never mentions `VulkanContext` — the renderer borrows specific handles, not the
   context, so the unit is decoupled from bring-up entirely.
 - `vulkan_context.hpp` never mentions `Swapchain`, `AccelerationStructure`,
@@ -221,16 +226,17 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
    build-generated `raytrace_spv.h` (the embedded shader module — see
    [Ray tracing pipeline](#ray-tracing-pipeline)).
-5. `renderer.cpp` includes `camera.hpp`, `rt_pipeline.hpp`, `swapchain.hpp`, and
-   `vulkan_context.hpp` to resolve the borrowed structs its header only
-   forward-declares.
+5. `renderer.cpp` includes `acceleration_structure.hpp`, `camera.hpp`,
+   `rt_pipeline.hpp`, `swapchain.hpp`, and `vulkan_context.hpp` to resolve the
+   borrowed structs its header only forward-declares and to invoke the per-frame
+   TLAS write/rebuild seam.
 6. `ogfx_loader.cpp` includes `scene.hpp` through its public header and adapts the
    standard-library-only decoded model into renderer-native `SceneData`.
 7. `scene_assembly.cpp` depends only on `scene.hpp` and standard-library helpers;
    it remains in the same Vulkan-free runtime library as the OGFx adapter.
 8. `gallery.cpp` includes the loader, assembly, and texture-resolution APIs to own
-   temporary startup policy; its public header exposes only `SceneData` and a value
-   result.
+   temporary startup policy; its public header exposes `SceneData`, the spawn value,
+   the animated-instance index, and the pure animated-transform function.
 9. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
    the pipeline layout's push-constant range; `camera.cpp` includes
    `GLFW/glfw3.h` for the real input API its header only forward-declared.
@@ -257,13 +263,15 @@ Five RAII owners — split by resource lifetime:
   scene image and view; and one shared linear-repeat sampler. It borrows the
   device/allocator and self-idle-waits before destroying sampler → views → images →
   buffers. `SceneData` is the separate plain CPU value owned by `main()` and remains
-  alive for step 3.
-- **`AccelerationStructure`** (program lifetime, built once at startup) owns: the
-  host-visible N-instance buffer, one `BlasEntry` handle/backing/address per
-  `SceneMesh`, and the TLAS handle and backing buffer. During the startup build it
-  also owns one scratch arena whose disjoint regions serve the batched BLAS builds
-  and whose aligned base is reused for the TLAS after a barrier. Like `Swapchain`
-  it borrows its `VkDevice` and `VmaAllocator`; it additionally keeps the
+  alive through the render loop because one instance transform changes each frame.
+- **`AccelerationStructure`** (program lifetime) owns: one persistently mapped
+  TLAS-instance input buffer per `FrameResources` slot, a stable-fields instance
+  template, one `BlasEntry` handle/backing/address per `SceneMesh`, and the TLAS
+  handle and backing buffer. During startup it also owns a scratch arena whose
+  disjoint regions serve the batched BLAS builds; that arena is released after the
+  startup fence wait. A separate aligned TLAS scratch allocation remains alive for
+  the per-frame in-place rebuilds. Like `Swapchain` it borrows its `VkDevice` and
+  `VmaAllocator`; it additionally keeps the
   `vkDestroyAccelerationStructureKHR` pointer (a runtime-resolved extension entry
   point) so its destructor can tear down every `VkAccelerationStructureKHR` handle
   without caller involvement.
@@ -282,12 +290,15 @@ Things that are neither created nor destroyed by the program (`physicalDevice`, 
 `Renderer` is deliberately **not** another owner: it is a parameter bundle over
 borrowed handles (in the spirit of `QueueFamilyIndices`), with no destructor and no
 idle wait. Its handle members are copies of program-lifetime objects; `Swapchain` is
-held by pointer because its members are replaced on every recreate, and the
-`FrameResources` array is borrowed by pointer because `VulkanContext` owns it for the
-program lifetime. Keeping the frame slots in `VulkanContext` lets the acceleration
-structure build borrow `frames[0]` before the RT pipeline and `Renderer` exist,
-without forcing two-phase renderer initialization. `main()` creates the renderer
-view after everything it points at, so it cannot outlive what it borrows.
+held by pointer because its members are replaced on every recreate;
+`AccelerationStructure` and the mutable CPU `SceneData` are pointers because
+`drawFrame` writes one instance-input slot from the current transforms; and the
+`FrameResources` array is borrowed by pointer because `VulkanContext` owns it for
+the program lifetime. Keeping the frame slots in `VulkanContext` lets the
+acceleration-structure build borrow `frames[0]` and size its instance inputs to the
+same slot count before the RT pipeline and `Renderer` exist, without forcing
+two-phase renderer initialization. `main()` creates the renderer view after
+everything it points at, so it cannot outlive what it borrows.
 
 ### Destruction order
 
@@ -339,33 +350,44 @@ returns `1` on failure (RAII handles the unwind):
 6. **Logical device + allocator.** One queue per unique {trace, present} family, with
    the ray tracing feature chain and `shaderInt64` enabled; then create VMA.
 7. **Ray tracing functions.** `loadRayTracingFunctions` resolves the RT entry points
-   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 11,
-   the pipeline subset by step 12, and `vkCmdTraceRaysKHR` by every frame.
+   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 11
+   and the per-frame TLAS rebuild, the pipeline subset by step 12, and
+   `vkCmdTraceRaysKHR` by every frame.
 8. **Swapchain.** `createSwapchainResources` — swapchain, image views, per-image
    render-finished semaphores, and the storage output image (created last, so it is
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
-10. **CPU/GPU scene.** `loadGalleryScene` loads the required generated probes and
-    every configured optional entry, including the mixed tail, transactionally
-    merges their model-owned arrays, applies every placement, validates the
-    assembled `SceneData`, and
-    resolves fallback/DDS scene images. `createGpuScene` gates both shader-record
-    buffers against `maxStorageBufferRange`, then uploads its five geometry/record
-    buffers and all sampled scene images through the borrowed frame-0 slot.
+10. **CPU/GPU scene.** `loadGalleryScene` loads the required generated yard assets
+    and probes plus every configured optional exhibit, including the mixed tail;
+    transactionally merges their model-owned arrays; applies every yard placement;
+    requires exactly one single-mesh animated placement; validates the assembled
+    `SceneData`; resolves fallback/DDS scene images; and returns the accepted spawn
+    and animated-instance index. `createGpuScene` gates both shader-record buffers
+    against `maxStorageBufferRange`, then uploads its five geometry/record buffers
+    and all sampled scene images through the borrowed frame-0 slot.
 11. **Acceleration structures.** `buildAccelerationStructures` — see
-    [Acceleration structures](#acceleration-structures). Borrows `frames[0]`'s
-    command buffer and in-flight fence from step 9 and returns them in the state the
-    first `drawFrame` expects; the other frame slots remain signaled and untouched.
+    [Acceleration structures](#acceleration-structures). It takes the frame-slot
+    count, builds the stable fields of the TLAS instance template, allocates one
+    mapped instance input per slot plus persistent TLAS rebuild scratch, and performs
+    the initial BLAS/TLAS build. It borrows `frames[0]`'s command buffer and in-flight
+    fence from step 9 and returns them in the state the first `drawFrame` expects;
+    the other frame slots remain signaled and untouched.
 12. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
     `buildShaderBindingTable` → `writeSceneDescriptorSet` — see
     [Ray tracing pipeline](#ray-tracing-pipeline).
 13. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
-    it borrows exists, including `ctx.frames.data()` — then the initial
+    and object it borrows exists, including `ctx.frames.data()`, the acceleration
+    structures, and the CPU scene — then the initial
     `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
-14. **Render loop.** `drawFrame(renderer, currentFrame)` per iteration, rotating
-    `currentFrame` modulo `MaxFramesInFlight`; recreate on out-of-date/suboptimal,
-    followed by `prepareRtForSwapchain` against the fresh storage image.
+14. **Render loop.** Advance the deterministic yard animation, write its transform
+    into the indexed `SceneInstance`, then call
+    `drawFrame(renderer, currentFrame, cameraPush)`;
+    `drawFrame` writes that slot's complete TLAS instance array and records an
+    in-place TLAS rebuild before tracing. Rotate `currentFrame` modulo
+    `MaxFramesInFlight`; recreate when GLFW reports a framebuffer resize or
+    acquire/present returns out-of-date/suboptimal, followed by
+    `prepareRtForSwapchain` against the fresh storage image.
 
 ### Device selection
 
@@ -461,19 +483,28 @@ indices from `pickPhysicalDevice`.
 Up to `MaxFramesInFlight` frames can be queued. Each loop iteration `main()` first
 computes a clamped delta time (`MaxFrameDt` = 0.1 s — window drags and resize
 stalls can block the loop for seconds, and an unclamped dt would teleport the
-camera), calls `updateCamera`, and derives the frame's `CameraPushConstants` from
-the camera state and the current `swap.extent` aspect ratio (read fresh every
-iteration, so a recreate needs no camera-specific handling). `main()` owns a
-`currentFrame` cursor and rotates it after every
-`drawFrame(renderer, currentFrame, cameraPush)` call; each slot has its own
-command buffer, image-available semaphore, and in-flight fence. `drawFrame` in
-[src/renderer.cpp](src/renderer.cpp) reaches everything through the `Renderer`
-view (the camera payload rides as a parameter, not a `Renderer` member — it is
-per-frame data, not a program-lifetime handle):
+camera or animated crate), calls `updateCamera`, advances the yard animation, and
+stores `yardAnimatedTransform(simulationTime)` in the indexed `SceneInstance`.
+It then derives the frame's `CameraPushConstants` from the camera state and the
+current `swap.extent` aspect ratio (read fresh every iteration, so a recreate needs
+no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
+a dirty iteration goes straight to recreation because some Wayland compositor/driver
+pairs continue scaling an old swapchain without returning `OUT_OF_DATE` or
+`SUBOPTIMAL`. The flag is cleared only after the legal Vulkan extent has been selected
+and recreation succeeds, so a surface-fixed or min/max-clamped extent cannot cause a
+comparison loop. `main()` owns a `currentFrame` cursor and rotates it after every
+`drawFrame(renderer, currentFrame, cameraPush)` call; a resize-dirty iteration skips the
+draw and leaves the cursor unchanged. Each slot has its own command buffer,
+image-available semaphore, in-flight fence, and mapped TLAS-instance input.
+`drawFrame` in [src/renderer.cpp](src/renderer.cpp) reaches everything through the
+`Renderer` view (the camera payload rides as a parameter, not a `Renderer` member — it
+is per-frame data, not a program-lifetime handle):
 
 ```
 frame = frames[frameIndex]
 vkWaitForFences(frame.inFlightFence)   // block until this slot's prior submit retired
+writeTlasInstances(frameIndex)         // validate transforms; rewrite only this slot
+  └─ failure             -> return before acquiring a swapchain image
 vkAcquireNextImageKHR                  // -> imageIndex, signals frame.imageAvailableSemaphore
   ├─ OUT_OF_DATE        -> return (caller recreates the swapchain)
   └─ bounds-check imageIndex against the per-image vectors
@@ -491,36 +522,44 @@ Advancing the cursor even after an acquire returns out-of-date is safe: that fra
 slot did not submit work, so its fence remains signaled and its image-available
 semaphore was not consumed by a queue submission.
 
-`recordTraceCommandBuffer` records a one-time-submit buffer with seven steps — trace
-into the storage image, then blit it into the acquired swapchain image:
+`recordTraceCommandBuffer` records a one-time-submit buffer with eight steps —
+rebuild the TLAS, trace into the storage image, then blit it into the acquired
+swapchain image:
 
-1. Barrier the storage image `UNDEFINED → GENERAL` (`srcStageMask`
+1. `recordTlasRebuild` records a pre-build memory barrier from
+   `RAY_TRACING_SHADER | ACCELERATION_STRUCTURE_BUILD` to
+   `ACCELERATION_STRUCTURE_BUILD`, with prior acceleration-structure writes made
+   available to build reads/writes. It then performs a full in-place TLAS `BUILD`
+   from this frame slot's instance buffer and the persistent scratch region, followed
+   by an `ACCELERATION_STRUCTURE_BUILD → RAY_TRACING_SHADER` barrier from AS write
+   to AS read. The first dependency orders the shared TLAS and scratch after older
+   rebuilds and traversal; the second makes this rebuild visible to this frame's
+   trace.
+2. Barrier the storage image `UNDEFINED → GENERAL` (`srcStageMask`
    `RAY_TRACING_SHADER`, destination `RAY_TRACING_SHADER`/`SHADER_WRITE`;
    `oldLayout` `UNDEFINED` discards prior contents — the whole image is
    overwritten). `GENERAL` is the layout storage-image writes require and must match
    what the descriptor set declared. The source stage chains from the previous
    frame's trailing storage-image barrier without involving the acquire wait's
    `TRANSFER` stage.
-2. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
+3. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
    push the frame's `CameraPushConstants` (`vkCmdPushConstants`, raygen-only —
    recorded into this slot's own command buffer after its fence wait, which is
    what makes the camera race-free across frames in flight by construction),
    then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
-   extent — one ray per pixel. **No acceleration-structure barrier here**: the AS
-   build's trailing barrier already made the TLAS visible to every future
-   `RAY_TRACING_SHADER` read (see
-   [Acceleration structures](#acceleration-structures)).
-3. Barrier the storage image `GENERAL → TRANSFER_SRC_OPTIMAL` (shader-write →
+   extent — one ray per pixel. The immediately preceding rebuild's post-build
+   barrier makes the fresh TLAS visible to this traversal.
+4. Barrier the storage image `GENERAL → TRANSFER_SRC_OPTIMAL` (shader-write →
    transfer-read), to be the blit source.
-4. Barrier the acquired image `UNDEFINED → TRANSFER_DST_OPTIMAL`, the blit destination.
-5. `vkCmdBlitImage` storage → swapchain (matching extents, `VK_FILTER_NEAREST`). A
+5. Barrier the acquired image `UNDEFINED → TRANSFER_DST_OPTIMAL`, the blit destination.
+6. `vkCmdBlitImage` storage → swapchain (matching extents, `VK_FILTER_NEAREST`). A
    **blit**, not a copy, on purpose: the selected swapchain format is always sRGB, so
    format conversion gamma-encodes the storage `UNORM` value for presentation here.
-6. Execution-only barrier `TRANSFER → RAY_TRACING_SHADER`, so a later frame cannot
+7. Execution-only barrier `TRANSFER → RAY_TRACING_SHADER`, so a later frame cannot
    overwrite the shared storage image until this frame's blit has finished reading
    it. No memory dependency is needed for this write-after-read hazard; only ordering
    matters.
-7. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
+8. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
 
 `recordTraceCommandBuffer` (and its `recordImageBarrier` / `recordExecutionBarrier`
 helpers) are file-private in
@@ -537,15 +576,16 @@ The frame model has two rotating frame slots:
 | `renderFinishedSemaphores[i]` | one **per swapchain image** | `Swapchain` | Signaled by the submit; the present waits on it. |
 | `frames[i].inFlightFence` | one **per frame in flight** | `VulkanContext` | Signaled when that slot's submit completes; the next reuse of the slot waits on it. Created **already signaled** so the first wait for each slot does not deadlock. |
 | `frames[i].commandBuffer` | one **per frame in flight** | `VulkanContext` | Reset and rerecorded only after the matching in-flight fence proves the slot's previous submission has retired. |
+| `instanceSlots[i]` | one **per frame in flight** | `AccelerationStructure` | Persistently mapped, host-coherent TLAS build input. The CPU rewrites only the slot whose matching fence has completed, so an in-flight build never races a host write. |
 
 Synchronization details worth preserving:
 
 - **Stage matching and pre-acquire overlap.** The acquire semaphore waits at
   `TRANSFER`, matching the first thing the submit does to the *swapchain* image: the
-  blit-destination transition (step 4) and the blit itself (step 5), both `TRANSFER`
+  blit-destination transition (step 5) and the blit itself (step 6), both `TRANSFER`
   work. So the swapchain transition cannot begin before the image is acquired. The
-  trace (steps 1–2) runs at `RAY_TRACING_SHADER`, **outside** that wait stage, so the
-  GPU is free to trace before — or overlapping — the acquire; only the blit onto the
+  TLAS rebuild and trace (steps 1–3) run outside that wait stage, so the GPU is free
+  to rebuild and trace before — or overlapping — the acquire; only the blit onto the
   swapchain image is serialized behind it. The present barrier's `dstStageMask` is
   `BOTTOM_OF_PIPE` because no later GPU stage consumes the image — the render-finished
   semaphore is what the present actually waits on.
@@ -564,6 +604,17 @@ Synchronization details worth preserving:
 - **Fence before semaphore reuse.** `drawFrame` waits the frame slot's fence before
   acquiring with that slot's image-available semaphore again, proving any prior
   submission that consumed the semaphore has retired before the semaphore is reused.
+  That same wait precedes `writeTlasInstances`, proving the prior build has stopped
+  reading this slot's mapped buffer; the fallible validation/write remains before
+  acquire so failure cannot strand an acquired image.
+- **Shared TLAS and scratch reuse.** All frame slots rebuild one TLAS with one
+  persistent scratch region. The rebuild's pre-barrier has source stages
+  `RAY_TRACING_SHADER | ACCELERATION_STRUCTURE_BUILD` and destination stage
+  `ACCELERATION_STRUCTURE_BUILD`: its execution dependency orders the next write
+  after older traversal reads, while AS-write → AS-read/write access scopes make
+  older TLAS and scratch writes visible before reuse. Its post-barrier is
+  AS-build-write → ray-tracing-AS-read, so the same command buffer's trace sees the
+  completed rebuild.
 
 ### Presentation teardown
 
@@ -585,8 +636,12 @@ destroyed; until then, do not add a parallel present-fence path.
 ## Swapchain and resize handling
 
 `Swapchain` is the unit that gets rebuilt when the surface changes. The trigger is a
-`VK_ERROR_OUT_OF_DATE_KHR` or `VK_SUBOPTIMAL_KHR` from acquire or present, which
-`drawFrame` returns and the render loop turns into a `recreateSwapchain` call.
+GLFW framebuffer-size notification, or
+`VK_ERROR_OUT_OF_DATE_KHR` / `VK_SUBOPTIMAL_KHR` from acquire or present. The explicit
+dirty flag covers Wayland implementations that keep accepting and scaling the old
+swapchain; either trigger reaches the same `recreateSwapchain` path. It is cleared after
+successful recreation rather than by comparing raw GLFW dimensions with the legal
+Vulkan extent, which may be surface-fixed or capability-clamped.
 
 `recreateSwapchain`:
 
@@ -651,25 +706,38 @@ needs deeper overlap.
 ## Acceleration structures
 
 The ray tracing scene contains one **BLAS per `SceneMesh`** and one **TLAS entry
-per `SceneInstance`**. The generated-only gallery builds two different BLASes and
-three TLAS instances; the fully configured gallery builds eleven BLASes and twelve
-TLAS instances over thirteen geometries. In both cases the two wedge placements
-reference the same BLAS address. The barrel's cylinder metadata and the tail's
-box metadata do not alter this startup-only render structure. The structures are
-built once by `buildAccelerationStructures` after
-`GpuScene` upload and before the render loop; the TLAS handle is what the RT
-descriptor set binds (`VkWriteDescriptorSetAccelerationStructureKHR` takes the
-handle — an acceleration-structure *device address* is needed only where a TLAS
-instance references a BLAS). Everything is **swapchain-independent**:
-resize/recreate never touches it.
+per `SceneInstance`**. The generated-only yard builds 5 BLASes and 13 TLAS
+instances over 6 geometries; the fully configured yard builds 14 BLASes and 22
+TLAS instances over 16 geometries. In both cases the
+two wedge placements reference the same BLAS address. The barrel's cylinder
+metadata and the tail's box metadata create no physics bodies and do not drive
+transforms.
+
+`buildAccelerationStructures` builds every BLAS once and creates/builds the TLAS
+after `GpuScene` upload. The frame path then performs a full in-place TLAS `BUILD`
+before every trace, changing its contents without replacing its handle or backing.
+That stable TLAS handle is what the RT descriptor set binds
+(`VkWriteDescriptorSetAccelerationStructureKHR` takes the handle — an
+acceleration-structure *device address* is needed only where a TLAS instance
+references a BLAS). BLASes, TLAS, per-slot inputs, and scratch are all
+**swapchain-independent**: resize/recreate waits for idle but never replaces them.
 
 Decisions and contracts worth preserving:
 
 - **One transform-layout boundary.** Scene transforms use GLM's column-major
   `glm::mat4`; `toVkTransformMatrix` in `acceleration_structure.cpp` alone copies
-  them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The gallery's translated
-  quad and its translated/rotated/non-uniformly-scaled wedge make this boundary
-  visible without putting world placement into OGFx.
+  them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The yard's translated
+  quad, translated/rotated/non-uniformly-scaled wedge, and orbiting/spinning crate
+  make this boundary visible without putting world placement into OGFx.
+- **Stable-fields template, per-slot transforms.** Startup creates one
+  `VkAccelerationStructureInstanceKHR` template containing the stable mesh address,
+  mask, custom index, SBT offset, and flags for each world instance. One mapped,
+  host-coherent copy exists per frame slot. After that slot's fence wait,
+  `writeTlasInstances` rejects instance-count drift, invalid slot/mapping state, and
+  any non-finite or singular transform; only then does it refresh the template's
+  transform fields and copy the complete array to that slot. Runtime animation
+  therefore cannot silently invalidate the startup-only scene checks or race a
+  build that is still in flight.
 - **Mesh ranges become BLAS geometry lists.** Each mesh's contiguous
   `[firstGeometry, firstGeometry + geometryCount)` range is emitted in order as
   one `VkAccelerationStructureGeometryKHR` per `SceneGeometry`. Vertex and index
@@ -694,8 +762,8 @@ Decisions and contracts worth preserving:
   record data with `uploadDeviceLocalBuffer`: a transient mapped, host-coherent transfer-source buffer
   feeds a `TRANSFER_DST` device-local buffer, then dies after the submission fence.
   The destination is parked directly in `GpuScene`, preserving the
-  null-guarded partial-failure teardown contract. The instance buffer remains mapped
-  host-visible memory because dynamic-scene TLAS updates will rewrite it from the CPU.
+  null-guarded partial-failure teardown contract. The per-slot instance buffers
+  remain mapped host-visible memory because every frame rewrites one from the CPU.
   Before upload, geometry and material record byte sizes are checked against
   `maxStorageBufferRange` on the selected physical device.
 - **Upload visibility crosses submissions deliberately.** Every upload ends with a
@@ -733,45 +801,51 @@ Decisions and contracts worth preserving:
   buffer underneath (VUID 09542). The **TLAS backing buffer** deliberately does not:
   nothing queries a TLAS address.
 - **Build-input alignment by construction and guard.** Position and `uint32` index
-  buffer base addresses are checked for 4-byte alignment, and the non-pointer instance
-  array for 16-byte alignment. Geometry range offsets are element-granular
+  buffer base addresses are checked for 4-byte alignment, and every non-pointer
+  instance-array base for 16-byte alignment. Geometry range offsets are element-granular
   (`firstVertex × 12` and `firstIndex × 4`), so every derived build-input address keeps
   the required 4-byte alignment without byte padding. Startup still fails with a named
   diagnostic if a base-address premise is ever violated.
 - **Scene counts are gated against the device.** Instance count must fit both
   `maxInstanceCount` and the 32-bit TLAS build-range field; each mesh's geometry
   count must fit `maxGeometryCount`; and its summed triangle count must fit
-  `maxPrimitiveCount`. These checks happen before Vulkan consumes narrowed counts.
-- **One checked scratch arena.** Batched BLAS builds may execute concurrently, so
+  `maxPrimitiveCount`. A zero frame-slot count is rejected before any Vulkan
+  resource exists, because the startup build itself requires slot 0. These checks
+  happen before Vulkan consumes narrowed counts or slot indices.
+- **Checked transient and persistent scratch.** Batched BLAS builds may execute concurrently, so
   every BLAS receives a disjoint region sized and aligned to
   `minAccelerationStructureScratchOffsetAlignment`. The arena's BLAS requirement
-  is the checked sum of those aligned sizes; its TLAS requirement is the aligned
-  TLAS scratch size. The allocation uses the larger requirement plus
-  `alignment - 1` bytes of slack, then rounds the returned *device address* up.
+  is the checked sum of those aligned sizes. Its allocation adds `alignment - 1`
+  bytes of slack and rounds the returned *device address* up; it is released after
+  startup completes. The TLAS gets a separate program-lifetime scratch allocation,
+  likewise slackened and aligned once, whose cached address every frame reuses.
   Checked `VkDeviceSize` arithmetic turns pathological overflow into a loud error.
-- **One submission, two barriers.** All BLASes are recorded in one batched
+- **Startup submission, then per-frame dependencies.** All BLASes are recorded in one batched
   `vkCmdBuildAccelerationStructuresKHR` call, followed by a build-stage barrier
   from AS write to **AS read and AS write**. The read scope makes BLAS contents
-  visible to the TLAS; the write scope orders reuse of the same scratch arena.
-  The TLAS build follows, then a final barrier from AS-build write to ray-tracing-
-  shader AS read. An acceleration structure's address is fixed at creation, so the
-  TLAS can be recorded before the BLAS batch executes; the barriers order the
-  contents. The trailing barrier makes the TLAS visible to future
-  `vkCmdTraceRaysKHR` calls without a per-frame AS barrier.
+  visible to the initial TLAS build; its AS-write destination matches the later
+  rebuild scope even though TLAS scratch is separate from the BLAS arena. The TLAS
+  build follows, then a barrier from AS-build write to ray-tracing-shader AS read.
+  An acceleration structure's address is fixed at creation, so the TLAS can be
+  recorded before the BLAS batch executes; the barriers order the contents. Every
+  frame records its own pre-build barrier, full TLAS build, and post-build barrier as
+  described under [Synchronization model](#synchronization-model).
 - **Borrowed sync.** All buffer and texture uploads plus the AS build reuse
   `frames[0]`'s command buffer
   and in-flight fence. Each reset → submit → wait cycle leaves the fence signaled,
   exactly the state the next startup submission and first `drawFrame` wait depend on,
   without introducing temporary sync objects that could leak on a failure path. The
   command buffer is reset between submissions; the other frame slots are untouched.
-- **Scratch release.** The scratch arena lives in the owner (not as a local) so a
-  failed build bare-returns and the destructor cleans up; on success it is destroyed
-  immediately after the fence wait rather than held for the program's lifetime.
+- **Scratch release.** Both scratch allocations live in the owner (not as locals) so
+  a failed build bare-returns and the destructor cleans up. On success the transient
+  BLAS arena is destroyed immediately after the startup fence wait; TLAS scratch
+  remains until owner teardown for the per-frame rebuilds.
 - **Transactional ownership and teardown.** The BLAS vector reserves before any
   Vulkan creation, and each created handle/backing is adopted immediately. Standard
   allocation failures are translated to `VK_ERROR_OUT_OF_HOST_MEMORY`. The
   destructor waits for device idle, destroys every BLAS and the TLAS handle before
-  their backing buffers, then releases any scratch arena and the instance buffer.
+  their backing buffers, then releases transient/persistent scratch and every
+  per-slot instance buffer.
   `GpuScene` independently owns the geometry buffers.
 
 ## Ray tracing pipeline
@@ -943,8 +1017,8 @@ Decisions and contracts worth preserving:
   giant rotation.
 - **Frame timing lives in `main()`.** `glfwGetTime()` deltas, clamped to
   `MaxFrameDt` (0.1 s) so window drags and resize stalls cannot teleport the
-  camera. A real loop with fixed-timestep simulation is deferred to the dynamic
-  scene step.
+  camera or the deterministic crate. Fixed-timestep simulation remains deferred
+  until physics-driven dynamics lands.
 
 ## Conventions
 
@@ -978,24 +1052,27 @@ Decisions and contracts worth preserving:
    structures, base-color DDS sampling, mixed opaque/alpha-tested per-geometry
    routing, and the narrow headless Blender 5.1.x static-mesh adapter have landed.
    The narrow SoC rigid-compound barrel and pseudodog-tail adapters plus optional
-   engine-neutral physics records have also landed. CMake generates the
-   quad and permanent two-geometry wedge probe through the shared writer. The
-   optional configured gallery additionally loads the verified legacy-converted
+   engine-neutral physics records have also landed. CMake generates the three
+   repository-owned ground/wall/box yard models plus the quad and permanent
+   two-geometry wedge probe through the shared writer. The configured yard
+   additionally loads the verified legacy-converted
    `plitka1.ogfx`, resolves its BC1 texture, and carries it into the render loop
    beside those probes. The alpha-tested Blender leaf card closes the visible
    any-hit acceptance gap. The opaque-textured, scale-faithful Blender barrel
    remake adds the first newly authored comparison asset beside the converted
    SoC barrel; the original custom barrel then exercises full art-direction
    freedom without changing the format. Plain, GPU-assisted, and synchronization validation
-   are clean, and the complete configured gallery has been visually checked.
+   are clean, and the complete configured yard has been visually checked.
    The wedge remains the repository-owned multi-geometry/shared-BLAS regression
    asset; it is not displaced by later content entries.
 
-   The permanent additive content ordering is **quad → plitka1 → Blender
-   pyramid/spheres → Blender leaf card → wedge probes →
+   The permanent test yard succeeds the earlier preview row: its generated ground,
+   wall corner, steps/platform, static crate, and engine-animated crate establish
+   the level-like structure, while the additive exhibit ordering is **quad →
+   plitka1 → Blender pyramid/spheres → Blender leaf card → wedge probes →
    `bochka_close_1` → remade `bochka_close_1` → custom Stalker barrel →
    `item_psevdodog_tail`**. The
-   gallery is a preview/integration scene, not another format or runtime path:
+   yard is an integration scene, not another format or runtime path:
    every entry travels through the same OGFx
    decoder, `SceneData`, GPU upload, BLAS/TLAS construction, material/texture
    system, and shaders. Source-specific work stays offline. The narrow M4a legacy
@@ -1006,7 +1083,7 @@ Decisions and contracts worth preserving:
    `test_smooth_sphere.ogfx`, plus the alpha-tested
    `test_leaf_card.ogfx` and opaque-textured
    `remade_bochka_close_1.ogfx` / `custom_stalker_barrel.ogfx`, for the optional
-   gallery beneath
+   yard beneath
    `build/<preset>/assets/blender/`. The leaf uses strict XRBM v2 material
    metadata and `trees\trees_new_vetka_green`; its transparent DXT1 samples
    visibly execute `IgnoreHit`. The direct legacy path now also produces
@@ -1014,12 +1091,12 @@ Decisions and contracts worth preserving:
    bind/model-space child mesh is flattened, and its body/cylinder data is
    retained in optional OGFx metadata. The regular barrel resolves
    `mtl\mtl_barrel_01` through the existing DDS path and occupies the same
-   gallery row without any source-specific runtime branch. The tail conversion
+   yard exhibit without any source-specific runtime branch. The tail conversion
    emits one mesh with two geometries—`models\model_aref` alpha-tested and
    `models\model` opaque—sharing `act\act_pseudodog_fur`, a material cutoff of
    128/255, and one preserved box-body recipe. It follows the barrel comparison
-   trio; the complete configured scene has eleven BLASes, twelve instances, and
-   thirteen geometries. The tail's
+   trio; the complete configured scene has 14 BLASes, 22 instances, and 16
+   geometries. The tail's
    mip-0 texels are all opaque, so the milestone proves mixed SBT routing and
    sampled-alpha any-hit execution; the leaf provides the visible cutout proof.
    The temporary code-owned tables
@@ -1036,18 +1113,17 @@ Decisions and contracts worth preserving:
    force rays opaque. Broader skeletal and physics source profiles still require
    explicit contracts; unsupported source semantics are rejected rather than
    hidden by a geometry-only conversion.
-3. **Dynamic scene.** Pending — the scene starts moving, in two tiers. First
-   rigid dynamics: per-frame TLAS refit/rebuild from CPU-written instance
-   buffers, one per `FrameResources` slot (the first genuinely per-frame-written
-   GPU buffer — slot rotation is what prevents overwriting instance data a frame
-   in flight still reads). Then deformables: compute-pass skinning into per-slot
-   vertex buffers followed by per-character BLAS refits, for NPCs and mutants.
-   Also the natural point to grow the loop's timing (the fly camera added
-   simple clamped delta-time; fixed-timestep simulation can wait for game
-   systems).
-   The landed barrel and tail metadata do not implement this step: they create no
-   live bodies, do not select a physics backend, and cause no per-frame instance
-   or TLAS update.
+3. **Dynamic scene.** **Rigid-instance/TLAS-update foundation landed** — one
+   engine-animated yard crate is written through `SceneData`, one mapped instance
+   input per `FrameResources` slot, and a full in-place TLAS rebuild before every
+   trace. Slot rotation prevents the CPU from overwriting instance data an in-flight
+   build still reads, while explicit pre/post-build barriers protect the shared TLAS
+   and scratch. This is the rendering foundation, not a completed rigid-dynamics
+   tier: physics-driven rigid transforms, live bodies, a physics backend, and
+   fixed-timestep simulation remain pending. The preserved barrel and tail physics
+   metadata records still create no runtime bodies and drive no transform. Deformables
+   also remain pending: compute-pass skinning into per-slot vertex buffers followed
+   by per-character BLAS refits, for NPCs and mutants.
 4. **Lighting + path tracing.** Pending — the renderer becomes an actual path
    tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
    pipeline recursion depth at 1), next-event estimation with shadow rays,

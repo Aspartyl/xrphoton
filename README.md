@@ -25,19 +25,23 @@ way of doing each thing.
 
 ## Status
 
-Right now it renders an additive OGFx preview gallery that you can fly around
-(WASD + mouse look). Every build includes one indexed quad and a permanent
-two-geometry wedge regression probe placed twice, including one rotated and
-non-uniformly scaled instance. A configured reference build adds the converted,
-textured legacy `plitka1.ogfx` as a fourth placement through the same runtime path.
+Right now it renders a compact OGFx test yard that you can fly around
+(WASD + mouse look). Every build includes generated ground, wall, and unit-box
+models assembled into a walled yard, platform, staircase, and crates, plus an
+indexed quad and a permanent two-geometry wedge regression probe placed twice.
+One ochre crate orbits and spins under engine control: the CPU rewrites one
+fence-protected instance-input slot and rebuilds the shared TLAS in place before
+every trace while all BLAS geometry stays static. A configured reference build
+adds the converted, textured legacy `plitka1.ogfx` as another yard placement
+through the same runtime path.
 That plitka configuration reaches the interactive render loop, passes plain,
 GPU-assisted, and synchronization validation, and has been visually checked in
-the complete gallery row.
+the complete yard.
 The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`,
 `test_smooth_sphere.ogfx`, and alpha-tested `test_leaf_card.ogfx` can be
-configured independently as Blender gallery placements. The converted regular
-`bochka_close_1.ogfx` is another gallery
-model: its `mtl\mtl_barrel_01` reference uses the same DDS path, while its
+configured independently as Blender yard placements. The converted regular
+`bochka_close_1.ogfx` is another yard model: its `mtl\mtl_barrel_01` reference
+uses the same DDS path, while its
 backend-neutral compound-collider metadata is preserved but not simulated yet.
 The adjacent `remade_bochka_close_1.ogfx` is a Blender-authored, scale-faithful
 visual remake with 8,381 unified vertices, 15,944 triangles, and the owner-local
@@ -54,18 +58,19 @@ two geometries in source order: a `models\model_aref` alpha-tested range and a
 `models\model` opaque range, both using `act\act_pseudodog_fur` through one
 shared material with the source cutoff of 128/255. Its single rigid box-body
 recipe is also preserved as backend-neutral metadata and is not simulated.
-All three configured SoC assets retain their authored scale in the gallery:
-plitka and the barrel are translated only, while the tail is rotated and
-translated without resizing.
-With every optional asset enabled, the gallery contains eleven BLASes, twelve TLAS
-instances, and thirteen geometries; the wedge remains the shared-BLAS probe. The two
-spheres have identical geometry and UV corner streams but deliberately different
-normal sharing, making flat-versus-smooth shading directly observable. The
+All three configured SoC assets retain their authored scale in the yard: the
+barrel is translated only, while plitka and the tail are rotated and translated
+without resizing.
+The generated-only yard contains 5 models/BLASes, 13 TLAS instances, and 6
+geometries. With every optional asset enabled, it contains 14 models/BLASes,
+22 TLAS instances, and 16 geometries; the wedge remains the shared-BLAS probe.
+The two spheres have identical geometry and UV corner streams but deliberately
+different normal sharing, making flat-versus-smooth shading directly observable. The
 shipped tail DDS has no transparent texels in mip 0, so that asset proves mixed
 opaque/alpha-tested routing and real texture sampling through the any-hit stage.
 The Blender leaf card closes the visual acceptance gap: its pinned
 `trees\trees_new_vetka_green` DXT1 mip contains 153,894 transparent texels, and
-the running gallery visibly reveals the miss background through those samples.
+the running yard visibly reveals the miss background through those samples.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
@@ -81,10 +86,11 @@ time, so shader deployment is self-contained and needs no runtime shader files.
 
 The first complete OGFx round trip, the narrow M4a legacy-static converter, and
 the first headless Blender-to-OGFx path have landed. Every normal engine build
-generates `build/<preset>/assets/probes/test_quad.ogfx` and `test_wedge.ogfx`
-through the canonical writer; the runtime strictly decodes both, assembles their model records and world
-placements into `SceneData`, batches two different BLAS builds, and shares the
-wedge BLAS across two TLAS instances. The texture foundation now reconstructs
+generates `build/<preset>/assets/probes/test_quad.ogfx`, `test_wedge.ogfx`, and
+the three `test_yard_*.ogfx` models through the canonical writer; the runtime
+strictly decodes all five, assembles their model records and world placements
+into `SceneData`, batches five BLAS builds, and shares both the wedge and unit-box
+BLASes across multiple TLAS instances. The texture foundation now reconstructs
 logical OGFx references, resolves strict DDS DXT1/DXT5 or canonical uncompressed
 RGBA8 images, uploads their mip-0 payloads directly, and exposes a fixed
 sampled-image array with an opaque-white fallback. The generated probes exercise the fallback with an amber quad and
@@ -97,7 +103,7 @@ runtime path. The Blender slice uses Blender
 one explicitly named static mesh. A private `XRBM` stream crosses
 stdin to the C++ adapter, which performs coordinate/normal/winding conversion and
 feeds the same canonical writer used by every other source. `test_pyramid` is the
-first gallery probe; the flat-shaded `test_sphere` exercises dense triangulation,
+first yard probe; the flat-shaded `test_sphere` exercises dense triangulation,
 its UV seam, and corner splitting; and `test_smooth_sphere` proves that equal
 positions share smooth normals while UV seams remain split. Material-free inputs
 remain byte-compatible XRBM v1. The strict v2 profile adds exactly one opaque or
@@ -107,16 +113,16 @@ for DDS/Vulkan top-row sampling. `test_leaf_card` is its alpha-tested consumer
 and visible `IgnoreHit` proof; `remade_bochka_close_1` proves the opaque-textured
 branch with a newly authored asset, and `custom_stalker_barrel` proves a fully
 original production-detail design within that same contract. All six use the
-optional gallery path. The regular barrel adds the first narrow type-`0xA`
+optional yard path. The regular barrel adds the first narrow type-`0xA`
 rigid-compound legacy profile: its bind/model-space child mesh is flattened to
 ordinary render geometry and its three cylinder records, masses, centers of
 mass, source material, and source-node names enter optional OGFx metadata. The
 pseudodog tail extends that same narrow adapter with its validated progressive
 and static child forms, mixed opaque/alpha-tested render semantics, shared
 material cutoff, and one box collider.
-Dynamic scenes
-(TLAS refits, skinning), actual path tracing with lights, and temporal accumulation
-and denoising follow later. Details in [ARCHITECTURE.md](ARCHITECTURE.md).
+Physics-driven rigid dynamics, skinning and BLAS refits, actual path tracing with
+lights, and temporal accumulation and denoising follow later. Details in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
 
@@ -162,7 +168,7 @@ M4a flat-static slice and the narrowly validated SoC rigid-compound slices used
 by `bochka_close_1` and `item_psevdodog_tail`. It is not general skeletal
 support. Their outputs preserve a logical texture name that the runtime
 reconstructs for scene-global DDS resolution and can be supplied directly to
-the optional gallery configuration below.
+the optional yard configuration below.
 
 ### Converting the Blender probes
 
@@ -307,11 +313,11 @@ Override the ignored local inputs with
 `-DXRPHOTON_ALPHA_TAIL_TEXTURE_DDS=/path/to/act_pseudodog_fur.dds` if needed.
 The proof selects no physics backend and performs no simulation.
 
-### Configuring the optional gallery entries
+### Configuring the optional yard entries
 
 The generated quad and wedge need no local source files. To add the verified
 plitka, regular-barrel, and pseudodog-tail outputs, their original textures, and
-all six converted Blender assets to the debug gallery, configure the
+all six converted Blender assets to the debug yard, configure the
 owner-local paths once, then build normally:
 
 ```sh
@@ -335,7 +341,7 @@ The texture root must preserve the exact-case relative paths
 `act/act_pseudodog_fur.dds`, and `trees/trees_new_vetka_green.dds`. The shipped
 tail texture's mip 0 is fully opaque; the leaf texture supplies the complementary
 visible cutout acceptance and shows the miss background through rejected texels.
-The gallery resolves owner-local `blender/textures` first and the configured
+The yard resolves owner-local `blender/textures` first and the configured
 legacy root second, so the remade barrel needs no copied SoC file and an authored
 path deterministically shadows a same-named legacy path.
 CMake remembers these values

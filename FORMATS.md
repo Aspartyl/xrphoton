@@ -8,7 +8,7 @@ decisions into concrete mechanism. OGFx v1's static core, canonical writer,
 strict runtime decoder/adapter, offline probe front ends, narrow M4a
 legacy-static adapter, narrow SoC v4 rigid-compound adapter, optional
 backend-neutral rigid-physics records, narrow headless Blender 5.1.x
-static-mesh adapter, generic multi-model gallery consumer, and DDS-backed
+static-mesh adapter, generic multi-model test-yard consumer, and DDS-backed
 opaque base-color path now exist; broader source profiles, live physics, later
 format families, and SDK tools remain planned. The landed slices are recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
@@ -665,7 +665,7 @@ The design directly mirrors the engine's data model:
 
 OGFx contains no world-instance placement. It is a *model* format in the OGF
 tradition; placement belongs to the eventual scene/level representation. The
-preview gallery assembles decoded models and supplies their `SceneInstance`
+code-owned test-yard table assembles decoded models and supplies their `SceneInstance`
 placements. The reusable decoder itself returns no instances. This is runtime
 bring-up policy, not serialized model data, and it disappears once a real scene
 owner supplies instances.
@@ -682,9 +682,10 @@ routing ABI, and no trace uses `RAY_FLAG_FORCE_OPAQUE`.
 
 Both schema and runtime byte decoders validate and reconstruct optional rigid
 physics records. [`src/ogfx_loader.cpp`](src/ogfx_loader.cpp) intentionally
-copies only render data into `SceneData` today, so the gallery barrel and tail
-remain static placements: no backend is selected, no body is instantiated, and
-no TLAS update or collision simulation is implied.
+copies only render data into `SceneData` today, so the yard's barrel and tail
+remain static placements: no backend is selected and no body is instantiated.
+The separate repository-owned crate animation is code-authored placement policy;
+it consumes none of those physics records and implies no collision simulation.
 
 Container version 1 supports only the static `normal` model type. Heritage
 model-type values remain documented and reserved, but the loader rejects them
@@ -887,7 +888,7 @@ both XRBM v1 and v2 are compiled into canonical OGFx container version 1.
 `(u, v)` values exactly for backward compatibility. Textured v2 performs the
 single offline normalization `v_engine = 1 - v_blender`; DDS rows and Vulkan
 sampling are not flipped elsewhere. The vertically asymmetric
-`test_leaf_card` fixture and its visible gallery result pin this convention so
+`test_leaf_card` fixture and its visible test-yard result pin this convention so
 future material profiles cannot silently apply a second flip.
 
 The ignored root `blender/` directory holds owner-local source files. The
@@ -906,7 +907,7 @@ Generated outputs live beneath the ignored
 `XRPHOTON_BLENDER_LEAF_CARD_BLEND`, `XRPHOTON_BLENDER_LEAF_TEXTURE_ROOT`, and
 `XRPHOTON_BLENDER_LEAF_TEXTURE_DDS`, to run all four files through Blender and
 verify their canonical outputs; it does not make the local `.blend` inputs
-normal-build dependencies. All four outputs can be configured as gallery entries.
+normal-build dependencies. All four outputs can be configured as test-yard props.
 
 The owner-local `remade_bochka_close_1.blend` / object
 `remade_bochka_close_1` is the first opaque-textured v2 asset. It preserves the
@@ -1127,7 +1128,7 @@ each arrives with its own consumer.
    beneath
    `build/<preset>/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`.
 
-2. **Additive runtime gallery + textured plitka path. Landed and visually
+2. **Additive runtime test yard + textured plitka path. Landed and visually
    validated.** Generic scene
    assembly merges independently decoded OGFx models and supplies world placements
    without adding instances to the format. The permanent generated wedge probe
@@ -1135,14 +1136,14 @@ each arrives with its own consumer.
    foundation carries logical names into `SceneData`, resolves strict DDS
    DXT1/DXT5 or canonical uncompressed RGBA8 beneath an owner-configured root,
    uploads mip 0 directly, and maps
-   untextured materials to a white fallback. The configured gallery now carries
+   untextured materials to a white fallback. The configured test yard now carries
    the M4a plitka output and its marble DDS into the render loop beside the generated
    probes, exercising the real BC1 upload and nonzero descriptor path without
    changing the canonical bytes or adding source-specific runtime logic. Its
    on-screen orientation, authored scale, winding, and texture appearance have
-   been checked in the configured gallery.
+   been checked in the configured yard.
 
-3. **Blender static probes → headless export → OGFx. Landed and gallery
+3. **Blender static probes → headless export → OGFx. Landed and yard
    validated.** Blender 5.1.x and
    `tools/blender/export_ogfx.py` extract
    one explicitly named static mesh through the private stdin-only `XRBM`
@@ -1155,7 +1156,7 @@ each arrives with its own consumer.
    strict one-material opaque-or-alpha-tested profile. `test_leaf_card` carries
    `trees\trees_new_vetka_green`, cutoff 128/255, and the one-time textured V
    flip. The four regression outputs are reproducible beneath
-   `build/<preset>/assets/blender/` and are independent optional gallery probes.
+   `build/<preset>/assets/blender/` and are independent optional yard props.
    The slice adds no second writer or runtime loader. A direct
    GLB-to-compiler adapter remains an optional later offline tool.
 
@@ -1177,7 +1178,7 @@ each arrives with its own consumer.
    `eed1c06c5d975199ae96fe49517f8893e164cf5e93ce1a040421c7cb0e115060`
    and is persisted at
    `build/<preset>/assets/soc/meshes/physics/balon/bochka_close_1.ogfx`.
-   The gallery consumes that render data and the existing DDS path, but no
+   The yard consumes that render data and the existing DDS path, but no
    current runtime subsystem consumes the optional physics recipe.
 
 5. **Mixed opaque/alpha-tested pseudodog tail → per-geometry RT routing.
@@ -1202,7 +1203,7 @@ each arrives with its own consumer.
    `b5fc918b3e5a9f11dcdf596360361824719999c850282e30ce0f6dd97b5fc0dd`.
    It persists
    `build/<preset>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`.
-   The gallery routes its mixed ranges through separate opaque and alpha-tested
+   The yard routes its mixed ranges through separate opaque and alpha-tested
    SBT records, with per-geometry BLAS opacity and real texture-alpha any-hit.
    The shipped 256×128 DXT1 texture is structurally alpha-capable, but its mip-0
    blocks select no transparent palette texels. This asset therefore proves the
@@ -1210,7 +1211,7 @@ each arrives with its own consumer.
    cutout.
 
 6. **Alpha-tested Blender leaf card → visible `IgnoreHit` acceptance.
-   Landed and gallery validated.** The two-triangle `test_leaf_card` is the first
+   Landed and yard validated.** The two-triangle `test_leaf_card` is the first
    XRBM v2 source. Its deterministic 584-byte OGFx output has SHA-256
    `c348ffda8f0f81b8662d209040d31e72e68eb3fb627622c2a6a65edab6c56977`
    and reconstructs one alpha-tested geometry/material with logical texture
@@ -1218,12 +1219,12 @@ each arrives with its own consumer.
    512×512 DXT1 DDS at 174,904 bytes and SHA-256
    `f6d6ad3e53890ed4614ad0b3c486a3196945bac9a27cee88ba71fc9e048985a5`,
    independently decodes BC1 mip 0, and counts 153,894 fully transparent texels
-   alongside opaque texels. The configured gallery resolves that DDS through
+   alongside opaque texels. The configured yard resolves that DDS through
    the ordinary texture table, selects the alpha-tested SBT record, and visibly
    reveals the miss background where any-hit calls `IgnoreHit`. This closes the
    outstanding geometry-plan acceptance gap without a renderer-only fixture.
 
-7. **Scale-faithful opaque Blender barrel remake. Landed and gallery
+7. **Scale-faithful opaque Blender barrel remake. Landed and yard
    validated.** `remade_bochka_close_1.blend` uses the same XRBM v2 geometry and
    textured-V contract with material flags zero, producing one opaque geometry,
    8,381 unified vertices, 47,832 indices / 15,944 triangles, logical texture
@@ -1239,7 +1240,7 @@ each arrives with its own consumer.
    owner-local legacy root, then places the remake directly beside the converted
    original without scaling either one.
 
-8. **Original production-detail Stalker-style barrel. Landed and gallery
+8. **Original production-detail Stalker-style barrel. Landed and yard
    validated.** `custom_stalker_barrel` keeps the same XRBM v2/OGFx material
    contract while replacing reference-copying with an original design. Its
    dented 192-segment shell, three rolled ribs, recessed lid, asymmetric fill
@@ -1251,11 +1252,11 @@ each arrives with its own consumer.
    level. Its canonical DDS is 67,108,992 bytes at
    SHA-256
    `089dd46cf7059cd28abca583290f03af1033c400c730614d6c6572c26503ecc2`.
-   The gallery places it translation-only beside the converted original and
+   The yard places it translation-only beside the converted original and
    scale-faithful remake, giving all three barrels the same runtime path and
    directly comparable scale.
 
-The code-owned gallery table remains temporary placement policy until level/scene
+The code-owned yard table remains temporary placement policy until level/scene
 data has its real owner; it contains no geometry and never becomes an OGFx chunk.
 The opaque/alpha-tested hit-group and `RayTypeCount` SBT split from
 [GEOMETRY_PLAN.md](GEOMETRY_PLAN.md) landed with that real mixed-class consumer.

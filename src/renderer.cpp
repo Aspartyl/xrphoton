@@ -1,5 +1,6 @@
 #include "renderer.hpp"
 
+#include "acceleration_structure.hpp"
 #include "camera.hpp"
 #include "rt_pipeline.hpp"
 #include "swapchain.hpp"
@@ -69,17 +70,20 @@ void recordExecutionBarrier(
 }
 
 // Record the entire frame into a one-time-submit command buffer:
-//   1. barrier the storage image UNDEFINED -> GENERAL,
-//   2. trace: one ray per pixel writes the storage image (triangle over dark red),
-//   3. barrier storage GENERAL -> TRANSFER_SRC_OPTIMAL,
-//   4. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
-//   5. blit storage into the acquired image,
-//   6. chain the next trace behind this frame's storage-image read,
-//   7. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
+//   1. rebuild the TLAS between its cross-frame and traversal barriers,
+//   2. barrier the storage image UNDEFINED -> GENERAL,
+//   3. trace: one ray per pixel writes the storage image (triangle over dark red),
+//   4. barrier storage GENERAL -> TRANSFER_SRC_OPTIMAL,
+//   5. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
+//   6. blit storage into the acquired image,
+//   7. chain the next trace behind this frame's storage-image read,
+//   8. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
 VkResult recordTraceCommandBuffer(
     VkCommandBuffer commandBuffer,
     const RayTracingFunctions& functions,
     const RtPipeline& rt,
+    const AccelerationStructure& accel,
+    uint32_t frameSlot,
     const CameraPushConstants& camera,
     VkImage storageImage,
     VkImage swapchainImage,
@@ -94,6 +98,10 @@ VkResult recordTraceCommandBuffer(
     if (result != VK_SUCCESS) {
         return result;
     }
+
+    // writeTlasInstances already validated and populated this frame slot after its
+    // fence wait. Rebuild the shared TLAS before any traversal in this command buffer.
+    recordTlasRebuild(commandBuffer, functions, accel, frameSlot);
 
     VkImageSubresourceRange colorRange{};
     colorRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -137,9 +145,9 @@ VkResult recordTraceCommandBuffer(
         sizeof(CameraPushConstants),
         &camera);
 
-    // No acceleration-structure barrier here: the AS build's trailing barrier already
-    // made the TLAS visible to every future RAY_TRACING_SHADER read. The dispatch
-    // dimensions were gated against the device limits when the swapchain (re)appeared.
+    // recordTlasRebuild's in-frame post-build barrier made the fresh TLAS visible to
+    // this traversal. The dispatch dimensions were gated against the device limits
+    // when the swapchain (re)appeared.
     functions.cmdTraceRays(
         commandBuffer,
         &rt.raygenRegion,
@@ -243,7 +251,11 @@ bool prepareRtForSwapchain(const Renderer& renderer)
     const RtPipeline& rt = *renderer.rtPipeline;
     const Swapchain& swap = *renderer.swap;
 
-    writeRtDescriptorSet(renderer.device, rt.descriptorSet, renderer.tlas, swap.storageImageView);
+    writeRtDescriptorSet(
+        renderer.device,
+        rt.descriptorSet,
+        renderer.accel->tlas,
+        swap.storageImageView);
 
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProperties{};
     rtProperties.sType =
@@ -292,6 +304,13 @@ VkResult drawFrame(
         return result;
     }
 
+    // The slot fence also retires every prior build that read this slot's mapped
+    // instance input. Keep this fallible write before image acquisition so a rejected
+    // runtime transform cannot strand an acquired image or consumed semaphore.
+    if (!writeTlasInstances(renderer.accel, *renderer.scene, frameIndex)) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
     uint32_t imageIndex = 0;
     result = vkAcquireNextImageKHR(
         renderer.device,
@@ -333,6 +352,8 @@ VkResult drawFrame(
         frame.commandBuffer,
         *renderer.functions,
         *renderer.rtPipeline,
+        *renderer.accel,
+        frameIndex,
         camera,
         swap.storageImage,
         swap.images[imageIndex],

@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <glm/gtc/matrix_transform.hpp>
+
 namespace
 {
 int failureCount = 0;
@@ -549,6 +551,109 @@ void testInstanceAppend()
         "invalid instance append leaves the scene unchanged");
 }
 
+void testYardShapedAssembly()
+{
+    xrphoton::SceneData scene{};
+    if (!appendForTest(
+            &scene,
+            makeTriangleModel(0.0f, "yard\\ground"),
+            "yard ground model appends")
+        || !appendForTest(
+            &scene,
+            makeTriangleModel(10.0f, "yard\\wall"),
+            "yard wall model appends")
+        || !appendForTest(
+            &scene,
+            makeTriangleModel(20.0f, "yard\\box"),
+            "yard box model appends")
+        || !appendForTest(
+            &scene,
+            makeTriangleModel(30.0f, "yard\\quad"),
+            "yard quad model appends")
+        || !appendForTest(
+            &scene,
+            makeTwoGeometryModel(),
+            "yard wedge model appends")) {
+        return;
+    }
+
+    expect(scene.meshes.size() == 5, "yard-shaped merge contains five meshes");
+    expect(scene.geometries.size() == 6, "yard-shaped merge contains six geometries");
+    expect(scene.materials.size() == 6, "yard-shaped merge contains six materials");
+
+    const auto translate = [](glm::vec3 offset) {
+        return glm::translate(glm::mat4{1.0f}, offset);
+    };
+    const auto scaled = [&translate](glm::vec3 offset, glm::vec3 scale) {
+        return translate(offset) * glm::scale(glm::mat4{1.0f}, scale);
+    };
+    const std::array placements{
+        xrphoton::SceneInstance{0, glm::mat4{1.0f}},
+        xrphoton::SceneInstance{1, translate({6.0f, -0.01f, 9.85f})},
+        xrphoton::SceneInstance{
+            1,
+            translate({9.84f, -0.01f, 5.71f})
+                * glm::rotate(
+                    glm::mat4{1.0f},
+                    glm::radians(90.0f),
+                    glm::vec3{0.0f, 1.0f, 0.0f})},
+        xrphoton::SceneInstance{2, scaled({5.0f, 0.49f, 5.0f}, {2.0f, 1.0f, 2.0f})},
+        xrphoton::SceneInstance{2, scaled({5.0f, 0.115f, 1.59f}, {1.92f, 0.25f, 0.7f})},
+        xrphoton::SceneInstance{2, scaled({5.0f, 0.24f, 2.28f}, {1.94f, 0.5f, 0.7f})},
+        xrphoton::SceneInstance{2, scaled({5.0f, 0.365f, 2.97f}, {1.96f, 0.75f, 0.7f})},
+        xrphoton::SceneInstance{2, scaled({5.0f, 0.49f, 3.66f}, {1.98f, 1.0f, 0.7f})},
+        xrphoton::SceneInstance{
+            2,
+            translate({-3.0f, 0.49f, 4.0f})
+                * glm::rotate(
+                    glm::mat4{1.0f},
+                    glm::radians(30.0f),
+                    glm::vec3{0.0f, 1.0f, 0.0f})},
+        xrphoton::SceneInstance{2, translate({3.0f, 0.9f, 0.0f})},
+        xrphoton::SceneInstance{3, translate({-6.0f, 1.0f, 9.5f})},
+        xrphoton::SceneInstance{4, translate({-4.25f, 1.0f, 9.35f})},
+        xrphoton::SceneInstance{
+            4,
+            translate({-2.1f, 1.0f, 9.0f})
+                * glm::rotate(
+                    glm::mat4{1.0f},
+                    glm::radians(30.0f),
+                    glm::vec3{0.0f, 1.0f, 0.0f})
+                * glm::scale(glm::mat4{1.0f}, glm::vec3{1.5f, 1.0f, 1.5f})},
+    };
+
+    std::string error;
+    for (const xrphoton::SceneInstance& placement : placements) {
+        if (!xrphoton::appendSceneInstance(
+                &scene,
+                placement.meshIndex,
+                placement.transform,
+                &error)) {
+            expect(false, "yard-shaped placement appends");
+            std::cerr << error << '\n';
+            return;
+        }
+    }
+
+    expect(scene.instances.size() == 13, "yard-shaped assembly contains thirteen instances");
+    std::size_t boxInstanceCount = 0;
+    for (const xrphoton::SceneInstance& instance : scene.instances) {
+        if (instance.meshIndex == 2) {
+            ++boxInstanceCount;
+        }
+    }
+    expect(boxInstanceCount == 7, "one yard-box mesh is shared by seven placements");
+    expect(
+        sameRecords(scene.instances, std::vector(placements.begin(), placements.end()), sameInstance),
+        "yard-shaped assembly preserves placement order, transforms, and shared mesh indices");
+    expect(
+        xrphoton::validateAssembledScene(scene, &error),
+        "complete yard-shaped assembled scene passes final validation");
+    if (!error.empty()) {
+        std::cerr << error << '\n';
+    }
+}
+
 void expectValidationRejected(
     xrphoton::SceneData scene,
     std::string_view fragment,
@@ -815,6 +920,7 @@ int main()
     testExactTextureStrings();
     testRuntimeLoadedModels();
     testInstanceAppend();
+    testYardShapedAssembly();
     testFinalValidation();
     testModelPreconditionsAreTransactional();
     testRebaseOffsetOverflowIsTransactional();
