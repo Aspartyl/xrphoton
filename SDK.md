@@ -69,7 +69,10 @@ barrel and pseudodog tail. It flattens their narrowly validated rigid bind-pose
 render hierarchies, preserves the tail's `models\model_aref` versus
 `models\model` geometry classification and exact 128/255 material cutoff, and
 retains backend-neutral body metadata: three cylinders for the barrel and one
-box for the tail. Blender is neither required nor invoked by that path.
+box for the tail. Blender is neither required nor invoked by that path. The
+engine's separate `PhysicsWorld` now consumes those recipes for configured
+dynamic yard placements, but Jolt handles and live simulation state remain
+outside both OGFx and the shared compiler.
 
 ## Capabilities
 
@@ -191,13 +194,15 @@ profile. The tail adds validated progressive/static child forms and produces one
 mesh with two geometries sharing `act\act_pseudodog_fur`: alpha-tested first,
 opaque second. Collider, mass, material, center-of-mass, and source-node
 semantics remain in backend-neutral OGFx metadata; the tail contributes one box
-body, not simulation state. Its opt-in compiler proof is
+recipe, not serialized simulation state. The runtime now copies the usable recipe
+fields into `SceneData` and instantiates the configured tail (and regular barrel)
+through its engine-side Jolt backend. Its opt-in compiler proof is
 `xrPhotonAlphaOgfOfflineProof`, with the source selected by
 `XRPHOTON_ALPHA_TAIL_CORPUS_OGF` and the pinned texture selected by
 `XRPHOTON_ALPHA_TAIL_TEXTURE_DDS`; the separate runtime gallery cache is
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`. A future SDK inspector may visualize or
-edit these render/physics records, but this milestone neither supplies such a UI
-nor integrates a physics backend. The shipped tail DDS has no transparent mip-0
+edit these render/physics records, but no such SDK UI or backend-specific
+authoring surface has landed. The shipped tail DDS has no transparent mip-0
 texels, so the tail itself proves mixed routing and sampled-alpha any-hit
 execution rather than a visible cutout; the Blender leaf card supplies the
 separate visible-`IgnoreHit` acceptance. Broader source profiles must continue to fail

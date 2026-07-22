@@ -36,7 +36,7 @@ struct GalleryPlacement
 {
     uint32_t assetIndex;
     glm::mat4 transform;
-    bool animated = false;
+    bool dynamic = false;
 };
 
 enum GalleryAssetIndex : uint32_t
@@ -65,13 +65,8 @@ struct LoadedGalleryAsset
     uint32_t geometryCount = 0;
     uint32_t firstMaterial = 0;
     uint32_t materialCount = 0;
+    uint32_t physicsBodyCount = 0;
 };
-
-constexpr double Pi = 3.14159265358979323846;
-constexpr double OrbitRadius = 3.0;
-constexpr double OrbitHeight = 0.9;
-constexpr double OrbitRadiansPerSecond = 0.6;
-constexpr double SpinRadiansPerSecond = 1.7;
 
 const GallerySpawn YardSpawn{
     .position = {-7.0f, 1.7f, -7.0f},
@@ -245,8 +240,18 @@ const std::array GalleryPlacements{
     },
     GalleryPlacement{
         .assetIndex = YardBoxAsset,
-        .transform = yardAnimatedTransform(0.0),
-        .animated = true,
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{3.0f, 2.5f, 0.0f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(25.0f),
+                glm::vec3{0.0f, 1.0f, 0.0f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(12.0f),
+                glm::vec3{1.0f, 0.0f, 0.0f}),
+        .dynamic = true,
     },
     // Keep the low-level probes along the north-west edge, outside the yard's
     // central movement area but visible from the deliberate spawn.
@@ -321,11 +326,14 @@ const std::array GalleryPlacements{
     },
     GalleryPlacement{
         .assetIndex = BarrelAsset,
-        // Translation-only placements preserve the three barrels' scale-faithful
-        // comparison against the north wall.
         .transform = glm::translate(
-            glm::mat4{1.0f},
-            glm::vec3{4.2f, 0.0f, 9.2f}),
+                         glm::mat4{1.0f},
+                         glm::vec3{4.2f, 0.6f, 9.2f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(20.0f),
+                glm::vec3{0.0f, 0.0f, 1.0f}),
+        .dynamic = true,
     },
     GalleryPlacement{
         .assetIndex = RemadeBarrelAsset,
@@ -356,6 +364,7 @@ const std::array GalleryPlacements{
                 glm::mat4{1.0f},
                 glm::radians(90.0f),
                 glm::vec3{1.0f, 0.0f, 0.0f}),
+        .dynamic = true,
     },
 };
 
@@ -364,7 +373,7 @@ GalleryLoadResult fail(std::string error)
     return {
         .scene = {},
         .error = std::move(error),
-        .animatedInstance = 0,
+        .dynamicInstances = {},
         .spawn = YardSpawn,
     };
 }
@@ -417,42 +426,9 @@ std::size_t resolvedTextureCount(
 }
 }
 
-glm::mat4 yardAnimatedTransform(double seconds)
-{
-    const double orbitAngle = std::remainder(
-        seconds,
-        2.0 * Pi / OrbitRadiansPerSecond) * OrbitRadiansPerSecond;
-    const double spinAngle = std::remainder(
-        seconds,
-        2.0 * Pi / SpinRadiansPerSecond) * SpinRadiansPerSecond;
-
-    const glm::vec3 position{
-        static_cast<float>(OrbitRadius * std::cos(orbitAngle)),
-        static_cast<float>(OrbitHeight),
-        static_cast<float>(-OrbitRadius * std::sin(orbitAngle)),
-    };
-    return glm::translate(glm::mat4{1.0f}, position)
-        * glm::rotate(
-            glm::mat4{1.0f},
-            static_cast<float>(spinAngle),
-            glm::vec3{0.0f, 1.0f, 0.0f});
-}
-
 GalleryLoadResult loadGalleryScene()
 {
     try {
-        std::size_t animatedPlacementCount = 0;
-        for (const GalleryPlacement& placement : GalleryPlacements) {
-            if (placement.animated) {
-                ++animatedPlacementCount;
-            }
-        }
-        if (animatedPlacementCount != 1) {
-            return fail(
-                "Gallery yard must contain exactly one animated placement; found "
-                + std::to_string(animatedPlacementCount));
-        }
-
         SceneData scene{};
         std::array<LoadedGalleryAsset, GalleryAssets.size()> loadedAssets{};
         std::string assemblyError;
@@ -482,6 +458,7 @@ GalleryLoadResult loadGalleryScene()
             const std::size_t meshCount = loaded.scene.meshes.size();
             const std::size_t geometryCount = loaded.scene.geometries.size();
             const std::size_t materialCount = loaded.scene.materials.size();
+            const std::size_t physicsBodyCount = loaded.scene.physicsBodies.size();
             const std::size_t firstMesh = scene.meshes.size();
             const std::size_t firstMaterial = scene.materials.size();
 
@@ -497,10 +474,10 @@ GalleryLoadResult loadGalleryScene()
             metadata.geometryCount = static_cast<uint32_t>(geometryCount);
             metadata.firstMaterial = static_cast<uint32_t>(firstMaterial);
             metadata.materialCount = static_cast<uint32_t>(materialCount);
+            metadata.physicsBodyCount = static_cast<uint32_t>(physicsBodyCount);
         }
 
-        std::size_t animatedInstance = 0;
-        bool animatedInstanceRecorded = false;
+        std::vector<std::size_t> dynamicInstances;
         for (std::size_t placementIndex = 0;
              placementIndex < GalleryPlacements.size();
              ++placementIndex) {
@@ -515,22 +492,23 @@ GalleryLoadResult loadGalleryScene()
 
             const LoadedGalleryAsset& asset = loadedAssets[placement.assetIndex];
             if (!asset.loaded) {
-                if (placement.animated) {
-                    return fail(
-                        "Gallery placement[" + std::to_string(placementIndex)
-                        + "] is animated but its asset is not configured");
-                }
                 continue;
             }
-            if (placement.animated) {
+            if (placement.dynamic) {
                 if (asset.meshCount != 1) {
                     return fail(
                         "Gallery placement[" + std::to_string(placementIndex)
-                        + "] is animated but its asset contains "
+                        + "] is dynamic but its asset contains "
                         + std::to_string(asset.meshCount) + " meshes; expected exactly 1");
                 }
-                animatedInstance = scene.instances.size();
-                animatedInstanceRecorded = true;
+                if (asset.physicsBodyCount != 1) {
+                    return fail(
+                        "Gallery placement[" + std::to_string(placementIndex)
+                        + "] is dynamic but its asset contains "
+                        + std::to_string(asset.physicsBodyCount)
+                        + " physics bodies; expected exactly 1");
+                }
+                dynamicInstances.push_back(scene.instances.size());
             }
             for (uint64_t localMesh = 0; localMesh < asset.meshCount; ++localMesh) {
                 const uint64_t meshIndex =
@@ -552,8 +530,8 @@ GalleryLoadResult loadGalleryScene()
             }
         }
 
-        if (!animatedInstanceRecorded) {
-            return fail("Gallery yard did not produce its animated scene instance");
+        if (dynamicInstances.empty()) {
+            return fail("Gallery yard did not produce a dynamic scene instance");
         }
 
         if (!validateAssembledScene(scene, &assemblyError)) {
@@ -620,7 +598,7 @@ GalleryLoadResult loadGalleryScene()
         return {
             .scene = std::move(scene),
             .error = {},
-            .animatedInstance = animatedInstance,
+            .dynamicInstances = std::move(dynamicInstances),
             .spawn = YardSpawn,
         };
     } catch (const std::bad_alloc&) {

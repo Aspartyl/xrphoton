@@ -5,6 +5,8 @@
 #include <vector>
 
 #include <glm/mat4x4.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/vec3.hpp>
 
 namespace xrphoton
 {
@@ -54,6 +56,37 @@ struct SceneInstance
     glm::mat4 transform{1.0f};
 };
 
+enum class ScenePhysicsShape : uint32_t
+{
+    Cylinder = 1,
+    Box = 2,
+};
+
+struct ScenePhysicsCollider
+{
+    ScenePhysicsShape shape = ScenePhysicsShape::Cylinder;
+    glm::vec3 center{};
+    glm::vec3 axis{0.0f, 1.0f, 0.0f};
+    float height = 0.0f;
+    float radius = 0.0f;
+    // glm::quat value-initializes to the invalid zero quaternion, while the OGFx
+    // record mirrored here defaults to identity.
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 halfExtents{};
+    float mass = 0.0f;
+    glm::vec3 centerOfMass{};
+    std::string material;
+};
+
+struct ScenePhysicsBody
+{
+    uint32_t meshIndex = 0;
+    uint32_t firstCollider = 0;
+    uint32_t colliderCount = 0;
+    float mass = 0.0f;
+    glm::vec3 centerOfMass{};
+};
+
 enum class SceneImageFormat : uint32_t
 {
     Rgba8Srgb,
@@ -78,6 +111,8 @@ struct SceneData
     std::vector<uint32_t> indices;
     std::vector<SceneGeometry> geometries;
     std::vector<SceneMesh> meshes;
+    std::vector<ScenePhysicsBody> physicsBodies;
+    std::vector<ScenePhysicsCollider> physicsColliders;
     std::vector<SceneInstance> instances;
     std::vector<SceneMaterial> materials;
     std::vector<SceneImage> images;

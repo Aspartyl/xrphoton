@@ -61,6 +61,18 @@ OgfxLoadResult decodeOgfxScene(
     }
 
     try {
+        if (!decoded.model.physicsBodies.empty()
+            && decoded.model.meshes.size() != 1) {
+            return {
+                .scene = {},
+                .error = fileFailure(
+                    diagnosticName,
+                    "rigid-physics mesh ownership",
+                    "exactly 1 mesh",
+                    std::to_string(decoded.model.meshes.size()) + " meshes"),
+            };
+        }
+
         SceneData scene{};
         scene.positions.reserve(decoded.model.positions.size() * 3);
         for (const ogfx::Position& position : decoded.model.positions) {
@@ -98,6 +110,56 @@ OgfxLoadResult decodeOgfxScene(
             scene.meshes.push_back({
                 .firstGeometry = mesh.firstGeometry,
                 .geometryCount = mesh.geometryCount,
+            });
+        }
+
+        scene.physicsBodies.reserve(decoded.model.physicsBodies.size());
+        for (const ogfx::PhysicsBody& body : decoded.model.physicsBodies) {
+            scene.physicsBodies.push_back({
+                .meshIndex = 0,
+                .firstCollider = body.firstCollider,
+                .colliderCount = body.colliderCount,
+                .mass = body.mass,
+                .centerOfMass = {
+                    body.centerOfMass.x,
+                    body.centerOfMass.y,
+                    body.centerOfMass.z,
+                },
+            });
+        }
+
+        scene.physicsColliders.reserve(decoded.model.physicsColliders.size());
+        for (const ogfx::PhysicsCollider& collider : decoded.model.physicsColliders) {
+            const ScenePhysicsShape shape =
+                collider.shapeType == ogfx::PhysicsShapeType::Box
+                ? ScenePhysicsShape::Box
+                : ScenePhysicsShape::Cylinder;
+            scene.physicsColliders.push_back({
+                .shape = shape,
+                .center = {collider.center.x, collider.center.y, collider.center.z},
+                .axis = {collider.axis.x, collider.axis.y, collider.axis.z},
+                .height = collider.height,
+                .radius = collider.radius,
+                // OGFx names (x, y, z, w), while GLM's scalar constructor is
+                // deliberately (w, x, y, z). Neither storage layout is relied on.
+                .orientation = glm::quat{
+                    collider.orientation.w,
+                    collider.orientation.x,
+                    collider.orientation.y,
+                    collider.orientation.z,
+                },
+                .halfExtents = {
+                    collider.halfExtents.x,
+                    collider.halfExtents.y,
+                    collider.halfExtents.z,
+                },
+                .mass = collider.mass,
+                .centerOfMass = {
+                    collider.centerOfMass.x,
+                    collider.centerOfMass.y,
+                    collider.centerOfMass.z,
+                },
+                .material = collider.material,
             });
         }
 

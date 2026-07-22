@@ -12,15 +12,17 @@ fly camera (WASD + mouse look). The ray-tracing shader samples scene materials a
 writes a device-local storage image that is blitted to the swapchain. The present
 path has two frames in flight, resize handling, and the required descriptor rewrite;
 the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
-One repository-owned crate follows a deterministic orbit and spin: the CPU rewrites
-that instance in `SceneData`, and the renderer writes one mapped instance-input slot
-and fully rebuilds the existing TLAS in place before every trace.
+The repository-owned crate is now a live Jolt body: it spawns above the yard,
+falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
+transform into `SceneData`; the renderer remains physics-agnostic, writing one
+mapped instance-input slot and fully rebuilding the existing TLAS in place before
+every trace.
 
 Generated-only builds load `test_yard_ground.ogfx`, `test_yard_wall.ogfx`, and
 `test_yard_box.ogfx` beside the permanent quad and two-geometry wedge probes. The
 generated-only scene has **5 models / 13 placements / 5 BLASes / 6 geometries**:
 a 20-by-20-metre ground, an L-shaped wall corner, a stepped platform, one static
-crate, the animated crate, a face-on quad, and two transformed wedges sharing one
+crate, the dynamic crate, a face-on quad, and two transformed wedges sharing one
 BLAS. A fully configured build adds the nine legacy/Blender exhibits below for a
 total of **14 models / 22 placements / 14 BLASes / 16 geometries**. Every entry
 uses the same OGFx decoder, `SceneData`, GPU upload,
@@ -46,8 +48,9 @@ whose cutoff is exactly 128/255. The wedge remains the shared-BLAS probe. The sp
 pair has identical indexed
 position/UV corner streams but deliberately different normals: flat-face splits
 versus shared smooth normals that remain split only at the UV seam.
-The three SoC yard exhibits retain authored scale: the barrel uses
-translation-only placement, while plitka and the tail add rotation but no resize.
+The three SoC yard exhibits retain authored scale: plitka keeps its static
+rotated/translated placement, the barrel's rigid spawn is raised to y = 0.6 and
+rolled 20 degrees about +Z, and the tail keeps its platform pose.
 
 The landed texture foundation validates strict DDS DXT1/DXT5 and canonical
 uncompressed RGBA8 input, uploads mip-0 BC1/BC3/RGBA8 payloads directly, always
@@ -61,20 +64,36 @@ its pinned `trees\trees_new_vetka_green` DXT1 mip contains 153,894 transparent
 texels, and rejected hits reveal the miss background. M1 through M4a and the yard
 work that instantiated their consumers are recorded in the roadmap below.
 
-The regular barrel is rendered as a static yard placement, but its offline
-source adapter also preserves one compound-body recipe—three named cylinders,
-their masses and centers of mass, and the source physics material—in optional
-OGFx records. Both byte decoders validate those records. `ogfx_loader` does not
-copy them into `SceneData` yet, so they create no live physics body, select no
-physics backend, and do not themselves drive the per-frame TLAS updates. The tail
-follows the same boundary:
-its one rigid box-body recipe is preserved in OGFx metadata but creates no
-simulation state. The opt-in `xrPhotonAlphaOgfOfflineProof` target takes its OGF
+The regular barrel's offline source adapter preserves one compound-body
+recipe—three named cylinders, their masses and centers of mass, and the source
+physics material—in optional OGFx records. Both byte decoders validate those
+records; `ogfx_loader` now copies their runtime fields into `SceneData`, scene
+assembly rebases and validates them, and a configured barrel placement becomes a
+live compound body. The adjacent remade and custom barrels have no recipes and
+remain static. The tail follows the same path: its preserved oriented-box recipe
+becomes a live body when that optional placement is configured and settles onto
+the platform. The required generated crate carries its own one-box recipe, so a
+generated-only build still exercises recipe-to-body construction. The opt-in
+`xrPhotonAlphaOgfOfflineProof` target takes its OGF
 from `XRPHOTON_ALPHA_TAIL_CORPUS_OGF`, pins the companion DDS selected by
 `XRPHOTON_ALPHA_TAIL_TEXTURE_DDS`, and writes
 `build/<preset>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`; the
 runtime yard entry is selected independently with
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`.
+
+The engine-side backend is the vendored MIT-licensed Jolt Physics **v5.6.0**,
+built as a static library only when `XRPHOTON_BUILD_ENGINE` is enabled. Every
+non-dynamic yard instance becomes a static triangle-mesh body; the generated
+crate and the configured barrel/tail placements become dynamic primitive or
+compound bodies with linear-cast motion quality. The generated-only world is
+therefore 1 dynamic and 12 static bodies; the fully configured world is 3 dynamic
+and 19 static. `PhysicsWorld` advances Jolt
+through a 60 Hz fixed-step accumulator, clamps a frame's contribution to 0.1 s,
+and atomically publishes validated transforms to the bound scene. No
+interpolation is applied; high-refresh presentation therefore repeats the most
+recent simulated pose between fixed steps. The Vulkan-free headless suite pins
+body construction, settling/sleep, lifecycle, contracts, determinism, update
+failure, static-mesh rules, math bridging, and CCD.
 
 The first direct modern-content adapter is also landed as a narrow headless
 Blender 5.1.x path. [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py)
@@ -146,34 +165,36 @@ the offline-compiler/runtime boundary.
 └──────────────────────┘ └────────────────────┘ └─────────────────┘ └───────────────┘
 ```
 
-(`main.cpp` also uses the resource units directly for bring-up, and drives
-`camera.{hpp,cpp}` — the Vulkan-free input/math unit whose `CameraPushConstants`
-payload main() builds each frame and passes through `drawFrame` into the raygen
-stage; the diagram shows the frame-path layering.)
+(`main.cpp` also uses the resource units directly for bring-up, drives
+`camera.{hpp,cpp}`, and creates/steps the renderer-independent
+`physics.{hpp,cpp}` world before entering the frame path. The diagram focuses on
+the renderer layering.)
 
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
-| [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU record types | Plain value state loaded from OGFx and owned by `main()` |
+| [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU render records plus backend-neutral `ScenePhysicsBody` / `ScenePhysicsCollider` recipes | Plain value state loaded from OGFx and owned by `main()`; instance transforms are mutable physics output |
 | [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only render/physics model and schema constants, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; backend-neutral physics records contain no live backend state |
 | [src/legacy_ogf.hpp](src/legacy_ogf.hpp), [src/legacy_ogf.cpp](src/legacy_ogf.cpp), and [src/legacy_ogf_rigid.cpp](src/legacy_ogf_rigid.cpp) | Transactional source dispatch for the pinned M4a flat-static and narrow SoC rigid-compound OGF v4 profiles; the rigid branch flattens validated bind-pose render data, maps `models\model`/`models\model_aref` to opaque/alpha-tested geometry, and retains box-or-cylinder body metadata without owning OGFx serialization | Offline-only source adapters in the graphics-free build |
 | [src/blender_mesh.hpp](src/blender_mesh.hpp) / [.cpp](src/blender_mesh.cpp) | Transactional decoder for the private versioned `XRBM` extraction stream; validates the narrow static profile, bakes units/transforms, converts axes, normals, and winding, deduplicates corners, and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build; no Blender or renderer dependency |
 | [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named static mesh; emits material-free XRBM v1 or the strict one-opaque-or-alpha-tested-DDS-material v2 profile, invokes `convert-blender`, and supplies the exchange on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
 | [tools/asset_compiler.cpp](tools/asset_compiler.cpp) | `xrPhotonAssetCompiler convert-ogf` / `convert-blender` dispatch, bounded source input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
-| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render data into owned `SceneData`; optional physics metadata is validated upstream but deliberately has no scene/backend consumer yet; returns no instances or images | Vulkan-free runtime adapter used by scene producers such as the yard policy |
-| [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing, bounded instance insertion, and final whole-scene validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
+| [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render and rigid-recipe data into owned `SceneData`; quaternion component order is crossed explicitly, while source-node names and reserved flags remain format provenance and are dropped | Vulkan-free runtime adapter used by scene producers such as the yard policy; returns no instances or images |
+| [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing (including body mesh and collider ranges), bounded instance insertion, and complete whole-scene render/physics validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned `RayTypeCount` constant and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; currently fixed at one radiance ray type |
-| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and exactly one animated-instance index; `yardAnimatedTransform` is the temporary deterministic motion policy | Temporary engine-side scene policy called by `main()`; retires when level/scene data has a real owner |
-| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
+| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; requires the generated crate dynamic, includes configured recipe-bearing barrel/tail placements, and retires when level/scene data has a real owner |
+| [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
+| [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency; never configured by the graphics-free `ogfx-core` build |
+| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, four-stage/four-group ray tracing pipeline, per-geometry SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
-| [src/main.cpp](src/main.cpp) | `main()` orchestration + the render loop | Program lifetime |
+| [src/main.cpp](src/main.cpp) | `main()` orchestration, physics stepping, and the render loop | Program lifetime |
 
 ### Header dependency rule
 
@@ -198,6 +219,11 @@ Includes are kept acyclic by a deliberate rule:
   `VkExtent2D` precisely to keep the unit Vulkan-free.
 - `scene.hpp` is likewise Vulkan-free: CPU scene data depends only on the standard
   library and GLM, while `gpu_scene.hpp` owns the Vulkan/VMA boundary.
+- `physics.hpp` includes only the standard library and forward-declares
+  `SceneData`; the opaque `PhysicsWorld::State` keeps every Jolt type out of the
+  public header. `physics.cpp` is the only engine translation unit that includes
+  Jolt headers, so the `JPH_*` compile-definition contract propagated by the
+  static `Jolt` target has one consumer surface.
 - `ogfx.hpp` is a stricter offline boundary: it depends only on the standard
   library and shares no renderer- or physics-backend-native structs. Source
   adapters populate its compiler model, including optional backend-neutral
@@ -231,13 +257,16 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    borrowed structs its header only forward-declares and to invoke the per-frame
    TLAS write/rebuild seam.
 6. `ogfx_loader.cpp` includes `scene.hpp` through its public header and adapts the
-   standard-library-only decoded model into renderer-native `SceneData`.
+   standard-library-only decoded model into runtime `SceneData`, including the
+   backend-neutral body/collider recipe fields.
 7. `scene_assembly.cpp` depends only on `scene.hpp` and standard-library helpers;
    it remains in the same Vulkan-free runtime library as the OGFx adapter.
 8. `gallery.cpp` includes the loader, assembly, and texture-resolution APIs to own
    temporary startup policy; its public header exposes `SceneData`, the spawn value,
-   the animated-instance index, and the pure animated-transform function.
-9. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
+   and the flat dynamic-instance indices selected by placement policy.
+9. `physics.cpp` includes `scene.hpp` and all Jolt headers needed to validate and
+   instantiate that data. No renderer or Vulkan type crosses this boundary.
+10. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
    the pipeline layout's push-constant range; `camera.cpp` includes
    `GLFW/glfw3.h` for the real input API its header only forward-declared.
 
@@ -246,7 +275,7 @@ cross-file surface is declared in the headers.
 
 ## Ownership model
 
-Five RAII owners — split by resource lifetime:
+Six RAII owners — split by resource lifetime:
 
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
   window, the instance, the debug messenger, the surface, the device, the one
@@ -263,7 +292,16 @@ Five RAII owners — split by resource lifetime:
   scene image and view; and one shared linear-repeat sampler. It borrows the
   device/allocator and self-idle-waits before destroying sampler → views → images →
   buffers. `SceneData` is the separate plain CPU value owned by `main()` and remains
-  alive through the render loop because one instance transform changes each frame.
+  alive through the render loop because physics writes dynamic instance transforms.
+- **`PhysicsWorld`** (program lifetime after scene load) owns one opaque
+  implementation state: the Jolt registration lease, 10 MiB temporary allocator,
+  default-initialized, two-worker-capped thread-pool job system, layer interfaces,
+  `PhysicsSystem`, every body ID, the fixed-step accumulator, dynamic-body lookup,
+  topology snapshot, and preallocated transform scratch. It borrows the exact
+  `SceneData` passed to
+  `createPhysicsWorld`; that scene's relevant arrays and instance-to-mesh mapping
+  stay stable until the world dies. It owns no Vulkan object and performs no device
+  wait.
 - **`AccelerationStructure`** (program lifetime) owns: one persistently mapped
   TLAS-instance input buffer per `FrameResources` slot, a stable-fields instance
   template, one `BlasEntry` handle/backing/address per `SceneMesh`, and the TLAS
@@ -302,7 +340,7 @@ everything it points at, so it cannot outlive what it borrows.
 
 ### Destruction order
 
-In `main()` the `VulkanContext` is declared **first**, so every other owner destructs
+In `main()` the `VulkanContext` is declared **first**, so every Vulkan owner destructs
 before the allocator, device, and surface it borrows from. `VulkanContext` destroys
 the allocator immediately before the device. This is the single most important
 ordering invariant in the program, and it is what lets every failure path in `main()`
@@ -311,7 +349,15 @@ owners (`Swapchain`, `GpuScene`, `AccelerationStructure`, `RtPipeline`) need no 
 *relative to each other*: each waits for device idle in its own destructor rather
 than relying on a sibling having done so.
 
-Each destructor:
+The CPU-side lifetime has its own simple invariant: the loaded `SceneData` is
+declared before `PhysicsWorld`, so reverse destruction removes and destroys every
+Jolt body and releases the registration lease before the borrowed scene dies.
+Process-global allocator/trace hooks install once; a mutex-protected active-world
+count creates the Jolt factory and registers types on each 0→1 world epoch, then
+unregisters types and deletes the factory on 1→0. This permits overlapping
+headless-test worlds without tearing global state down under a survivor.
+
+Each Vulkan-owning destructor:
 
 1. Calls `vkDeviceWaitIdle` first, so no submitted device work still references the
    resources about to be freed. The narrower presentation-engine exception for
@@ -350,38 +396,45 @@ returns `1` on failure (RAII handles the unwind):
 6. **Logical device + allocator.** One queue per unique {trace, present} family, with
    the ray tracing feature chain and `shaderInt64` enabled; then create VMA.
 7. **Ray tracing functions.** `loadRayTracingFunctions` resolves the RT entry points
-   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 11
-   and the per-frame TLAS rebuild, the pipeline subset by step 12, and
+   via `vkGetDeviceProcAddr`. The acceleration-structure subset is used by step 13
+   and the per-frame TLAS rebuild, the pipeline subset by step 14, and
    `vkCmdTraceRaysKHR` by every frame.
 8. **Swapchain.** `createSwapchainResources` — swapchain, image views, per-image
    render-finished semaphores, and the storage output image (created last, so it is
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
    image-available semaphore, and in-flight fence per frame slot.
-10. **CPU/GPU scene.** `loadGalleryScene` loads the required generated yard assets
-    and probes plus every configured optional exhibit, including the mixed tail;
-    transactionally merges their model-owned arrays; applies every yard placement;
-    requires exactly one single-mesh animated placement; validates the assembled
-    `SceneData`; resolves fallback/DDS scene images; and returns the accepted spawn
-    and animated-instance index. `createGpuScene` gates both shader-record buffers
-    against `maxStorageBufferRange`, then uploads its five geometry/record buffers
-    and all sampled scene images through the borrowed frame-0 slot.
-11. **Acceleration structures.** `buildAccelerationStructures` — see
+10. **CPU scene.** `loadGalleryScene` loads the required generated yard assets and
+    probes plus every configured optional exhibit, including the mixed tail;
+    transactionally merges and rebases their render/physics arrays; applies every
+    yard placement; validates the assembled `SceneData`; resolves fallback/DDS
+    scene images; and returns the accepted spawn plus flat `dynamicInstances`.
+    The generated crate is always dynamic. Unconfigured optional dynamics skip;
+    configured ones must be single-mesh and carry exactly one body recipe.
+11. **Physics world.** Immediately after scene load and before any GPU scene
+    creation, `createPhysicsWorld` binds that stable `SceneData`, creates one static
+    triangle-mesh body for every non-dynamic instance, creates recipe-driven dynamic
+    bodies for the selected indices, and optimizes Jolt's broad phase. Construction
+    is transactional: an empty owner stays empty on failure.
+12. **GPU scene.** `createGpuScene` gates both shader-record buffers against
+    `maxStorageBufferRange`, then uploads its five geometry/record buffers and all
+    sampled scene images through the borrowed frame-0 slot.
+13. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). It takes the frame-slot
     count, builds the stable fields of the TLAS instance template, allocates one
     mapped instance input per slot plus persistent TLAS rebuild scratch, and performs
     the initial BLAS/TLAS build. It borrows `frames[0]`'s command buffer and in-flight
     fence from step 9 and returns them in the state the first `drawFrame` expects;
     the other frame slots remain signaled and untouched.
-12. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
+14. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
     `buildShaderBindingTable` → `writeSceneDescriptorSet` — see
     [Ray tracing pipeline](#ray-tracing-pipeline).
-13. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
+15. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
     and object it borrows exists, including `ctx.frames.data()`, the acceleration
     structures, and the CPU scene — then the initial
     `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
-14. **Render loop.** Advance the deterministic yard animation, write its transform
-    into the indexed `SceneInstance`, then call
+16. **Render loop.** Update the camera, call `stepPhysics` (also on resize-dirty
+    iterations), derive the camera push payload, then call
     `drawFrame(renderer, currentFrame, cameraPush)`;
     `drawFrame` writes that slot's complete TLAS instance array and records an
     in-place TLAS rebuild before tracing. Rotate `currentFrame` modulo
@@ -481,13 +534,18 @@ indices from `pickPhysicalDevice`.
 ## The frame
 
 Up to `MaxFramesInFlight` frames can be queued. Each loop iteration `main()` first
-computes a clamped delta time (`MaxFrameDt` = 0.1 s — window drags and resize
-stalls can block the loop for seconds, and an unclamped dt would teleport the
-camera or animated crate), calls `updateCamera`, advances the yard animation, and
-stores `yardAnimatedTransform(simulationTime)` in the indexed `SceneInstance`.
-It then derives the frame's `CameraPushConstants` from the camera state and the
-current `swap.extent` aspect ratio (read fresh every iteration, so a recreate needs
-no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
+computes the elapsed time, clamps it to the shared `PhysicsMaxFrameDt` = 0.1 s,
+passes that value to `updateCamera`, then calls `stepPhysics` with the same value.
+Physics independently validates and clamps its public input, performs
+zero or more 60 Hz fixed updates, and atomically writes every dynamic body-origin
+transform into the bound `SceneData`; when less than one fixed step is accumulated,
+the latest transform simply repeats. This step happens even on an iteration that
+will skip drawing for resize, so simulation advances at clamped real time rather
+than presentation count. A physics failure is loud and exits the loop.
+
+`main()` then derives the frame's `CameraPushConstants` from the camera state and
+the current `swap.extent` aspect ratio (read fresh every iteration, so a recreate
+needs no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
 a dirty iteration goes straight to recreation because some Wayland compositor/driver
 pairs continue scaling an old swapchain without returning `OUT_OF_DATE` or
 `SUBOPTIMAL`. The flag is cleared only after the legal Vulkan extent has been selected
@@ -703,6 +761,56 @@ needs deeper overlap.
   in `destroySwapchainResources` (reverse creation order). Teardown is null-guarded, so
   a partial create and the recreate error path both clean up through the same path.
 
+## Physics
+
+Rigid dynamics are engine-side and renderer-independent. Jolt Physics v5.6.0 is
+vendored under [`third_party/jolt`](third_party/jolt) with its MIT license and
+built as a static target only below the `XRPHOTON_BUILD_ENGINE` gate. Its one
+local thread-pool cleanup patch is recorded alongside the dependency. The
+graphics-free OGFx core continues to own and test backend-neutral recipes without
+configuring Jolt. The exact integration decisions, constants, and acceptance plan
+are recorded in [PHYSICS.md](PHYSICS.md).
+
+[`PhysicsWorld`](src/physics.hpp) is a move-forbidden RAII owner with a Jolt-free
+header and one opaque state pointer. `createPhysicsWorld` binds one caller-owned
+`SceneData` and a list of distinct flat dynamic-instance indices. Creation is
+transactional and records the sizes and instance-to-mesh references that must
+remain stable for the world's lifetime; topology drift later poisons the world
+terminally. The scene must outlive the world, and physics exclusively owns writes
+to its dynamic instance transforms. Backend-neutral velocity and active-state
+functions provide the current control/inspection seam without leaking a `BodyID`;
+finite setter inputs are robustly clamped to the pinned 500 m/s body limit.
+
+Body construction has one deliberate split:
+
+- Every non-dynamic instance becomes a static Jolt triangle mesh. Instance
+  transforms are baked into vertices so non-uniform static scale is valid;
+  geometry-local OGFx indices are explicitly rebased, reflected transforms rewind
+  triangles, and open meshes remain single-sided.
+- Each dynamic instance must have a proper rigid transform and exactly one
+  `ScenePhysicsBody`. Box and cylinder recipe colliders become one transformed
+  primitive or a static compound; authored total mass and aggregate center of mass
+  are applied to the final shape. Dynamic bodies use linear-cast motion quality.
+  Before Jolt sees a shape, finite adversarial inputs are checked against collider
+  count, representable mass/inertia, compound-COM, and backend world-bound limits.
+  All body poses cross the GLM ↔ Jolt boundary component-by-component in
+  `physics.cpp`, and write-back uses `GetWorldTransform` so render/model-origin
+  transforms stay correct even with an off-center COM.
+- Two object/broad-phase layers let moving bodies collide with everything and
+  statics collide only with moving bodies. Every body currently uses friction 0.5
+  and restitution 0.0; preserved material strings remain data for a later material
+  table. The system is capped at 1,024 bodies, pairs, and contact constraints, then
+  optimized once after startup creation.
+
+`PhysicsWorld::State` owns a double-precision accumulator. `stepPhysics` rejects
+non-finite or negative input, adds at most `PhysicsMaxFrameDt` (0.1 s), and calls
+`PhysicsSystem::Update` in exact `PhysicsFixedDt` (1/60 s) increments, with six as
+the hard catch-up bound. After all updates succeed it gathers every dynamic
+body-origin transform into preallocated scratch, validates the full set, and only
+then commits it to `SceneData`; update errors or invalid output publish nothing and
+make the world terminal. There is deliberately no interpolation, so the renderer
+always consumes the latest pose that actually existed in simulation.
+
 ## Acceleration structures
 
 The ray tracing scene contains one **BLAS per `SceneMesh`** and one **TLAS entry
@@ -710,8 +818,9 @@ per `SceneInstance`**. The generated-only yard builds 5 BLASes and 13 TLAS
 instances over 6 geometries; the fully configured yard builds 14 BLASes and 22
 TLAS instances over 16 geometries. In both cases the
 two wedge placements reference the same BLAS address. The barrel's cylinder
-metadata and the tail's box metadata create no physics bodies and do not drive
-transforms.
+recipe and the tail's box recipe create live bodies when those optional placements
+are configured; together with the required dynamic crate, their transforms are
+the CPU-side inputs consumed by the same TLAS rebuild path.
 
 `buildAccelerationStructures` builds every BLAS once and creates/builds the TLAS
 after `GpuScene` upload. The frame path then performs a full in-place TLAS `BUILD`
@@ -727,7 +836,7 @@ Decisions and contracts worth preserving:
 - **One transform-layout boundary.** Scene transforms use GLM's column-major
   `glm::mat4`; `toVkTransformMatrix` in `acceleration_structure.cpp` alone copies
   them into Vulkan's row-major 3x4 `VkTransformMatrixKHR`. The yard's translated
-  quad, translated/rotated/non-uniformly-scaled wedge, and orbiting/spinning crate
+  quad, translated/rotated/non-uniformly-scaled wedge, and physics-driven crate
   make this boundary visible without putting world placement into OGFx.
 - **Stable-fields template, per-slot transforms.** Startup creates one
   `VkAccelerationStructureInstanceKHR` template containing the stable mesh address,
@@ -735,7 +844,7 @@ Decisions and contracts worth preserving:
   host-coherent copy exists per frame slot. After that slot's fence wait,
   `writeTlasInstances` rejects instance-count drift, invalid slot/mapping state, and
   any non-finite or singular transform; only then does it refresh the template's
-  transform fields and copy the complete array to that slot. Runtime animation
+  transform fields and copy the complete array to that slot. Runtime physics
   therefore cannot silently invalidate the startup-only scene checks or race a
   build that is still in flight.
 - **Mesh ranges become BLAS geometry lists.** Each mesh's contiguous
@@ -1016,9 +1125,11 @@ Decisions and contracts worth preserving:
   otherwise the first captured frame integrates the whole cursor jump as one
   giant rotation.
 - **Frame timing lives in `main()`.** `glfwGetTime()` deltas, clamped to
-  `MaxFrameDt` (0.1 s) so window drags and resize stalls cannot teleport the
-  camera or the deterministic crate. Fixed-timestep simulation remains deferred
-  until physics-driven dynamics lands.
+  the physics module's exported `PhysicsMaxFrameDt` (0.1 s), keep window drags
+  and resize stalls from teleporting the camera. The same delta enters
+  `stepPhysics`, whose independent validation/clamp and `PhysicsWorld` accumulator
+  advance Jolt at the exported fixed 60 Hz timestep; camera timing remains
+  frame-relative.
 
 ## Conventions
 
@@ -1035,7 +1146,7 @@ Decisions and contracts worth preserving:
   anonymous namespace inside each `.cpp`.
 - Errors reach boundaries as explicit result objects, `VkResult`, or `bool` and
   are reported to `std::cerr`; exceptions do not cross subsystem APIs.
-- Cleanup is RAII via the `VulkanContext` / `Swapchain` destructors, not manual
+- Cleanup is RAII via the resource owners, including `PhysicsWorld`, not manual
   unwinding in `main()`. Every `main()` failure path is a bare `return 1;`.
 - Comments explain *why*, not *what*: decisions, contracts, and non-obvious Vulkan
   reasoning, not restatements of the code.
@@ -1067,7 +1178,7 @@ Decisions and contracts worth preserving:
    asset; it is not displaced by later content entries.
 
    The permanent test yard succeeds the earlier preview row: its generated ground,
-   wall corner, steps/platform, static crate, and engine-animated crate establish
+   wall corner, steps/platform, static crate, and recipe-driven dynamic crate establish
    the level-like structure, while the additive exhibit ordering is **quad →
    plitka1 → Blender pyramid/spheres → Blender leaf card → wedge probes →
    `bochka_close_1` → remade `bochka_close_1` → custom Stalker barrel →
@@ -1113,17 +1224,22 @@ Decisions and contracts worth preserving:
    force rays opaque. Broader skeletal and physics source profiles still require
    explicit contracts; unsupported source semantics are rejected rather than
    hidden by a geometry-only conversion.
-3. **Dynamic scene.** **Rigid-instance/TLAS-update foundation landed** — one
-   engine-animated yard crate is written through `SceneData`, one mapped instance
-   input per `FrameResources` slot, and a full in-place TLAS rebuild before every
-   trace. Slot rotation prevents the CPU from overwriting instance data an in-flight
-   build still reads, while explicit pre/post-build barriers protect the shared TLAS
-   and scratch. This is the rendering foundation, not a completed rigid-dynamics
-   tier: physics-driven rigid transforms, live bodies, a physics backend, and
-   fixed-timestep simulation remain pending. The preserved barrel and tail physics
-   metadata records still create no runtime bodies and drive no transform. Deformables
-   also remain pending: compute-pass skinning into per-slot vertex buffers followed
-   by per-character BLAS refits, for NPCs and mutants.
+3. **Dynamic scene.** **Rigid dynamics landed; deformables pending** — the
+   renderer foundation still uses one mapped instance input per `FrameResources`
+   slot and a full in-place TLAS rebuild before every trace, with slot rotation and
+   explicit pre/post-build barriers protecting the shared TLAS and scratch. Its
+   transform producer is now a real engine-side physics system: vendored Jolt
+   Physics v5.6.0, backend-neutral rigid recipes carried through `SceneData`, one
+   RAII `PhysicsWorld`, static collision for every non-dynamic yard placement, and
+   fixed-60-Hz live bodies for the generated crate plus configured regular barrel
+   and pseudodog tail. Validated body-origin transforms are published atomically
+   through the existing renderer seam; headless tests pin construction, lifecycle,
+   settling/sleep, contracts, determinism, failure handling, and CCD. The
+   orbit/spin policy has been removed.
+
+   The remaining step-3 slice is deformable geometry: compute-pass skinning into
+   per-slot vertex buffers followed by per-character BLAS refits for NPCs and
+   mutants. It is separate from the completed rigid-body path.
 4. **Lighting + path tracing.** Pending — the renderer becomes an actual path
    tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
    pipeline recursion depth at 1), next-event estimation with shadow rays,
@@ -1143,6 +1259,10 @@ Decisions and contracts worth preserving:
 These changes are deliberately deferred until the design input that determines their
 final shape exists:
 
+- **Physics interpolation.** Revisit rendering between fixed poses when roadmap
+  step 5 introduces previous-frame transforms and motion vectors. Until then the
+  renderer consumes only poses that existed in the 60 Hz simulation and may repeat
+  them on higher-refresh displays.
 - **Presentation completion.** Do not add swapchain present fences unless
   `VK_KHR_swapchain_maintenance1` becomes part of the required baseline. At that point,
   replace the [documented teardown assumption](#presentation-teardown) with

@@ -9,8 +9,9 @@ strict runtime decoder/adapter, offline probe front ends, narrow M4a
 legacy-static adapter, narrow SoC v4 rigid-compound adapter, optional
 backend-neutral rigid-physics records, narrow headless Blender 5.1.x
 static-mesh adapter, generic multi-model test-yard consumer, and DDS-backed
-opaque base-color path now exist; broader source profiles, live physics, later
-format families, and SDK tools remain planned. The landed slices are recorded at the
+opaque base-color path, plus the engine-side rigid-recipe consumer now exist;
+broader source profiles, deformable dynamics, later format families, and SDK
+tools remain planned. The landed slices are recorded at the
 [revised first OGFx milestone](#the-revised-first-ogfx-milestone-m4).
 
 **How to read the labels.** Three kinds of statement appear below, and the
@@ -219,7 +220,9 @@ mesh (`modelType == 0`), with one geometry range per retained child/window.
 Hierarchical bind translations are accumulated only to place collider centers
 and per-bone centers of mass in model space. The barrel becomes one reusable
 62-unit recipe with three named cylinders; the tail becomes one 10-unit recipe
-with one named oriented box. Both are metadata, not live physics objects.
+with one named oriented box. Both remain backend-neutral metadata rather than
+serialized backend objects; the runtime now instantiates them as Jolt bodies only
+when gallery/scene policy designates their placements dynamic.
 
 What this heritage gets right — and what OGFx therefore **preserves**
 (**DECISION**):
@@ -681,11 +684,20 @@ opaque BLAS flag and bypass any-hit. `RayTypeCount == 1` is one shared C++/Slang
 routing ABI, and no trace uses `RAY_FLAG_FORCE_OPAQUE`.
 
 Both schema and runtime byte decoders validate and reconstruct optional rigid
-physics records. [`src/ogfx_loader.cpp`](src/ogfx_loader.cpp) intentionally
-copies only render data into `SceneData` today, so the yard's barrel and tail
-remain static placements: no backend is selected and no body is instantiated.
-The separate repository-owned crate animation is code-authored placement policy;
-it consumes none of those physics records and implies no collision simulation.
+physics records. [`src/ogfx_loader.cpp`](src/ogfx_loader.cpp) now copies their
+runtime body/collider fields into backend-neutral `SceneData` records, explicitly
+reorders quaternion components for GLM, retains collider material names, and drops
+format-only source-node names and reserved flags. Scene assembly rebases body mesh
+and collider ranges and repeats the complete recipe validation. The generated
+`test_yard_box.ogfx` also carries one canonical box recipe, so this plumbing is
+exercised without private corpus assets.
+
+World placement and motion policy still do not enter OGFx. The gallery returns
+flat dynamic-instance indices: the generated crate is required, while configured
+regular-barrel and pseudodog-tail placements join it only when their single-mesh
+assets carry exactly one body recipe. Engine-side `PhysicsWorld` consumes those
+indices and recipes; all other instances become static collision geometry. No
+Jolt handle, motion type, or live state is added to the file or `SceneData`.
 
 Container version 1 supports only the static `normal` model type. Heritage
 model-type values remain documented and reserved, but the loader rejects them
@@ -702,6 +714,11 @@ Camera section: **world Y-up**, with the camera at zero yaw/pitch looking down
 **+Z** and world +X mapping screen-right. OGFx stores geometry in exactly this
 space; triangle winding and normal orientation are documented next to the
 geometry chunks when the writer lands.
+
+The live Jolt consumer uses the same metric Y-up coordinates component-for-
+component. It performs no runtime axis swap or handedness fixup; rewinding a
+reflected static instance is a local geometric correction, not a format-space
+conversion.
 
 The conversions the compiler owns:
 
@@ -727,9 +744,13 @@ The conversions the compiler owns:
 **DECISION:** name/extension/magic; evolution-of-OGF (the preserve list, the
 modernize list, the preserve-unless-demanded rule); offline conversion with
 originals as source assets; one runtime convention with offline coordinate
-conversion. **PROPOSED:** every concrete number above — header field layout,
-chunk ids and header shape, the 16-byte alignment constant, string encoding,
-the exact record layouts, and the initial static-model support boundary.
+conversion. **IMPLEMENTED:** the concrete OGFx v1 container and static-render
+contract above — including the header, chunk ids, 16-byte alignment, UTF-8
+string framing, exact record layouts and validation limits — plus the optional
+v1/v2 rigid-physics records and the narrow source profiles explicitly labeled
+implemented. A future extension is **PROPOSED** only where its own section says
+so; notably, OMFx and `OGFX_DESC` do not become implemented merely by sharing
+this container direction.
 
 ## OMFx
 
@@ -1178,8 +1199,9 @@ each arrives with its own consumer.
    `eed1c06c5d975199ae96fe49517f8893e164cf5e93ce1a040421c7cb0e115060`
    and is persisted at
    `build/<preset>/assets/soc/meshes/physics/balon/bochka_close_1.ogfx`.
-   The yard consumes that render data and the existing DDS path, but no
-   current runtime subsystem consumes the optional physics recipe.
+   The yard consumes that render data and the existing DDS path. When the optional
+   barrel placement is configured, its recipe now creates the live three-cylinder
+   Jolt compound body; the adjacent recipe-less remade/custom barrels stay static.
 
 5. **Mixed opaque/alpha-tested pseudodog tail → per-geometry RT routing.
    Landed.** The externally supplied SoC source is
@@ -1205,6 +1227,8 @@ each arrives with its own consumer.
    `build/<preset>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`.
    The yard routes its mixed ranges through separate opaque and alpha-tested
    SBT records, with per-geometry BLAS opacity and real texture-alpha any-hit.
+   When configured, the same placement is dynamic: its oriented-box recipe becomes
+   a Jolt body and settles onto the platform.
    The shipped 256×128 DXT1 texture is structurally alpha-capable, but its mip-0
    blocks select no transparent palette texels. This asset therefore proves the
    mixed-class routing and real-texture any-hit path, not a visibly discarded

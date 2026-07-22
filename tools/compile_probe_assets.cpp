@@ -126,10 +126,30 @@ xrphoton::ogfx::Model buildTestYardWall()
 
 xrphoton::ogfx::Model buildTestYardBox()
 {
-    return buildAxisAlignedBox(
+    using namespace xrphoton::ogfx;
+
+    Model model = buildAxisAlignedBox(
         {-0.5f, -0.5f, -0.5f},
         { 0.5f,  0.5f,  0.5f},
         {0.80f, 0.62f, 0.22f, 1.0f});
+    model.physicsBodies.push_back({
+        .firstCollider = 0,
+        .colliderCount = 1,
+        .mass = 30.0f,
+        .centerOfMass = {0.0f, 0.0f, 0.0f},
+    });
+    model.physicsColliders.push_back({
+        .shapeType = PhysicsShapeType::Box,
+        .flags = 0,
+        .material = {},
+        .sourceNode = {},
+        .center = {0.0f, 0.0f, 0.0f},
+        .orientation = {0.0f, 0.0f, 0.0f, 1.0f},
+        .halfExtents = {0.5f, 0.5f, 0.5f},
+        .mass = 30.0f,
+        .centerOfMass = {0.0f, 0.0f, 0.0f},
+    });
+    return model;
 }
 
 xrphoton::ogfx::Model buildTestQuad()

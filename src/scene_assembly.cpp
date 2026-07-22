@@ -115,6 +115,8 @@ scene_assembly_detail::SceneElementCounts elementCounts(const SceneData& scene)
         .geometries = static_cast<uint64_t>(scene.geometries.size()),
         .meshes = static_cast<uint64_t>(scene.meshes.size()),
         .materials = static_cast<uint64_t>(scene.materials.size()),
+        .physicsBodies = static_cast<uint64_t>(scene.physicsBodies.size()),
+        .physicsColliders = static_cast<uint64_t>(scene.physicsColliders.size()),
     };
 }
 
@@ -148,6 +150,177 @@ bool finiteTransform(const glm::mat4& transform, std::size_t instanceIndex, std:
                     "scene assembly: instance[" + std::to_string(instanceIndex)
                         + "].transform[" + std::to_string(column) + "]["
                         + std::to_string(row) + "] is not finite");
+            }
+        }
+    }
+
+    constexpr double AffineTolerance = 1.0e-4;
+    for (std::size_t column = 0; column < 4; ++column) {
+        const double expected = column == 3 ? 1.0 : 0.0;
+        if (std::abs(static_cast<double>(transform[column][3]) - expected)
+            > AffineTolerance) {
+            return reject(
+                error,
+                "scene assembly: instance[" + std::to_string(instanceIndex)
+                    + "].transform homogeneous row must be within 1e-4 of (0,0,0,1)");
+        }
+    }
+    return true;
+}
+
+bool finiteVec3(const glm::vec3& value)
+{
+    return std::isfinite(value.x)
+        && std::isfinite(value.y)
+        && std::isfinite(value.z);
+}
+
+bool finitePositive(float value)
+{
+    return std::isfinite(value) && value > 0.0f;
+}
+
+bool validatePhysicsRecipes(const SceneData& scene, std::string* error)
+{
+    if (scene.physicsBodies.empty() != scene.physicsColliders.empty()) {
+        return reject(
+            error,
+            "scene assembly: physics body and collider arrays must both be empty or both be nonempty");
+    }
+
+    uint64_t expectedFirstCollider = 0;
+    for (std::size_t index = 0; index < scene.physicsBodies.size(); ++index) {
+        const ScenePhysicsBody& body = scene.physicsBodies[index];
+        if (static_cast<uint64_t>(body.meshIndex) >= scene.meshes.size()) {
+            return reject(
+                error,
+                "scene assembly: physicsBodies[" + std::to_string(index)
+                    + "].meshIndex " + std::to_string(body.meshIndex) + " is outside "
+                    + std::to_string(scene.meshes.size()) + " meshes");
+        }
+        if (body.colliderCount == 0) {
+            return reject(
+                error,
+                "scene assembly: physicsBodies[" + std::to_string(index)
+                    + "].colliderCount must be nonzero");
+        }
+        if (body.firstCollider != expectedFirstCollider) {
+            return reject(
+                error,
+                "scene assembly: physicsBodies[" + std::to_string(index)
+                    + "].firstCollider must equal the next partition offset "
+                    + std::to_string(expectedFirstCollider));
+        }
+        const uint64_t colliderEnd =
+            static_cast<uint64_t>(body.firstCollider) + body.colliderCount;
+        if (colliderEnd > scene.physicsColliders.size()) {
+            return reject(
+                error,
+                "scene assembly: physicsBodies[" + std::to_string(index)
+                    + "] collider range exceeds "
+                    + std::to_string(scene.physicsColliders.size()) + " colliders");
+        }
+        if (!finitePositive(body.mass)) {
+            return reject(
+                error,
+                "scene assembly: physicsBodies[" + std::to_string(index)
+                    + "].mass must be finite and positive");
+        }
+        if (!finiteVec3(body.centerOfMass)) {
+            return reject(
+                error,
+                "scene assembly: physicsBodies[" + std::to_string(index)
+                    + "].centerOfMass must contain finite values");
+        }
+        expectedFirstCollider = colliderEnd;
+    }
+    if (expectedFirstCollider != scene.physicsColliders.size()) {
+        return reject(
+            error,
+            "scene assembly: final physics collider partition end must equal collider count "
+                + std::to_string(scene.physicsColliders.size()));
+    }
+
+    for (std::size_t index = 0; index < scene.physicsColliders.size(); ++index) {
+        const ScenePhysicsCollider& collider = scene.physicsColliders[index];
+        if (collider.shape != ScenePhysicsShape::Cylinder
+            && collider.shape != ScenePhysicsShape::Box) {
+            return reject(
+                error,
+                "scene assembly: physicsColliders[" + std::to_string(index)
+                    + "].shape must be cylinder or box");
+        }
+        if (!finiteVec3(collider.center)) {
+            return reject(
+                error,
+                "scene assembly: physicsColliders[" + std::to_string(index)
+                    + "].center must contain finite values");
+        }
+        if (!finitePositive(collider.mass)) {
+            return reject(
+                error,
+                "scene assembly: physicsColliders[" + std::to_string(index)
+                    + "].mass must be finite and positive");
+        }
+        if (!finiteVec3(collider.centerOfMass)) {
+            return reject(
+                error,
+                "scene assembly: physicsColliders[" + std::to_string(index)
+                    + "].centerOfMass must contain finite values");
+        }
+
+        if (collider.shape == ScenePhysicsShape::Cylinder) {
+            if (!finiteVec3(collider.axis)) {
+                return reject(
+                    error,
+                    "scene assembly: physicsColliders[" + std::to_string(index)
+                        + "].axis must contain finite values");
+            }
+            const double axisX = collider.axis.x;
+            const double axisY = collider.axis.y;
+            const double axisZ = collider.axis.z;
+            const double axisLengthSquared =
+                axisX * axisX + axisY * axisY + axisZ * axisZ;
+            if (!std::isfinite(axisLengthSquared) || axisLengthSquared <= 0.0) {
+                return reject(
+                    error,
+                    "scene assembly: physicsColliders[" + std::to_string(index)
+                        + "].axis length squared must be finite and positive");
+            }
+            if (!finitePositive(collider.height)) {
+                return reject(
+                    error,
+                    "scene assembly: physicsColliders[" + std::to_string(index)
+                        + "].height must be finite and positive");
+            }
+            if (!finitePositive(collider.radius)) {
+                return reject(
+                    error,
+                    "scene assembly: physicsColliders[" + std::to_string(index)
+                        + "].radius must be finite and positive");
+            }
+        } else {
+            const glm::quat& orientation = collider.orientation;
+            const double orientationLengthSquared =
+                static_cast<double>(orientation.x) * orientation.x
+                + static_cast<double>(orientation.y) * orientation.y
+                + static_cast<double>(orientation.z) * orientation.z
+                + static_cast<double>(orientation.w) * orientation.w;
+            if (!std::isfinite(orientationLengthSquared)
+                || std::abs(orientationLengthSquared - 1.0) > 1.0e-4) {
+                return reject(
+                    error,
+                    "scene assembly: physicsColliders[" + std::to_string(index)
+                        + "].orientation length squared must be finite and within 1e-4 of 1");
+            }
+            if (!finiteVec3(collider.halfExtents)
+                || !finitePositive(collider.halfExtents.x)
+                || !finitePositive(collider.halfExtents.y)
+                || !finitePositive(collider.halfExtents.z)) {
+                return reject(
+                    error,
+                    "scene assembly: physicsColliders[" + std::to_string(index)
+                        + "].halfExtents must contain finite positive values");
             }
         }
     }
@@ -214,6 +387,20 @@ bool validateSceneAppendCounts(
                 MaximumUint32,
                 false,
                 "material",
+                error)
+            && checkedTotal(
+                destination.physicsBodies,
+                source.physicsBodies,
+                MaximumUint32,
+                false,
+                "physics body",
+                error)
+            && checkedTotal(
+                destination.physicsColliders,
+                source.physicsColliders,
+                MaximumUint32,
+                false,
+                "physics collider",
                 error);
     } catch (const std::bad_alloc&) {
         return rejectAllocation(error);
@@ -301,6 +488,23 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
                 return false;
             }
         }
+        for (std::size_t index = 0; index < model.physicsBodies.size(); ++index) {
+            const ScenePhysicsBody& body = model.physicsBodies[index];
+            if (!checkRebasedValue(
+                    body.meshIndex,
+                    destinationCounts.meshes,
+                    "physicsBody.meshIndex",
+                    index,
+                    error)
+                || !checkRebasedValue(
+                    body.firstCollider,
+                    destinationCounts.physicsColliders,
+                    "physicsBody.firstCollider",
+                    index,
+                    error)) {
+                return false;
+            }
+        }
 
         // Reserve every destination before rebasing or moving any source value. Once
         // these calls succeed, all appended record types are nothrow-movable and no
@@ -311,8 +515,11 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
         reserveForAppend(&scene->geometries, model.geometries.size());
         reserveForAppend(&scene->meshes, model.meshes.size());
         reserveForAppend(&scene->materials, model.materials.size());
+        reserveForAppend(&scene->physicsBodies, model.physicsBodies.size());
+        reserveForAppend(&scene->physicsColliders, model.physicsColliders.size());
 
         static_assert(std::is_nothrow_move_constructible_v<SceneMaterial>);
+        static_assert(std::is_nothrow_move_constructible_v<ScenePhysicsCollider>);
         for (SceneGeometry& geometry : model.geometries) {
             geometry.firstVertex += static_cast<uint32_t>(destinationCounts.vertices);
             geometry.firstIndex += static_cast<uint32_t>(destinationCounts.indices);
@@ -321,6 +528,11 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
         for (SceneMesh& mesh : model.meshes) {
             mesh.firstGeometry += static_cast<uint32_t>(destinationCounts.geometries);
         }
+        for (ScenePhysicsBody& body : model.physicsBodies) {
+            body.meshIndex += static_cast<uint32_t>(destinationCounts.meshes);
+            body.firstCollider +=
+                static_cast<uint32_t>(destinationCounts.physicsColliders);
+        }
 
         appendMoved(&scene->positions, &model.positions);
         appendMoved(&scene->attributes, &model.attributes);
@@ -328,6 +540,8 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
         appendMoved(&scene->geometries, &model.geometries);
         appendMoved(&scene->meshes, &model.meshes);
         appendMoved(&scene->materials, &model.materials);
+        appendMoved(&scene->physicsBodies, &model.physicsBodies);
+        appendMoved(&scene->physicsColliders, &model.physicsColliders);
         return true;
     } catch (const std::bad_alloc&) {
         return rejectAllocation(error);
@@ -381,6 +595,9 @@ bool validateAssembledScene(const SceneData& scene, std::string* error)
         if (scene.instances.empty()) {
             return reject(error, "scene assembly: assembled scene must contain at least one instance");
         }
+        if (!validatePhysicsRecipes(scene, error)) {
+            return false;
+        }
 
         for (std::size_t index = 0; index < scene.meshes.size(); ++index) {
             const SceneMesh& mesh = scene.meshes[index];
@@ -413,7 +630,8 @@ bool validateAssembledScene(const SceneData& scene, std::string* error)
             if (!finiteTransform(instance.transform, index, error)) {
                 return false;
             }
-            if (linearDeterminant(instance.transform) == 0.0) {
+            const double determinant = linearDeterminant(instance.transform);
+            if (!std::isfinite(determinant) || determinant == 0.0) {
                 return reject(
                     error,
                     "scene assembly: instance[" + std::to_string(index)

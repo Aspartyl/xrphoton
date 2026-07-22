@@ -29,9 +29,11 @@ Right now it renders a compact OGFx test yard that you can fly around
 (WASD + mouse look). Every build includes generated ground, wall, and unit-box
 models assembled into a walled yard, platform, staircase, and crates, plus an
 indexed quad and a permanent two-geometry wedge regression probe placed twice.
-One ochre crate orbits and spins under engine control: the CPU rewrites one
-fence-protected instance-input slot and rebuilds the shared TLAS in place before
-every trace while all BLAS geometry stays static. A configured reference build
+One ochre crate now spawns above the yard, falls, tumbles, settles, and sleeps
+under Jolt Physics control. Physics writes its rigid transform back to
+`SceneData`; the existing renderer then rewrites one fence-protected
+instance-input slot and rebuilds the shared TLAS in place before every trace
+while all BLAS geometry stays static. A configured reference build
 adds the converted, textured legacy `plitka1.ogfx` as another yard placement
 through the same runtime path.
 That plitka configuration reaches the interactive render loop, passes plain,
@@ -41,26 +43,27 @@ The converted `test_pyramid.ogfx`, flat-shaded `test_sphere.ogfx`,
 `test_smooth_sphere.ogfx`, and alpha-tested `test_leaf_card.ogfx` can be
 configured independently as Blender yard placements. The converted regular
 `bochka_close_1.ogfx` is another yard model: its `mtl\mtl_barrel_01` reference
-uses the same DDS path, while its
-backend-neutral compound-collider metadata is preserved but not simulated yet.
+uses the same DDS path, while its preserved three-cylinder recipe now creates a
+dynamic compound body that tips and rolls from its configured spawn.
 The adjacent `remade_bochka_close_1.ogfx` is a Blender-authored, scale-faithful
 visual remake with 8,381 unified vertices, 15,944 triangles, and the owner-local
-opaque BC1 texture `xrphoton\remade_bochka_close_1_basecolor`; it deliberately
-adds no physics metadata yet. The third adjacent drum,
+opaque BC1 texture `xrphoton\remade_bochka_close_1_basecolor`; it has no physics
+recipe and remains static. The third adjacent drum,
 `custom_stalker_barrel.ogfx`, is an original Stalker-style design: a dented
 192-segment shell, three rolled ribs, recessed dark-steel lid, two modeled bungs,
 weld seam, riveted ochre inspection plate, and modeled warning bars. It exports
 11,296 unified vertices / 19,128 triangles through the same single opaque DDS
 profile, now backed by the untouched 4096×4096 `rusty_metal_04` Poly Haven CC0
-diffuse map in an uncompressed RGBA8 DDS, and likewise adds no physics metadata yet. The converted
+diffuse map in an uncompressed RGBA8 DDS, and likewise remains static without a
+physics recipe. The converted
 `item_psevdodog_tail.ogfx` follows that three-barrel comparison. Its one mesh keeps
 two geometries in source order: a `models\model_aref` alpha-tested range and a
 `models\model` opaque range, both using `act\act_pseudodog_fur` through one
 shared material with the source cutoff of 128/255. Its single rigid box-body
-recipe is also preserved as backend-neutral metadata and is not simulated.
-All three configured SoC assets retain their authored scale in the yard: the
-barrel is translated only, while plitka and the tail are rotated and translated
-without resizing.
+recipe creates the third dynamic body and settles from its unchanged platform
+pose. All three configured SoC assets retain their authored scale: plitka stays
+at its static rotated/translated placement, the barrel spawns at y = 0.6 with a
+20-degree roll, and the tail keeps its platform transform.
 The generated-only yard contains 5 models/BLASes, 13 TLAS instances, and 6
 geometries. With every optional asset enabled, it contains 14 models/BLASes,
 22 TLAS instances, and 16 geometries; the wedge remains the shared-BLAS probe.
@@ -120,8 +123,19 @@ mass, source material, and source-node names enter optional OGFx metadata. The
 pseudodog tail extends that same narrow adapter with its validated progressive
 and static child forms, mixed opaque/alpha-tested render semantics, shared
 material cutoff, and one box collider.
-Physics-driven rigid dynamics, skinning and BLAS refits, actual path tracing with
-lights, and temporal accumulation and denoising follow later. Details in
+The runtime loader now carries those backend-neutral recipes into `SceneData`,
+and the engine-side `PhysicsWorld` turns the generated crate plus configured
+barrel and tail placements into live Jolt bodies. Every other yard instance is
+static collision geometry. Simulation uses a 60 Hz fixed-step accumulator,
+clamps each frame contribution to 0.1 seconds, enables linear-cast motion for
+dynamic bodies, and publishes body-origin transforms atomically back to the
+scene. Headless tests cover settling and sleep, lifecycle, input contracts,
+shape/math bridging, static mesh construction, determinism, capacity failure,
+adversarial numeric boundaries, the robust 500 m/s velocity clamp, and CCD
+without creating Vulkan objects.
+
+Deformable skinning and BLAS refits, actual path tracing with lights, and
+temporal accumulation and denoising follow later. Details in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
@@ -142,6 +156,14 @@ cmake --build --preset release
 ./build/release/xrPhoton
 ```
 
+Jolt Physics **v5.6.0** is pinned and vendored under
+[`third_party/jolt`](third_party/jolt). CMake builds it as a static,
+engine-only dependency; configuration never downloads it and no system Jolt
+package is required. Jolt is MIT-licensed, with its verbatim license at
+[`third_party/jolt/LICENSE`](third_party/jolt/LICENSE). The one local
+thread-pool exception-safety fix is recorded in
+[`third_party/jolt/XRPHOTON_PATCHES.md`](third_party/jolt/XRPHOTON_PATCHES.md).
+
 The offline OGFx writer, decoder, and their tests can be configured without
 Vulkan, GLFW, GLM, Slang, or a GPU SDK:
 
@@ -156,6 +178,9 @@ That graphics-free configuration can also generate the probe asset explicitly:
 ```sh
 cmake --build --preset ogfx-core --target xrPhotonAssets
 ```
+
+The `ogfx-core` preset returns before the engine dependency section, so it does
+not configure, build, or test Jolt.
 
 It also builds the narrow legacy OGF converter:
 
@@ -361,6 +386,12 @@ loud startup failure rather than a silent fallback. The original game files,
 Blender sources, Blender textures, and generated proof outputs remain Git-ignored
 local inputs.
 
+The generated crate is always present in `dynamicInstances`. The regular barrel
+and pseudodog tail join that set only when their optional entries are configured;
+an unconfigured optional dynamic is skipped, while a configured one must load as
+exactly one mesh with exactly one rigid-body recipe. The plitka and every Blender
+entry remain static regardless of placement.
+
 The current build and development environment is Linux with GCC or Clang.
 Windows support is planned, but its build and platform integration have not landed yet.
 
@@ -381,5 +412,8 @@ per-frame flow, synchronization, roadmap.
 
 [FORMATS.md](FORMATS.md) — asset-format plan: OGFx, OMFx, and the shared
 offline asset compiler.
+
+[PHYSICS.md](PHYSICS.md) — Jolt integration, rigid-body recipe consumption,
+simulation contracts, acceptance criteria, and upgrade triggers.
 
 [SDK.md](SDK.md) — plan for the modern SDK successor.

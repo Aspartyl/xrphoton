@@ -94,6 +94,8 @@ bool sceneIsEmpty(const xrphoton::SceneData& scene)
         && scene.indices.empty()
         && scene.geometries.empty()
         && scene.meshes.empty()
+        && scene.physicsBodies.empty()
+        && scene.physicsColliders.empty()
         && scene.instances.empty()
         && scene.materials.empty()
         && scene.images.empty();
@@ -139,7 +141,8 @@ void testGeneratedYardAsset(
     std::string_view name,
     Vec3 expectedMinimum,
     Vec3 expectedMaximum,
-    const std::array<float, 4>& expectedColor)
+    const std::array<float, 4>& expectedColor,
+    bool expectedPhysicsRecipe)
 {
     const xrphoton::OgfxLoadResult loaded = xrphoton::loadOgfxModel(path);
     expect(static_cast<bool>(loaded),
@@ -175,6 +178,45 @@ void testGeneratedYardAsset(
         std::string(name) + " owns exactly one geometry");
     expect(scene.instances.empty() && scene.images.empty(),
         std::string(name) + " model contains no placement or runtime image state");
+    if (expectedPhysicsRecipe) {
+        expect(scene.physicsBodies.size() == 1
+                && scene.physicsColliders.size() == 1,
+            std::string(name) + " carries one body and one collider recipe");
+        if (scene.physicsBodies.size() == 1
+            && scene.physicsColliders.size() == 1) {
+            const xrphoton::ScenePhysicsBody& body = scene.physicsBodies[0];
+            const xrphoton::ScenePhysicsCollider& collider =
+                scene.physicsColliders[0];
+            expect(body.meshIndex == 0
+                    && body.firstCollider == 0
+                    && body.colliderCount == 1
+                    && body.mass == 30.0f
+                    && body.centerOfMass.x == 0.0f
+                    && body.centerOfMass.y == 0.0f
+                    && body.centerOfMass.z == 0.0f,
+                std::string(name) + " body recipe owns its only mesh and collider");
+            expect(collider.shape == xrphoton::ScenePhysicsShape::Box
+                    && collider.center.x == 0.0f
+                    && collider.center.y == 0.0f
+                    && collider.center.z == 0.0f
+                    && collider.orientation.w == 1.0f
+                    && collider.orientation.x == 0.0f
+                    && collider.orientation.y == 0.0f
+                    && collider.orientation.z == 0.0f
+                    && collider.halfExtents.x == 0.5f
+                    && collider.halfExtents.y == 0.5f
+                    && collider.halfExtents.z == 0.5f
+                    && collider.mass == 30.0f
+                    && collider.centerOfMass.x == 0.0f
+                    && collider.centerOfMass.y == 0.0f
+                    && collider.centerOfMass.z == 0.0f
+                    && collider.material.empty(),
+                std::string(name) + " collider is the complete generated box recipe");
+        }
+    } else {
+        expect(scene.physicsBodies.empty() && scene.physicsColliders.empty(),
+            std::string(name) + " intentionally carries no rigid-physics recipe");
+    }
 
     std::vector<std::uint32_t> expectedIndices;
     expectedIndices.reserve(36);
@@ -291,19 +333,22 @@ void testGeneratedYardAssets()
         "yard ground",
         {-10.0f, -0.4f, -10.0f},
         { 10.0f,  0.0f,  10.0f},
-        {0.42f, 0.42f, 0.45f, 1.0f});
+        {0.42f, 0.42f, 0.45f, 1.0f},
+        false);
     testGeneratedYardAsset(
         std::filesystem::path(XRPHOTON_TEST_YARD_WALL_ASSET_PATH),
         "yard wall",
         {-4.0f, 0.0f, -0.15f},
         { 4.0f, 3.0f,  0.15f},
-        {0.55f, 0.24f, 0.18f, 1.0f});
+        {0.55f, 0.24f, 0.18f, 1.0f},
+        false);
     testGeneratedYardAsset(
         std::filesystem::path(XRPHOTON_TEST_YARD_BOX_ASSET_PATH),
         "yard box",
         {-0.5f, -0.5f, -0.5f},
         { 0.5f,  0.5f,  0.5f},
-        {0.80f, 0.62f, 0.22f, 1.0f});
+        {0.80f, 0.62f, 0.22f, 1.0f},
+        true);
 }
 
 void testSceneConversion()
@@ -377,6 +422,9 @@ void testSceneConversion()
         "runtime material fields include an empty texture-reference carrier");
     expect(loaded.scene.instances.empty(), "OGFx decoding creates no world instances");
     expect(loaded.scene.images.empty(), "the untextured adapter fixture creates no images");
+    expect(loaded.scene.physicsBodies.empty()
+            && loaded.scene.physicsColliders.empty(),
+        "an OGFx model without a recipe creates no runtime physics records");
 
     std::vector<std::uint8_t> malformed = serialized.bytes;
     malformed[0] = 'X';
@@ -440,26 +488,37 @@ void testMultiRecordSceneConversion()
         "multi-record OGFx decoding still creates no placements or images");
 }
 
-void testOptionalPhysicsMetadataBoundary()
+void testPhysicsRecipeBoundary()
 {
     xrphoton::ogfx::Model model = makeQuad();
     model.physicsBodies.push_back({
         .firstCollider = 0,
-        .colliderCount = 1,
-        .mass = 60.0f,
-        .centerOfMass = {0.0f, 0.5f, 0.0f},
+        .colliderCount = 2,
+        .mass = 17.0f,
+        .centerOfMass = {0.25f, -0.5f, 0.75f},
+    });
+    model.physicsColliders.push_back({
+        .shapeType = xrphoton::ogfx::PhysicsShapeType::Box,
+        .flags = 0,
+        .material = "objects\\tail",
+        .sourceNode = "box-source-node-is-not-runtime-data",
+        .center = {1.0f, 2.0f, 3.0f},
+        .orientation = {0.18257418f, 0.36514837f, 0.54772258f, 0.73029673f},
+        .halfExtents = {0.125f, 0.25f, 0.5f},
+        .mass = 7.0f,
+        .centerOfMass = {-1.0f, -2.0f, -3.0f},
     });
     model.physicsColliders.push_back({
         .shapeType = xrphoton::ogfx::PhysicsShapeType::Cylinder,
         .flags = 0,
         .material = "objects\\barrel",
-        .sourceNode = "barrel",
-        .center = {0.0f, 0.5f, 0.0f},
-        .axis = {0.0f, 1.0f, 0.0f},
-        .height = 1.0f,
-        .radius = 0.35f,
-        .mass = 60.0f,
-        .centerOfMass = {0.0f, 0.5f, 0.0f},
+        .sourceNode = "cylinder-source-node-is-not-runtime-data",
+        .center = {-4.0f, 5.0f, -6.0f},
+        .axis = {1.0f, 2.0f, 3.0f},
+        .height = 1.25f,
+        .radius = 0.375f,
+        .mass = 10.0f,
+        .centerOfMass = {4.0f, -5.0f, 6.0f},
     });
 
     const xrphoton::ogfx::SerializeResult serialized =
@@ -473,9 +532,9 @@ void testOptionalPhysicsMetadataBoundary()
 
     const xrphoton::OgfxLoadResult loaded = xrphoton::decodeOgfxScene(
         serialized.bytes,
-        "physics-render-boundary.ogfx");
+        "physics-runtime-boundary.ogfx");
     expect(static_cast<bool>(loaded),
-        "render adapter accepts a model carrying validated optional physics metadata");
+        "runtime adapter accepts a model carrying validated physics recipes");
     if (!loaded) {
         std::cerr << loaded.error << '\n';
         return;
@@ -486,9 +545,104 @@ void testOptionalPhysicsMetadataBoundary()
             && loaded.scene.geometries.size() == 1
             && loaded.scene.meshes.size() == 1
             && loaded.scene.materials.size() == 1,
-        "optional physics records do not alter the current render-only SceneData");
+        "physics recipes leave the model's render records unchanged");
+    expect(loaded.scene.physicsBodies.size() == 1,
+        "runtime adapter copies the body recipe");
+    if (loaded.scene.physicsBodies.size() == 1) {
+        const xrphoton::ScenePhysicsBody& body = loaded.scene.physicsBodies[0];
+        expect(body.meshIndex == 0
+                && body.firstCollider == 0
+                && body.colliderCount == 2
+                && body.mass == 17.0f
+                && body.centerOfMass.x == 0.25f
+                && body.centerOfMass.y == -0.5f
+                && body.centerOfMass.z == 0.75f,
+            "body recipe copies ownership, mass, and aggregate center of mass");
+    }
+    expect(loaded.scene.physicsColliders.size() == 2,
+        "runtime adapter copies both box and cylinder collider recipes");
+    if (loaded.scene.physicsColliders.size() == 2) {
+        const xrphoton::ScenePhysicsCollider& box =
+            loaded.scene.physicsColliders[0];
+        expect(box.shape == xrphoton::ScenePhysicsShape::Box
+                && box.center.x == 1.0f
+                && box.center.y == 2.0f
+                && box.center.z == 3.0f
+                && box.halfExtents.x == 0.125f
+                && box.halfExtents.y == 0.25f
+                && box.halfExtents.z == 0.5f
+                && box.mass == 7.0f
+                && box.centerOfMass.x == -1.0f
+                && box.centerOfMass.y == -2.0f
+                && box.centerOfMass.z == -3.0f
+                && box.material == "objects\\tail",
+            "box collider copies every runtime-owned scalar and string field");
+        expect(box.orientation.x == model.physicsColliders[0].orientation.x
+                && box.orientation.y == model.physicsColliders[0].orientation.y
+                && box.orientation.z == model.physicsColliders[0].orientation.z
+                && box.orientation.w == model.physicsColliders[0].orientation.w,
+            "OGFx (x,y,z,w) orientation crosses explicitly into GLM (w,x,y,z)");
+
+        const xrphoton::ScenePhysicsCollider& cylinder =
+            loaded.scene.physicsColliders[1];
+        expect(cylinder.shape == xrphoton::ScenePhysicsShape::Cylinder
+                && cylinder.center.x == -4.0f
+                && cylinder.center.y == 5.0f
+                && cylinder.center.z == -6.0f
+                && cylinder.axis.x == 1.0f
+                && cylinder.axis.y == 2.0f
+                && cylinder.axis.z == 3.0f
+                && cylinder.height == 1.25f
+                && cylinder.radius == 0.375f
+                && cylinder.mass == 10.0f
+                && cylinder.centerOfMass.x == 4.0f
+                && cylinder.centerOfMass.y == -5.0f
+                && cylinder.centerOfMass.z == 6.0f
+                && cylinder.material == "objects\\barrel",
+            "cylinder collider copies axis, dimensions, mass, COM, and material");
+    }
     expect(loaded.scene.instances.empty() && loaded.scene.images.empty(),
-        "physics metadata creates neither world placement nor runtime image state");
+        "physics recipes create neither world placement nor runtime image state");
+}
+
+void testMultiMeshPhysicsRecipeRejected()
+{
+    xrphoton::ogfx::Model model = makeOpaqueTwoGeometryModel();
+    model.meshes = {{0, 1}, {1, 1}};
+    model.physicsBodies.push_back({
+        .firstCollider = 0,
+        .colliderCount = 1,
+        .mass = 1.0f,
+        .centerOfMass = {},
+    });
+    model.physicsColliders.push_back({
+        .shapeType = xrphoton::ogfx::PhysicsShapeType::Box,
+        .flags = 0,
+        .material = {},
+        .sourceNode = {},
+        .halfExtents = {0.5f, 0.5f, 0.5f},
+        .mass = 1.0f,
+    });
+
+    const xrphoton::ogfx::SerializeResult serialized =
+        xrphoton::ogfx::serializeModel(model, "multi-mesh-physics-source");
+    expect(static_cast<bool>(serialized),
+        "a valid OGFx recipe can still describe a model with two meshes");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+
+    const xrphoton::OgfxLoadResult loaded = xrphoton::decodeOgfxScene(
+        serialized.bytes,
+        "multi-mesh-physics.ogfx");
+    expect(!loaded,
+        "runtime adapter rejects ambiguous model-scoped physics ownership across two meshes");
+    expect(sceneIsEmpty(loaded.scene),
+        "multi-mesh physics rejection publishes no partial SceneData");
+    expect(loaded.error.find("rigid-physics mesh ownership") != std::string::npos
+            && loaded.error.find("exactly 1 mesh") != std::string::npos,
+        "multi-mesh physics diagnostic names the single-mesh ownership rule");
 }
 
 void testFileBoundary()
@@ -532,7 +686,8 @@ int main()
     testGeneratedYardAssets();
     testSceneConversion();
     testMultiRecordSceneConversion();
-    testOptionalPhysicsMetadataBoundary();
+    testPhysicsRecipeBoundary();
+    testMultiMeshPhysicsRecipeRejected();
     testFileBoundary();
 
     if (failureCount != 0) {

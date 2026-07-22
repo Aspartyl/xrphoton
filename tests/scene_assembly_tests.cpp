@@ -61,6 +61,41 @@ bool sameMesh(const xrphoton::SceneMesh& left, const xrphoton::SceneMesh& right)
         && left.geometryCount == right.geometryCount;
 }
 
+bool sameVec3(const glm::vec3& left, const glm::vec3& right)
+{
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+bool samePhysicsBody(
+    const xrphoton::ScenePhysicsBody& left,
+    const xrphoton::ScenePhysicsBody& right)
+{
+    return left.meshIndex == right.meshIndex
+        && left.firstCollider == right.firstCollider
+        && left.colliderCount == right.colliderCount
+        && left.mass == right.mass
+        && sameVec3(left.centerOfMass, right.centerOfMass);
+}
+
+bool samePhysicsCollider(
+    const xrphoton::ScenePhysicsCollider& left,
+    const xrphoton::ScenePhysicsCollider& right)
+{
+    return left.shape == right.shape
+        && sameVec3(left.center, right.center)
+        && sameVec3(left.axis, right.axis)
+        && left.height == right.height
+        && left.radius == right.radius
+        && left.orientation.w == right.orientation.w
+        && left.orientation.x == right.orientation.x
+        && left.orientation.y == right.orientation.y
+        && left.orientation.z == right.orientation.z
+        && sameVec3(left.halfExtents, right.halfExtents)
+        && left.mass == right.mass
+        && sameVec3(left.centerOfMass, right.centerOfMass)
+        && left.material == right.material;
+}
+
 bool sameMatrix(const glm::mat4& left, const glm::mat4& right)
 {
     for (std::size_t column = 0; column < 4; ++column) {
@@ -127,6 +162,11 @@ bool sameScene(const xrphoton::SceneData& left, const xrphoton::SceneData& right
         && left.indices == right.indices
         && sameRecords(left.geometries, right.geometries, sameGeometry)
         && sameRecords(left.meshes, right.meshes, sameMesh)
+        && sameRecords(left.physicsBodies, right.physicsBodies, samePhysicsBody)
+        && sameRecords(
+            left.physicsColliders,
+            right.physicsColliders,
+            samePhysicsCollider)
         && sameRecords(left.instances, right.instances, sameInstance)
         && sameRecords(left.materials, right.materials, sameMaterial)
         && sameRecords(left.images, right.images, sameImage);
@@ -177,6 +217,53 @@ xrphoton::SceneData makeTriangleModel(
     material.baseColorTexture = std::move(texture);
     model.materials.push_back(std::move(material));
     return model;
+}
+
+xrphoton::ScenePhysicsCollider makeBoxCollider(
+    float mass = 3.0f,
+    std::string material = "physics\\box")
+{
+    return {
+        .shape = xrphoton::ScenePhysicsShape::Box,
+        .center = {0.25f, 0.5f, 0.75f},
+        .orientation = {0.5f, 0.5f, 0.5f, 0.5f},
+        .halfExtents = {0.25f, 0.5f, 0.75f},
+        .mass = mass,
+        .centerOfMass = {0.125f, 0.25f, 0.375f},
+        .material = std::move(material),
+    };
+}
+
+xrphoton::ScenePhysicsCollider makeCylinderCollider(
+    float mass = 5.0f,
+    std::string material = "physics\\cylinder")
+{
+    return {
+        .shape = xrphoton::ScenePhysicsShape::Cylinder,
+        .center = {-0.25f, -0.5f, -0.75f},
+        .axis = {1.0f, 2.0f, 3.0f},
+        .height = 1.25f,
+        .radius = 0.375f,
+        .mass = mass,
+        .centerOfMass = {-0.125f, -0.25f, -0.375f},
+        .material = std::move(material),
+    };
+}
+
+void addPhysicsRecipe(
+    xrphoton::SceneData* model,
+    std::vector<xrphoton::ScenePhysicsCollider> colliders,
+    float bodyMass = 8.0f,
+    glm::vec3 bodyCenterOfMass = {0.1f, 0.2f, 0.3f})
+{
+    model->physicsBodies.push_back({
+        .meshIndex = 0,
+        .firstCollider = 0,
+        .colliderCount = static_cast<std::uint32_t>(colliders.size()),
+        .mass = bodyMass,
+        .centerOfMass = bodyCenterOfMass,
+    });
+    model->physicsColliders = std::move(colliders);
 }
 
 xrphoton::SceneData makeTwoGeometryModel()
@@ -230,6 +317,9 @@ xrphoton::SceneData makeTwoGeometryModel()
 xrphoton::SceneData makeValidAssembledScene()
 {
     xrphoton::SceneData scene = makeTriangleModel();
+    addPhysicsRecipe(
+        &scene,
+        {makeBoxCollider(), makeCylinderCollider()});
     scene.instances.push_back({
         .meshIndex = 0,
         .transform = glm::mat4(1.0f),
@@ -272,6 +362,39 @@ xrphoton::ogfx::Model makeRuntimeModel(float positionBase, bool quad)
     model.materials[0].baseColorTexture = quad
         ? "runtime\\second"
         : "runtime\\first";
+    model.physicsBodies.push_back({
+        .firstCollider = 0,
+        .colliderCount = quad ? 2u : 1u,
+        .mass = quad ? 11.0f : 5.0f,
+        .centerOfMass = quad
+            ? xrphoton::ogfx::Position{0.2f, 0.3f, 0.4f}
+            : xrphoton::ogfx::Position{-0.2f, -0.3f, -0.4f},
+    });
+    model.physicsColliders.push_back({
+        .shapeType = xrphoton::ogfx::PhysicsShapeType::Cylinder,
+        .flags = 0,
+        .material = quad ? "runtime\\cylinder-second" : "runtime\\cylinder-first",
+        .sourceNode = {},
+        .center = {0.0f, 0.5f, 0.0f},
+        .axis = {1.0f, 2.0f, 3.0f},
+        .height = 1.0f,
+        .radius = 0.25f,
+        .mass = quad ? 6.0f : 5.0f,
+        .centerOfMass = {0.0f, 0.5f, 0.0f},
+    });
+    if (quad) {
+        model.physicsColliders.push_back({
+            .shapeType = xrphoton::ogfx::PhysicsShapeType::Box,
+            .flags = 0,
+            .material = "runtime\\box-second",
+            .sourceNode = {},
+            .center = {0.25f, 0.0f, -0.25f},
+            .orientation = {0.5f, 0.5f, 0.5f, 0.5f},
+            .halfExtents = {0.2f, 0.3f, 0.4f},
+            .mass = 5.0f,
+            .centerOfMass = {0.25f, 0.0f, -0.25f},
+        });
+    }
     return model;
 }
 
@@ -292,6 +415,7 @@ bool appendForTest(
 void testIdentityAppend()
 {
     xrphoton::SceneData model = makeTwoGeometryModel();
+    addPhysicsRecipe(&model, {makeBoxCollider(7.0f, "identity\\box")}, 7.0f);
     const xrphoton::SceneData expected = model;
     xrphoton::SceneData scene{};
     std::string error = "stale diagnostic";
@@ -304,8 +428,17 @@ void testIdentityAppend()
 
 void testCompleteTwoModelRebase()
 {
-    const xrphoton::SceneData first = makeTriangleModel();
-    const xrphoton::SceneData second = makeTwoGeometryModel();
+    xrphoton::SceneData first = makeTriangleModel();
+    addPhysicsRecipe(&first, {makeBoxCollider(3.0f, "first\\box")}, 3.0f);
+    xrphoton::SceneData second = makeTwoGeometryModel();
+    addPhysicsRecipe(
+        &second,
+        {
+            makeCylinderCollider(5.0f, "second\\cylinder"),
+            makeBoxCollider(7.0f, "second\\box"),
+        },
+        12.0f,
+        {-0.4f, 0.5f, -0.6f});
     xrphoton::SceneData scene{};
     if (!appendForTest(&scene, first, "first hand-built model appends")
         || !appendForTest(&scene, second, "second hand-built model appends")) {
@@ -356,6 +489,28 @@ void testCompleteTwoModelRebase()
             "second model first material appends as-is");
         expect(sameMaterial(scene.materials[2], second.materials[1]),
             "second model second material appends as-is");
+    }
+    expect(scene.physicsBodies.size() == 2,
+        "both models contribute their body recipes");
+    if (scene.physicsBodies.size() == 2) {
+        expect(samePhysicsBody(scene.physicsBodies[0], first.physicsBodies[0]),
+            "first body ownership remains unchanged");
+        xrphoton::ScenePhysicsBody expectedSecond = second.physicsBodies[0];
+        expectedSecond.meshIndex = 1;
+        expectedSecond.firstCollider = 1;
+        expect(samePhysicsBody(scene.physicsBodies[1], expectedSecond),
+            "second body rebases both mesh and first-collider ownership");
+    }
+    expect(scene.physicsColliders.size() == 3,
+        "all physics colliders concatenate without changing recipe fields");
+    if (scene.physicsColliders.size() == 3) {
+        expect(samePhysicsCollider(
+                   scene.physicsColliders[0], first.physicsColliders[0])
+                && samePhysicsCollider(
+                    scene.physicsColliders[1], second.physicsColliders[0])
+                && samePhysicsCollider(
+                    scene.physicsColliders[2], second.physicsColliders[1]),
+            "collider shape, transforms, dimensions, mass, COM, and material stay exact");
     }
     expect(scene.instances.empty(), "model merging invents no instances");
     expect(scene.images.empty(), "model merging invents no images");
@@ -513,6 +668,26 @@ void testRuntimeLoadedModels()
             && scene.materials[0].baseColorTexture == "runtime\\first"
             && scene.materials[1].baseColorTexture == "runtime\\second",
         "runtime-loaded material and texture identities remain distinct after rebasing");
+    expect(scene.physicsBodies.size() == 2
+            && scene.physicsBodies[0].meshIndex == 0
+            && scene.physicsBodies[0].firstCollider == 0
+            && scene.physicsBodies[0].colliderCount == 1
+            && scene.physicsBodies[1].meshIndex == 1
+            && scene.physicsBodies[1].firstCollider == 1
+            && scene.physicsBodies[1].colliderCount == 2,
+        "runtime-loaded body recipes rebase mesh and collider ownership end to end");
+    expect(scene.physicsColliders.size() == 3
+            && scene.physicsColliders[0].shape
+                == xrphoton::ScenePhysicsShape::Cylinder
+            && scene.physicsColliders[0].material == "runtime\\cylinder-first"
+            && scene.physicsColliders[1].shape
+                == xrphoton::ScenePhysicsShape::Cylinder
+            && scene.physicsColliders[1].material == "runtime\\cylinder-second"
+            && scene.physicsColliders[2].shape == xrphoton::ScenePhysicsShape::Box
+            && scene.physicsColliders[2].material == "runtime\\box-second"
+            && scene.physicsColliders[2].orientation.w == 0.5f
+            && scene.physicsColliders[2].orientation.x == 0.5f,
+        "runtime-loaded collider recipes retain order, shapes, materials, and quaternion fields");
 }
 
 void testInstanceAppend()
@@ -674,6 +849,27 @@ void testFinalValidation()
         "complete assembled scene passes final validation");
     expect(error.empty(), "successful final validation clears an old diagnostic");
 
+    xrphoton::SceneData twoBodyPartition = valid;
+    twoBodyPartition.physicsBodies[0].colliderCount = 1;
+    twoBodyPartition.physicsBodies.push_back({
+        .meshIndex = 0,
+        .firstCollider = 1,
+        .colliderCount = 1,
+        .mass = 5.0f,
+        .centerOfMass = {-0.1f, -0.2f, -0.3f},
+    });
+    expect(xrphoton::validateAssembledScene(twoBodyPartition, &error),
+        "multiple bodies may exactly partition one collider array in order");
+
+    xrphoton::SceneData subnormalAxis = valid;
+    subnormalAxis.physicsColliders[1].axis = {
+        std::numeric_limits<float>::denorm_min(),
+        0.0f,
+        0.0f,
+    };
+    expect(xrphoton::validateAssembledScene(subnormalAxis, &error),
+        "double-precision axis validation accepts a nonzero subnormal cylinder axis");
+
     xrphoton::SceneData noInstances = valid;
     noInstances.instances.clear();
     expectValidationRejected(
@@ -698,6 +894,169 @@ void testFinalValidation()
         "instance[0].meshIndex 1",
         "out-of-bounds instance mesh is rejected");
 
+    xrphoton::SceneData bodyWithoutColliders = valid;
+    bodyWithoutColliders.physicsColliders.clear();
+    expectValidationRejected(
+        std::move(bodyWithoutColliders),
+        "body and collider arrays",
+        "a physics body array without colliders is rejected");
+
+    xrphoton::SceneData collidersWithoutBody = valid;
+    collidersWithoutBody.physicsBodies.clear();
+    expectValidationRejected(
+        std::move(collidersWithoutBody),
+        "body and collider arrays",
+        "a physics collider array without bodies is rejected");
+
+    xrphoton::SceneData invalidBodyMesh = valid;
+    invalidBodyMesh.physicsBodies[0].meshIndex = 1;
+    expectValidationRejected(
+        std::move(invalidBodyMesh),
+        "physicsBodies[0].meshIndex 1",
+        "out-of-bounds physics body mesh ownership is rejected");
+
+    xrphoton::SceneData emptyBody = valid;
+    emptyBody.physicsBodies[0].colliderCount = 0;
+    expectValidationRejected(
+        std::move(emptyBody),
+        "physicsBodies[0].colliderCount",
+        "a body owning zero colliders is rejected");
+
+    xrphoton::SceneData partitionGap = valid;
+    partitionGap.physicsBodies[0].firstCollider = 1;
+    expectValidationRejected(
+        std::move(partitionGap),
+        "physicsBodies[0].firstCollider",
+        "a collider partition gap at the first body is rejected");
+
+    xrphoton::SceneData partitionOverflow = valid;
+    partitionOverflow.physicsBodies[0].colliderCount = 3;
+    expectValidationRejected(
+        std::move(partitionOverflow),
+        "collider range exceeds",
+        "a body collider range beyond the array is rejected");
+
+    xrphoton::SceneData partitionTail = valid;
+    partitionTail.physicsBodies[0].colliderCount = 1;
+    expectValidationRejected(
+        std::move(partitionTail),
+        "final physics collider partition end",
+        "unowned colliders at the end of the partition are rejected");
+
+    xrphoton::SceneData invalidBodyMass = valid;
+    invalidBodyMass.physicsBodies[0].mass = 0.0f;
+    expectValidationRejected(
+        std::move(invalidBodyMass),
+        "physicsBodies[0].mass",
+        "a non-positive body mass is rejected");
+
+    xrphoton::SceneData nonFiniteBodyMass = valid;
+    nonFiniteBodyMass.physicsBodies[0].mass =
+        std::numeric_limits<float>::infinity();
+    expectValidationRejected(
+        std::move(nonFiniteBodyMass),
+        "physicsBodies[0].mass",
+        "a non-finite body mass is rejected");
+
+    xrphoton::SceneData invalidBodyCom = valid;
+    invalidBodyCom.physicsBodies[0].centerOfMass.y =
+        std::numeric_limits<float>::quiet_NaN();
+    expectValidationRejected(
+        std::move(invalidBodyCom),
+        "physicsBodies[0].centerOfMass",
+        "a non-finite aggregate center of mass is rejected");
+
+    xrphoton::SceneData invalidShape = valid;
+    invalidShape.physicsColliders[0].shape =
+        static_cast<xrphoton::ScenePhysicsShape>(99);
+    expectValidationRejected(
+        std::move(invalidShape),
+        "physicsColliders[0].shape",
+        "an unknown runtime collider shape is rejected");
+
+    xrphoton::SceneData invalidColliderCenter = valid;
+    invalidColliderCenter.physicsColliders[0].center.z =
+        std::numeric_limits<float>::infinity();
+    expectValidationRejected(
+        std::move(invalidColliderCenter),
+        "physicsColliders[0].center",
+        "a non-finite collider center is rejected");
+
+    xrphoton::SceneData invalidColliderMass = valid;
+    invalidColliderMass.physicsColliders[0].mass = -1.0f;
+    expectValidationRejected(
+        std::move(invalidColliderMass),
+        "physicsColliders[0].mass",
+        "a non-positive collider mass is rejected");
+
+    xrphoton::SceneData invalidColliderCom = valid;
+    invalidColliderCom.physicsColliders[1].centerOfMass.x =
+        std::numeric_limits<float>::quiet_NaN();
+    expectValidationRejected(
+        std::move(invalidColliderCom),
+        "physicsColliders[1].centerOfMass",
+        "a non-finite collider center of mass is rejected");
+
+    xrphoton::SceneData invalidAxisComponents = valid;
+    invalidAxisComponents.physicsColliders[1].axis.x =
+        std::numeric_limits<float>::infinity();
+    expectValidationRejected(
+        std::move(invalidAxisComponents),
+        "physicsColliders[1].axis",
+        "a non-finite cylinder axis component is rejected");
+
+    xrphoton::SceneData zeroAxis = valid;
+    zeroAxis.physicsColliders[1].axis = {};
+    expectValidationRejected(
+        std::move(zeroAxis),
+        "axis length squared",
+        "a zero-length cylinder axis is rejected");
+
+    xrphoton::SceneData invalidHeight = valid;
+    invalidHeight.physicsColliders[1].height = 0.0f;
+    expectValidationRejected(
+        std::move(invalidHeight),
+        "physicsColliders[1].height",
+        "a non-positive cylinder height is rejected");
+
+    xrphoton::SceneData invalidRadius = valid;
+    invalidRadius.physicsColliders[1].radius =
+        std::numeric_limits<float>::quiet_NaN();
+    expectValidationRejected(
+        std::move(invalidRadius),
+        "physicsColliders[1].radius",
+        "a non-finite cylinder radius is rejected");
+
+    xrphoton::SceneData invalidOrientation = valid;
+    invalidOrientation.physicsColliders[0].orientation.w = 0.25f;
+    expectValidationRejected(
+        std::move(invalidOrientation),
+        "orientation length squared",
+        "a box quaternion outside the normalization tolerance is rejected");
+
+    xrphoton::SceneData nonFiniteOrientation = valid;
+    nonFiniteOrientation.physicsColliders[0].orientation.x =
+        std::numeric_limits<float>::infinity();
+    expectValidationRejected(
+        std::move(nonFiniteOrientation),
+        "orientation length squared",
+        "a non-finite box quaternion is rejected");
+
+    xrphoton::SceneData invalidHalfExtents = valid;
+    invalidHalfExtents.physicsColliders[0].halfExtents.y = 0.0f;
+    expectValidationRejected(
+        std::move(invalidHalfExtents),
+        "physicsColliders[0].halfExtents",
+        "a non-positive box half extent is rejected");
+
+    xrphoton::SceneData nonFiniteHalfExtents = valid;
+    nonFiniteHalfExtents.physicsColliders[0].halfExtents.z =
+        std::numeric_limits<float>::quiet_NaN();
+    expectValidationRejected(
+        std::move(nonFiniteHalfExtents),
+        "physicsColliders[0].halfExtents",
+        "a non-finite box half extent is rejected");
+
     xrphoton::SceneData nonFinite = valid;
     nonFinite.instances[0].transform[2][1] = std::numeric_limits<float>::quiet_NaN();
     expectValidationRejected(
@@ -711,14 +1070,26 @@ void testFinalValidation()
         std::move(singular),
         "instance[0] transform has a zero-determinant",
         "singular transform is rejected");
+
+    xrphoton::SceneData projective = valid;
+    projective.instances[0].transform[1][3] = 2.0e-4f;
+    expectValidationRejected(
+        std::move(projective),
+        "homogeneous row",
+        "a transform outside the affine homogeneous-row tolerance is rejected");
+
+    xrphoton::SceneData reflected = valid;
+    reflected.instances[0].transform[0][0] = -1.0f;
+    expect(xrphoton::validateAssembledScene(reflected, &error),
+        "a finite affine transform with a nonzero negative determinant is accepted");
 }
 
 void expectAppendRejectedUnchanged(
     xrphoton::SceneData model,
     std::string_view diagnosticFragment,
-    std::string_view description)
+    std::string_view description,
+    xrphoton::SceneData scene = makeTriangleModel(100.0f, "target\\unchanged"))
 {
-    xrphoton::SceneData scene = makeTriangleModel(100.0f, "target\\unchanged");
     const xrphoton::SceneData before = scene;
     std::string error;
     const bool appended = xrphoton::appendSceneModel(&scene, std::move(model), &error);
@@ -825,6 +1196,28 @@ void testRebaseOffsetOverflowIsTransactional()
         std::move(firstGeometryOverflow),
         "mesh.firstGeometry[0] rebases past UINT32_MAX",
         "firstGeometry rebase overflow");
+
+    xrphoton::SceneData physicsMeshOverflow = makeTriangleModel();
+    addPhysicsRecipe(&physicsMeshOverflow, {makeBoxCollider()});
+    physicsMeshOverflow.physicsBodies[0].meshIndex = maximumUint32;
+    expectAppendRejectedUnchanged(
+        std::move(physicsMeshOverflow),
+        "physicsBody.meshIndex[0] rebases past UINT32_MAX",
+        "physics body mesh-index rebase overflow");
+
+    xrphoton::SceneData physicsColliderOverflow = makeTriangleModel();
+    addPhysicsRecipe(&physicsColliderOverflow, {makeBoxCollider()});
+    physicsColliderOverflow.physicsBodies[0].firstCollider = maximumUint32;
+    xrphoton::SceneData physicsDestination =
+        makeTriangleModel(100.0f, "target\\physics");
+    addPhysicsRecipe(
+        &physicsDestination,
+        {makeCylinderCollider(5.0f, "target\\cylinder")});
+    expectAppendRejectedUnchanged(
+        std::move(physicsColliderOverflow),
+        "physicsBody.firstCollider[0] rebases past UINT32_MAX",
+        "physics body collider-offset rebase overflow",
+        std::move(physicsDestination));
 }
 
 void expectCountRejected(
@@ -846,11 +1239,13 @@ void testCountBoundaries()
     using Counts = xrphoton::scene_assembly_detail::SceneElementCounts;
     using CountMember = std::uint64_t Counts::*;
     constexpr std::uint64_t maximumUint32 = std::numeric_limits<std::uint32_t>::max();
-    constexpr std::array<std::pair<CountMember, std::string_view>, 4> uint32Fields{{
+    constexpr std::array<std::pair<CountMember, std::string_view>, 6> uint32Fields{{
         {&Counts::vertices, "vertex"},
         {&Counts::indices, "index"},
         {&Counts::meshes, "mesh"},
         {&Counts::materials, "material"},
+        {&Counts::physicsBodies, "physics body"},
+        {&Counts::physicsColliders, "physics collider"},
     }};
 
     for (const auto& [field, name] : uint32Fields) {

@@ -350,6 +350,41 @@ if(NOT XRPHOTON_BUILD_ENGINE)
     return()
 endif()
 
+# Jolt is vendored like VMA; keep its build reproducible, static, portable, and
+# limited to the CPU rigid-body surface this engine consumes.
+set(JPH_BUILD_SHARED_LIBS OFF)
+set(ENABLE_INSTALL OFF)
+set(ENABLE_ALL_WARNINGS OFF)
+set(OVERRIDE_CXX_FLAGS OFF)
+set(INTERPROCEDURAL_OPTIMIZATION OFF)
+set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF)
+set(PROFILER_IN_DEBUG_AND_RELEASE OFF)
+set(CPP_EXCEPTIONS_ENABLED ON)
+set(CPP_RTTI_ENABLED ON)
+set(JPH_USE_DX12 OFF)
+set(JPH_USE_VK OFF)
+set(JPH_USE_MTL OFF)
+set(JPH_USE_CPU_COMPUTE OFF)
+set(ENABLE_OBJECT_STREAM OFF)
+# Upstream declares this numeric choice with option(); a normal parent value keeps
+# it numeric under CMP0077 and makes the 16-bit ABI define explicit on consumers.
+set(OBJECT_LAYER_BITS 16)
+set(USE_SSE4_1 OFF)
+set(USE_SSE4_2 OFF)
+set(USE_AVX OFF)
+set(USE_AVX2 OFF)
+set(USE_AVX512 OFF)
+set(USE_LZCNT OFF)
+set(USE_TZCNT OFF)
+set(USE_F16C OFF)
+set(USE_FMADD OFF)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(USE_ASSERTS ON)
+else()
+    set(USE_ASSERTS OFF)
+endif()
+add_subdirectory(third_party/jolt/Build)
+
 # Optional local real-content gallery input. Empty defaults preserve a generated-
 # asset-only build; once configured, a broken model or texture root is a loud runtime
 # error rather than a silently skipped integration probe.
@@ -506,32 +541,66 @@ if(BUILD_TESTING)
     target_compile_options(xrPhotonTextureLoaderTests PRIVATE -Wall -Wextra)
     add_test(NAME texture_loader COMMAND xrPhotonTextureLoaderTests)
 
-    add_executable(xrPhotonGalleryTests
-        tests/gallery_tests.cpp
-        src/gallery.cpp
+    function(add_xrphoton_gallery_test
+        target_name test_name expectation barrel_path tail_path)
+        add_executable(${target_name}
+            tests/gallery_tests.cpp
+            src/gallery.cpp
+        )
+        target_link_libraries(${target_name} PRIVATE xrPhotonOgfxRuntime)
+        target_compile_options(${target_name} PRIVATE -Wall -Wextra)
+        target_compile_definitions(${target_name} PRIVATE
+            XRPHOTON_GALLERY_TEST_EXPECTATION=${expectation}
+            XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
+            XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
+            XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
+            XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
+            XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
+            XRPHOTON_GALLERY_PLITKA_OGFX=u8\"\"
+            XRPHOTON_GALLERY_BLENDER_OGFX=u8\"\"
+            XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"\"
+            XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"\"
+            XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=u8\"\"
+            XRPHOTON_GALLERY_BARREL_OGFX=u8\"${barrel_path}\"
+            XRPHOTON_GALLERY_REMADE_BARREL_OGFX=u8\"\"
+            XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX=u8\"\"
+            XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=u8\"${tail_path}\"
+            XRPHOTON_GALLERY_AUTHORED_TEXTURE_ROOT=u8\"\"
+            XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"\"
+        )
+        add_dependencies(${target_name} xrPhotonAssets)
+        add_test(NAME ${test_name} COMMAND ${target_name})
+    endfunction()
+
+    add_xrphoton_gallery_test(
+        xrPhotonGalleryTests gallery_policy 0 "" "")
+    add_xrphoton_gallery_test(
+        xrPhotonGalleryDynamicValidTests gallery_policy_dynamic_valid 1
+        "${XRPHOTON_TEST_YARD_BOX_ASSET}" "")
+    add_xrphoton_gallery_test(
+        xrPhotonGalleryDynamicRecipeLessTests gallery_policy_dynamic_recipe_less 2
+        "${XRPHOTON_TEST_WEDGE_ASSET}" "")
+    add_xrphoton_gallery_test(
+        xrPhotonGalleryDynamicMultiMeshTests gallery_policy_dynamic_multi_mesh 3
+        "${CMAKE_CURRENT_BINARY_DIR}/gallery-fixtures/multi-mesh-physics.ogfx" "")
+    add_xrphoton_gallery_test(
+        xrPhotonGalleryDynamicTailValidTests gallery_policy_dynamic_tail_valid 4
+        "" "${XRPHOTON_TEST_YARD_BOX_ASSET}")
+
+    add_executable(xrPhotonPhysicsTests
+        tests/physics_tests.cpp
+        src/physics.cpp
     )
-    target_link_libraries(xrPhotonGalleryTests PRIVATE xrPhotonOgfxRuntime)
-    target_compile_options(xrPhotonGalleryTests PRIVATE -Wall -Wextra)
-    target_compile_definitions(xrPhotonGalleryTests PRIVATE
-        XRPHOTON_TEST_QUAD_ASSET_PATH=u8\"${XRPHOTON_TEST_QUAD_ASSET}\"
-        XRPHOTON_TEST_WEDGE_ASSET_PATH=u8\"${XRPHOTON_TEST_WEDGE_ASSET}\"
-        XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
-        XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
-        XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
-        XRPHOTON_GALLERY_PLITKA_OGFX=u8\"\"
-        XRPHOTON_GALLERY_BLENDER_OGFX=u8\"\"
-        XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"\"
-        XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=u8\"\"
-        XRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=u8\"\"
-        XRPHOTON_GALLERY_BARREL_OGFX=u8\"\"
-        XRPHOTON_GALLERY_REMADE_BARREL_OGFX=u8\"\"
-        XRPHOTON_GALLERY_CUSTOM_BARREL_OGFX=u8\"\"
-        XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=u8\"\"
-        XRPHOTON_GALLERY_AUTHORED_TEXTURE_ROOT=u8\"\"
-        XRPHOTON_GALLERY_TEXTURE_ROOT=u8\"\"
+    target_include_directories(xrPhotonPhysicsTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_compile_definitions(xrPhotonPhysicsTests PRIVATE
+        XRPHOTON_PHYSICS_TESTING)
+    target_compile_options(xrPhotonPhysicsTests PRIVATE -Wall -Wextra)
+    target_link_libraries(xrPhotonPhysicsTests PRIVATE
+        xrPhotonOgfxRuntime
+        Jolt
     )
-    add_dependencies(xrPhotonGalleryTests xrPhotonAssets)
-    add_test(NAME gallery_policy COMMAND xrPhotonGalleryTests)
+    add_test(NAME physics COMMAND xrPhotonPhysicsTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -573,6 +642,7 @@ add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER})
 add_executable(xrPhoton
     src/main.cpp
     src/gallery.cpp
+    src/physics.cpp
     src/third_party_impl.cpp
     src/vulkan_context.cpp
     src/swapchain.cpp
@@ -624,4 +694,5 @@ target_link_libraries(xrPhoton
         Vulkan::Vulkan
         glfw
         ${XRPHOTON_GLM_TARGET}
+        Jolt
 )

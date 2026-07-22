@@ -14,6 +14,8 @@ struct SceneElementCounts
     uint64_t geometries = 0;
     uint64_t meshes = 0;
     uint64_t materials = 0;
+    uint64_t physicsBodies = 0;
+    uint64_t physicsColliders = 0;
 };
 
 [[nodiscard]] bool validateSceneAppendCounts(

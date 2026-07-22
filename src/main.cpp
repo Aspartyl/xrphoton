@@ -2,6 +2,7 @@
 #include "camera.hpp"
 #include "gallery.hpp"
 #include "gpu_scene.hpp"
+#include "physics.hpp"
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
 #include "scene.hpp"
@@ -25,7 +26,6 @@ namespace
 constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
-constexpr double MaxFrameDt = 0.1;
 bool framebufferResized = false;
 
 void markFramebufferResized(GLFWwindow*, int, int)
@@ -368,6 +368,20 @@ int main()
 
     SceneData sceneData = std::move(loadedGallery.scene);
 
+    // Declared after the borrowed scene so reverse destruction tears physics down
+    // first. Physics owns dynamic transform writes but no Vulkan state.
+    PhysicsWorld physicsWorld;
+    if (!createPhysicsWorld(
+            &physicsWorld,
+            &sceneData,
+            loadedGallery.dynamicInstances)) {
+        std::cerr << "Failed to create physics world.\n";
+        return 1;
+    }
+
+    std::cout << "Created physics world (dynamic bodies: "
+              << loadedGallery.dynamicInstances.size() << ").\n";
+
     GpuScene gpuScene;
     const VkResult gpuSceneResult = createGpuScene(
         &gpuScene,
@@ -503,21 +517,23 @@ int main()
         .pitch = loadedGallery.spawn.pitch,
     };
     double lastTime = glfwGetTime();
-    double simulationTime = 0.0;
     uint32_t currentFrame = 0;
 
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
 
         const double now = glfwGetTime();
-        const float dt = static_cast<float>(std::min(now - lastTime, MaxFrameDt));
+        const float dt = static_cast<float>(std::min(
+            now - lastTime,
+            static_cast<double>(PhysicsMaxFrameDt)));
         lastTime = now;
-        simulationTime += dt;
 
         updateCamera(&camera, ctx.window, dt);
 
-        sceneData.instances[loadedGallery.animatedInstance].transform =
-            yardAnimatedTransform(simulationTime);
+        if (!stepPhysics(&physicsWorld, dt)) {
+            std::cerr << "Failed to advance physics world.\n";
+            return 1;
+        }
 
         const float aspect = static_cast<float>(swap.extent.width)
             / static_cast<float>(swap.extent.height);
