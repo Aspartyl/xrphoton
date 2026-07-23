@@ -7,8 +7,9 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 xrPhoton renders an interactive ray-traced OGFx test yard. It
 brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
-TLAS over every yard placement, then fires one ray per pixel from a perspective
-fly camera (WASD + mouse look). The ray-tracing shader samples scene materials and
+TLAS over every yard placement, then fires one ray per pixel from either a basic
+collision-aware player view or the original perspective fly camera. The ray-tracing
+shader samples scene materials and
 writes a device-local storage image that is blitted to the swapchain. The present
 path has two frames in flight, resize handling, and the required descriptor rewrite;
 the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
@@ -186,15 +187,16 @@ the renderer layering.)
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned `RayTypeCount` constant and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; currently fixed at one radiance ray type |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; requires the generated crate dynamic, includes configured recipe-bearing barrel/tail placements, and retires when level/scene data has a real owner |
-| [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
+| [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, the invisible `CharacterVirtual`, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
 | [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency; never configured by the graphics-free `ogfx-core` build |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
-| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed `Camera` (fly-camera state: position, yaw/pitch, FOV, cursor anchor), `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
+| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
+| [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, four-stage/four-group ray tracing pipeline, per-geometry SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
-| [src/main.cpp](src/main.cpp) | `main()` orchestration, physics stepping, and the render loop | Program lifetime |
+| [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
 
 ### Header dependency rule
 
@@ -265,10 +267,12 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    temporary startup policy; its public header exposes `SceneData`, the spawn value,
    and the flat dynamic-instance indices selected by placement policy.
 9. `physics.cpp` includes `scene.hpp` and all Jolt headers needed to validate and
-   instantiate that data. No renderer or Vulkan type crosses this boundary.
+   instantiate that data plus the virtual player character. No renderer or Vulkan
+   type crosses this boundary.
 10. `rt_pipeline.cpp` includes `camera.hpp` for `sizeof(CameraPushConstants)` —
    the pipeline layout's push-constant range; `camera.cpp` includes
-   `GLFW/glfw3.h` for the real input API its header only forward-declared.
+   `GLFW/glfw3.h` for the real input API its header only forward-declared and
+   `player.hpp` for the pure yaw-relative velocity calculation.
 
 File-local helpers live in an anonymous namespace inside each `.cpp`; only the
 cross-file surface is declared in the headers.
@@ -535,15 +539,18 @@ indices from `pickPhysicalDevice`.
 
 Up to `MaxFramesInFlight` frames can be queued. Each loop iteration `main()` first
 computes the elapsed time, clamps it to the shared `PhysicsMaxFrameDt` = 0.1 s,
-passes that value to `updateCamera`, then calls `stepPhysics` with the same value.
-Physics independently validates and clamps its public input, performs
-zero or more 60 Hz fixed updates, and atomically writes every dynamic body-origin
-transform into the bound `SceneData`; when less than one fixed step is accumulated,
-the latest transform simply repeats. This step happens even on an iteration that
-will skip drawing for resize, so simulation advances at clamped real time rather
-than presentation count. A physics failure is loud and exits the loop.
+passes that value to `updateCamera`, then either submits player movement or suspends
+the character while the free camera is active before calling `stepPhysics` with the
+same value. Physics independently
+validates and clamps its public input, performs zero or more 60 Hz character/rigid
+updates, and atomically writes every dynamic body-origin transform into the bound
+`SceneData`; when less than one fixed step is accumulated, the latest poses simply
+repeat. The player camera is then attached to the queried feet position plus its eye
+offset. This happens even on an iteration that will skip drawing for resize, so
+simulation advances at clamped real time rather than presentation count. A physics
+failure is loud and exits the loop.
 
-`main()` then derives the frame's `CameraPushConstants` from the camera state and
+`main()` then derives the frame's `CameraPushConstants` from the selected camera and
 the current `swap.extent` aspect ratio (read fresh every iteration, so a recreate
 needs no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
 a dirty iteration goes straight to recreation because some Wayland compositor/driver
@@ -768,8 +775,7 @@ vendored under [`third_party/jolt`](third_party/jolt) with its MIT license and
 built as a static target only below the `XRPHOTON_BUILD_ENGINE` gate. Its one
 local thread-pool cleanup patch is recorded alongside the dependency. The
 graphics-free OGFx core continues to own and test backend-neutral recipes without
-configuring Jolt. The exact integration decisions, constants, and acceptance plan
-are recorded in [PHYSICS.md](PHYSICS.md).
+configuring Jolt. The exact live integration contracts are recorded below.
 
 [`PhysicsWorld`](src/physics.hpp) is a move-forbidden RAII owner with a Jolt-free
 header and one opaque state pointer. `createPhysicsWorld` binds one caller-owned
@@ -801,11 +807,31 @@ Body construction has one deliberate split:
   and restitution 0.0; preserved material strings remain data for a later material
   table. The system is capped at 1,024 bodies, pairs, and contact constraints, then
   optimized once after startup creation.
+- One invisible Jolt `CharacterVirtual` supplies the first-person player without a
+  `SceneInstance` or TLAS entry. Its 1.8-m standing and 1.2-m crouching capsules
+  (both 0.35-m radius) are translated so the public position is the feet point;
+  releasing crouch switches back only when Jolt confirms the standing shape fits.
+  A lower-sphere supporting plane, enhanced
+  internal-edge removal, the moving-layer filters, and `ExtendedUpdate` provide
+  wall collision, slope handling, floor sticking, and 0.4-m stair stepping against
+  both static yard meshes and dynamic props. Input supplies normalized world X/Z
+  run/sprint/crouch velocity (3/12/1.5 m/s); gravity and the optional 5 m/s jump are integrated
+  inside the fixed step. The 0.4-m upward stair step and 0.5-m downward floor-stick
+  distance are set explicitly instead of inherited from Jolt defaults. Airborne input
+  deliberately replaces horizontal momentum, giving this test-focused controller
+  full air control for now. Its explicitly configured 70-kg mass supplies downward
+  weight on supporting bodies, while a separate 500-N strength limit makes ordinary
+  yard props pushable. Free-camera mode suspends its position and clears pending
+  input; resuming refreshes contacts before movement continues. It deliberately has
+  no inner proxy body yet, so it can push
+  bodies it contacts but is not itself present to general ray/shape queries.
 
 `PhysicsWorld::State` owns a double-precision accumulator. `stepPhysics` rejects
 non-finite or negative input, adds at most `PhysicsMaxFrameDt` (0.1 s), and calls
-`PhysicsSystem::Update` in exact `PhysicsFixedDt` (1/60 s) increments, with six as
-the hard catch-up bound. After all updates succeed it gathers every dynamic
+`CharacterVirtual::ExtendedUpdate` and `PhysicsSystem::Update` in exact
+`PhysicsFixedDt` (1/60 s) increments, with six as the hard catch-up bound. The
+character runs first so impulses it applies reach rigid bodies in that same fixed
+step. After all updates succeed it gathers every dynamic
 body-origin transform into preallocated scratch, validates the full set, and only
 then commits it to `SceneData`; update errors or invalid output publish nothing and
 make the world terminal. There is deliberately no interpolation, so the renderer
@@ -1065,10 +1091,15 @@ Decisions and contracts worth preserving:
 
 ## Camera
 
-A perspective fly camera, delivered to the raygen shader via push constants.
-Owned by `main()` as a plain value struct (`Camera` in
-[src/camera.hpp](src/camera.hpp)) — no Vulkan objects, no RAII; the unit is pure
-input + math, and its header is Vulkan-free (see the header dependency rule).
+Perspective player and collision-free views, delivered to the raygen shader through
+the same push constants. `main()` owns two plain `Camera` values plus shared input
+edge state — no Vulkan objects and no RAII. The player view's position is overwritten
+from the Jolt character's feet plus the actual stance's 1.7-m/1.1-m eye offset; the
+free view retains the original direct fly controls. F1 swaps the active value, so
+entering free mode copies the player's current eye position, yaw, pitch, and field
+of view into the free camera every time. Free-camera movement then changes only that
+copied value while the renderer continues to consume one ordinary `Camera`; the
+character is suspended for the entire time the free view is active.
 
 Decisions and contracts worth preserving:
 
@@ -1116,19 +1147,25 @@ Decisions and contracts worth preserving:
   always-captured mouse look: the cursor is captured at startup
   (`GLFW_CURSOR_DISABLED`, plus raw mouse motion where supported — the support
   check matters on Wayland); Escape releases it, left click recaptures, and the
-  camera is fully frozen while the cursor is free. WASD moves along the look
-  direction (the unscaled basis, never the FOV-scaled push vectors),
-  Space/LeftCtrl along ±world-up, LeftShift sprints; the summed direction is
-  normalized so diagonals are not faster. Mouse look polls `glfwGetCursorPos`
+  camera input is frozen and player horizontal input is zero while the cursor is
+  free. In player mode, WASD is projected from yaw alone onto world X/Z, Space
+  requests an edge-triggered jump, and Left Shift changes 3 m/s running to 12 m/s
+  sprinting; Left Ctrl holds a 1.2-m crouched capsule and lowers the eye from 1.7 m
+  to 1.1 m. In free mode, WASD retains the full look-relative movement and
+  Space/LeftCtrl move along ±world-up. Both paths normalize summed directions so
+  diagonals are not faster. F1 is edge-detected so holding it cannot oscillate modes.
+  Mouse look polls `glfwGetCursorPos`
   deltas against an anchor stored in `Camera`; the anchor is invalidated on
   every capture transition and re-anchored one frame before deltas apply —
   otherwise the first captured frame integrates the whole cursor jump as one
   giant rotation.
 - **Frame timing lives in `main()`.** `glfwGetTime()` deltas, clamped to
   the physics module's exported `PhysicsMaxFrameDt` (0.1 s), keep window drags
-  and resize stalls from teleporting the camera. The same delta enters
-  `stepPhysics`, whose independent validation/clamp and `PhysicsWorld` accumulator
-  advance Jolt at the exported fixed 60 Hz timestep; camera timing remains
+  and resize stalls from teleporting the free camera. Player movement is submitted
+  as desired velocity before the same delta enters `stepPhysics`, or the character
+  is suspended when the free camera is active; its independent
+  validation/clamp and `PhysicsWorld` accumulator advance Jolt and the character at
+  the exported fixed 60 Hz timestep. Mouse look and free-camera timing remain
   frame-relative.
 
 ## Conventions

@@ -3,6 +3,7 @@
 #include "gallery.hpp"
 #include "gpu_scene.hpp"
 #include "physics.hpp"
+#include "player.hpp"
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
 #include "scene.hpp"
@@ -10,6 +11,7 @@
 #include "vulkan_context.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <iterator>
@@ -382,6 +384,17 @@ int main()
     std::cout << "Created physics world (dynamic bodies: "
               << loadedGallery.dynamicInstances.size() << ").\n";
 
+    const std::array<float, 3> characterSpawn{
+        loadedGallery.spawn.position.x,
+        loadedGallery.spawn.position.y - PlayerEyeHeight,
+        loadedGallery.spawn.position.z,
+    };
+    if (!createPhysicsCharacter(&physicsWorld, characterSpawn)) {
+        std::cerr << "Failed to create player character.\n";
+        return 1;
+    }
+    std::cout << "Created capsule player character.\n";
+
     GpuScene gpuScene;
     const VkResult gpuSceneResult = createGpuScene(
         &gpuScene,
@@ -504,18 +517,24 @@ int main()
 
     std::cout << "Wrote Vulkan ray tracing descriptor set (TLAS + storage image).\n";
 
-    std::cout << "Entering GLFW event loop.\n";
+    std::cout << "Player: WASD run, Left Shift sprint, Left Ctrl crouch, Space jump.\n"
+                 "Free camera: WASD move, Left Shift boost, Space/Ctrl up/down.\n"
+                 "Shared: F1 switch view, Escape release mouse, left click recapture.\n";
+    std::cout << "Entering GLFW event loop in player mode.\n";
 
     glfwSetInputMode(ctx.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
         glfwSetInputMode(ctx.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
-    Camera camera{
+    Camera playerCamera{
         .position = loadedGallery.spawn.position,
         .yaw = loadedGallery.spawn.yaw,
         .pitch = loadedGallery.spawn.pitch,
     };
+    Camera freeCamera = playerCamera;
+    CameraControls cameraControls;
+    CameraMode cameraMode = CameraMode::Player;
     double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
 
@@ -528,22 +547,89 @@ int main()
             static_cast<double>(PhysicsMaxFrameDt)));
         lastTime = now;
 
-        updateCamera(&camera, ctx.window, dt);
+        Camera* controlledCamera = cameraMode == CameraMode::Player
+            ? &playerCamera
+            : &freeCamera;
+        CameraUpdate cameraUpdate = updateCamera(
+            controlledCamera,
+            &cameraControls,
+            ctx.window,
+            dt,
+            cameraMode);
+        if (cameraUpdate.toggleMode) {
+            cameraMode = toggledCameraMode(cameraMode);
+            if (cameraMode == CameraMode::Free) {
+                placeFreeCameraAtPlayerView(playerCamera, &freeCamera);
+            }
+            Camera& nextCamera = cameraMode == CameraMode::Player
+                ? playerCamera
+                : freeCamera;
+            nextCamera.cursorAnchorValid = false;
+            cameraUpdate.playerVelocity = {};
+            cameraUpdate.jumpRequested = false;
+            cameraUpdate.crouched = false;
+            std::cout << (cameraMode == CameraMode::Player
+                    ? "Switched to player camera.\n"
+                    : "Switched to collision-free camera.\n");
+        }
+
+        const std::array<float, 2> characterVelocity =
+            cameraMode == CameraMode::Player
+            ? std::array<float, 2>{
+                cameraUpdate.playerVelocity.x,
+                cameraUpdate.playerVelocity.z,
+            }
+            : std::array<float, 2>{0.0f, 0.0f};
+        if (!setPhysicsCharacterEnabled(
+                &physicsWorld,
+                cameraMode == CameraMode::Player)
+            || !setPhysicsCharacterInput(
+                &physicsWorld,
+                characterVelocity,
+                cameraMode == CameraMode::Player
+                    && cameraUpdate.jumpRequested,
+                cameraMode == CameraMode::Player
+                    && cameraUpdate.crouched)) {
+            std::cerr << "Failed to update player-character input.\n";
+            return 1;
+        }
 
         if (!stepPhysics(&physicsWorld, dt)) {
             std::cerr << "Failed to advance physics world.\n";
             return 1;
         }
 
+        std::array<float, 3> characterPosition{};
+        bool characterCrouched = false;
+        if (!queryPhysicsCharacterPosition(
+                &physicsWorld,
+                &characterPosition)
+            || !queryPhysicsCharacterCrouched(
+                &physicsWorld,
+                &characterCrouched)) {
+            std::cerr << "Failed to query player-character state.\n";
+            return 1;
+        }
+        playerCamera.position = {
+            characterPosition[0],
+            characterPosition[1] + (characterCrouched
+                ? PlayerCrouchEyeHeight
+                : PlayerEyeHeight),
+            characterPosition[2],
+        };
+
         const float aspect = static_cast<float>(swap.extent.width)
             / static_cast<float>(swap.extent.height);
 
         VkResult frameResult = VK_ERROR_OUT_OF_DATE_KHR;
         if (!framebufferResized) {
+            const Camera& renderCamera = cameraMode == CameraMode::Player
+                ? playerCamera
+                : freeCamera;
             frameResult = drawFrame(
                 renderer,
                 currentFrame,
-                makeCameraPushConstants(camera, aspect));
+                makeCameraPushConstants(renderCamera, aspect));
             currentFrame = (currentFrame + 1) % MaxFramesInFlight;
         }
 

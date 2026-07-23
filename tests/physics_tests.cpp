@@ -354,6 +354,347 @@ bool stepFrames(
     return true;
 }
 
+xrphoton::SceneData makeCharacterScene(bool withWall)
+{
+    xrphoton::SceneData scene;
+    const std::uint32_t ground = addGroundMesh(&scene, 20.0f);
+    addInstance(&scene, ground, glm::mat4{1.0f});
+    if (withWall) {
+        const std::uint32_t wall = addClosedBoxMesh(
+            &scene,
+            glm::vec3{0.1f, 1.5f, 2.0f});
+        addInstance(
+            &scene,
+            wall,
+            translation({0.0f, 1.5f, 0.0f}));
+    }
+    return scene;
+}
+
+xrphoton::SceneData makeCharacterStepScene()
+{
+    xrphoton::SceneData scene = makeCharacterScene(false);
+    constexpr float StepHeight = 0.4f;
+    const std::uint32_t step = addClosedBoxMesh(
+        &scene,
+        glm::vec3{3.0f, StepHeight * 0.5f, 2.0f});
+    addInstance(
+        &scene,
+        step,
+        translation({3.0f, StepHeight * 0.5f, 0.0f}));
+    return scene;
+}
+
+xrphoton::SceneData makeCharacterCrouchScene()
+{
+    xrphoton::SceneData scene = makeCharacterScene(false);
+    const std::uint32_t ceiling = addClosedBoxMesh(
+        &scene,
+        glm::vec3{3.0f, 0.1f, 2.0f});
+    addInstance(
+        &scene,
+        ceiling,
+        translation({3.0f, 1.4f, 0.0f}));
+    return scene;
+}
+
+bool createCharacterWorld(
+    xrphoton::PhysicsWorld* world,
+    xrphoton::SceneData* scene,
+    std::array<float, 3> feetPosition)
+{
+    return xrphoton::createPhysicsWorld(
+            world,
+            scene,
+            std::span<const std::size_t>{})
+        && xrphoton::createPhysicsCharacter(world, feetPosition);
+}
+
+bool queryCharacter(
+    const xrphoton::PhysicsWorld* world,
+    std::array<float, 3>* position)
+{
+    return xrphoton::queryPhysicsCharacterPosition(world, position);
+}
+
+bool queryCharacterCrouched(
+    const xrphoton::PhysicsWorld* world,
+    bool* crouched)
+{
+    return xrphoton::queryPhysicsCharacterCrouched(world, crouched);
+}
+
+void testCharacterContractsAndGrounding()
+{
+    expect(
+        !xrphoton::createPhysicsCharacter(nullptr, {0.0f, 0.0f, 0.0f}),
+        "null world rejects character creation");
+    xrphoton::PhysicsWorld emptyWorld;
+    expect(
+        !xrphoton::createPhysicsCharacter(&emptyWorld, {0.0f, 0.0f, 0.0f}),
+        "uninitialized world rejects character creation");
+
+    xrphoton::SceneData scene = makeCharacterScene(false);
+    xrphoton::PhysicsWorld world;
+    expect(
+        xrphoton::createPhysicsWorld(
+            &world,
+            &scene,
+            std::span<const std::size_t>{}),
+        "static character fixture world is created");
+
+    std::array<float, 3> sentinel{11.0f, 12.0f, 13.0f};
+    expect(
+        !queryCharacter(&world, &sentinel)
+            && sentinel == std::array<float, 3>{11.0f, 12.0f, 13.0f},
+        "query before character creation fails without touching output");
+    expect(
+        !xrphoton::createPhysicsCharacter(
+            &world,
+            {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f}),
+        "non-finite character spawn is rejected recoverably");
+    expect(
+        xrphoton::createPhysicsCharacter(&world, {0.0f, 0.5f, 0.0f}),
+        "valid character is created after a rejected spawn");
+    expect(
+        !xrphoton::createPhysicsCharacter(&world, {0.0f, 0.5f, 0.0f}),
+        "a second character is rejected");
+    expect(
+        !xrphoton::setPhysicsCharacterInput(
+            &world,
+            {std::numeric_limits<float>::infinity(), 0.0f},
+            false),
+        "non-finite character movement is rejected");
+    expect(
+        !queryCharacter(&world, nullptr),
+        "null character-position output is rejected");
+    expect(
+        !queryCharacterCrouched(&world, nullptr),
+        "null character-stance output is rejected");
+
+    std::array<float, 3> suspendedStart{};
+    expect(
+        queryCharacter(&world, &suspendedStart)
+            && xrphoton::setPhysicsCharacterEnabled(&world, false)
+            && xrphoton::setPhysicsCharacterInput(&world, {3.0f, 0.0f}, true)
+            && stepFrames(&world, 30),
+        "disabled airborne character ignores movement, gravity and queued jump");
+    std::array<float, 3> suspendedEnd{};
+    expect(
+        queryCharacter(&world, &suspendedEnd)
+            && suspendedEnd == suspendedStart,
+        "disabled character position is exactly stationary");
+    expect(
+        xrphoton::setPhysicsCharacterEnabled(&world, true),
+        "character resumes after free-camera suspension");
+
+    expect(
+        xrphoton::setPhysicsCharacterInput(&world, {0.0f, 0.0f}, false)
+            && stepFrames(&world, 120),
+        "character falls and settles under fixed-step gravity");
+    std::array<float, 3> settled{};
+    expect(queryCharacter(&world, &settled), "settled character position is queryable");
+    expect(
+        std::abs(settled[1]) <= 0.03f,
+        "character feet settle on the ground plane");
+
+    expect(
+        xrphoton::setPhysicsCharacterInput(&world, {0.0f, 0.0f}, true)
+            && xrphoton::setPhysicsCharacterEnabled(&world, false)
+            && stepFrames(&world, 2),
+        "switching away freezes the character and clears a queued jump");
+    std::array<float, 3> queuedJumpFrozen{};
+    expect(
+        queryCharacter(&world, &queuedJumpFrozen)
+            && queuedJumpFrozen == settled,
+        "queued jump cannot move a suspended character");
+    expect(
+        xrphoton::setPhysicsCharacterEnabled(&world, true)
+            && xrphoton::setPhysicsCharacterInput(&world, {0.0f, 0.0f}, false)
+            && xrphoton::stepPhysics(&world, xrphoton::PhysicsFixedDt),
+        "character resumes without replaying the cleared jump");
+    std::array<float, 3> resumed{};
+    expect(
+        queryCharacter(&world, &resumed)
+            && resumed[1] <= settled[1] + 0.02f,
+        "resuming does not replay a jump requested before suspension");
+
+    expect(
+        xrphoton::setPhysicsCharacterInput(&world, {0.0f, 0.0f}, true)
+            && xrphoton::stepPhysics(&world, xrphoton::PhysicsFixedDt),
+        "grounded character accepts a jump request");
+    std::array<float, 3> jumped{};
+    expect(queryCharacter(&world, &jumped), "jumped character position is queryable");
+    expect(
+        jumped[1] > resumed[1] + 0.04f,
+        "jump request moves the grounded character upward");
+}
+
+void testCharacterMovementAndWallCollision()
+{
+    xrphoton::SceneData openScene = makeCharacterScene(false);
+    xrphoton::PhysicsWorld openWorld;
+    expect(
+        createCharacterWorld(
+            &openWorld,
+            &openScene,
+            {-5.0f, 0.0f, 0.0f}),
+        "open character world is created");
+    expect(
+        stepFrames(&openWorld, 2)
+            && xrphoton::setPhysicsCharacterInput(
+                &openWorld,
+                {3.0f, 0.0f},
+                false),
+        "open character receives run velocity");
+    std::array<float, 3> runStart{};
+    expect(queryCharacter(&openWorld, &runStart), "run start is queryable");
+    expect(stepFrames(&openWorld, 60), "character runs for one second");
+    std::array<float, 3> runEnd{};
+    expect(queryCharacter(&openWorld, &runEnd), "run end is queryable");
+    expect(
+        nearly(runEnd[0] - runStart[0], 3.0f, 0.08f),
+        "three-metre-per-second input moves three metres in one second");
+
+    expect(
+        xrphoton::setPhysicsCharacterInput(&openWorld, {0.0f, 0.0f}, false)
+            && stepFrames(&openWorld, 60),
+        "zero horizontal input stops a grounded character");
+    std::array<float, 3> stopped{};
+    expect(queryCharacter(&openWorld, &stopped), "stopped position is queryable");
+    expect(
+        nearly(stopped[0], runEnd[0], 1.0e-3f)
+            && nearly(stopped[2], runEnd[2], 1.0e-3f),
+        "zero input clears horizontal character motion");
+
+    xrphoton::SceneData wallScene = makeCharacterScene(true);
+    xrphoton::PhysicsWorld wallWorld;
+    expect(
+        createCharacterWorld(
+            &wallWorld,
+            &wallScene,
+            {-2.0f, 0.0f, 0.0f}),
+        "wall character world is created");
+    expect(
+        xrphoton::setPhysicsCharacterInput(&wallWorld, {12.0f, 0.0f}, false)
+            && stepFrames(&wallWorld, 120),
+        "sprinting character advances into the wall");
+    std::array<float, 3> wallStop{};
+    expect(queryCharacter(&wallWorld, &wallStop), "wall-stop position is queryable");
+    expect(
+        wallStop[0] >= -0.52f && wallStop[0] <= -0.43f,
+        "capsule stops at the wall face with radius and padding clearance");
+    expect(
+        std::abs(wallStop[2]) <= 1.0e-3f,
+        "head-on wall collision does not introduce sideways drift");
+}
+
+void testCharacterStairStep()
+{
+    xrphoton::SceneData scene = makeCharacterStepScene();
+    xrphoton::PhysicsWorld world;
+    expect(
+        createCharacterWorld(&world, &scene, {-2.0f, 0.0f, 0.0f})
+            && stepFrames(&world, 2)
+            && xrphoton::setPhysicsCharacterInput(
+                &world,
+                {3.0f, 0.0f},
+                false)
+            && stepFrames(&world, 90),
+        "character advances toward the configured 0.4-m step");
+
+    std::array<float, 3> position{};
+    expect(queryCharacter(&world, &position), "stair-step position is queryable");
+    expect(
+        position[0] > 1.0f
+            && nearly(position[1], 0.4f, 0.04f)
+            && std::abs(position[2]) <= 1.0e-3f,
+        "character climbs and remains grounded on the 0.4-m step");
+}
+
+void testCharacterCrouchAndBlockedStand()
+{
+    xrphoton::SceneData scene = makeCharacterCrouchScene();
+    xrphoton::PhysicsWorld world;
+    expect(
+        createCharacterWorld(&world, &scene, {-2.0f, 0.0f, 0.0f})
+            && stepFrames(&world, 2)
+            && xrphoton::setPhysicsCharacterInput(
+                &world,
+                {3.0f, 0.0f},
+                false,
+                true)
+            && stepFrames(&world, 90),
+        "crouched character enters the low-ceiling fixture");
+
+    std::array<float, 3> underCeiling{};
+    bool crouched = false;
+    expect(
+        queryCharacter(&world, &underCeiling)
+            && queryCharacterCrouched(&world, &crouched)
+            && crouched
+            && underCeiling[0] > 0.5f,
+        "short capsule moves beneath the 1.3-m ceiling");
+
+    expect(
+        xrphoton::setPhysicsCharacterInput(
+            &world,
+            {0.0f, 0.0f},
+            false,
+            false)
+            && stepFrames(&world, 2)
+            && queryCharacterCrouched(&world, &crouched)
+            && crouched,
+        "standing is blocked while the full-height capsule does not fit");
+
+    expect(
+        xrphoton::setPhysicsCharacterInput(
+            &world,
+            {-3.0f, 0.0f},
+            false,
+            true)
+            && stepFrames(&world, 90)
+            && xrphoton::setPhysicsCharacterInput(
+                &world,
+                {0.0f, 0.0f},
+                false,
+                false)
+            && stepFrames(&world, 2)
+            && queryCharacterCrouched(&world, &crouched)
+            && !crouched,
+        "character stands after crouching back out from under the ceiling");
+}
+
+void testCharacterPushStrength()
+{
+    xrphoton::SceneData scene;
+    const std::uint32_t ground = addGroundMesh(&scene, 20.0f);
+    const glm::vec3 boxHalfExtents{0.5f};
+    const std::uint32_t box = addClosedBoxMesh(&scene, boxHalfExtents);
+    addBoxRecipe(&scene, box, boxHalfExtents, 30.0f);
+    addInstance(&scene, ground, glm::mat4{1.0f});
+    const std::size_t boxInstance = addInstance(
+        &scene,
+        box,
+        translation({0.0f, 0.5f, 0.0f}));
+
+    xrphoton::PhysicsWorld world;
+    const std::array dynamicInstances{boxInstance};
+    expect(
+        xrphoton::createPhysicsWorld(&world, &scene, dynamicInstances)
+            && xrphoton::createPhysicsCharacter(&world, {-2.0f, 0.0f, 0.0f})
+            && stepFrames(&world, 2)
+            && xrphoton::setPhysicsCharacterInput(
+                &world,
+                {3.0f, 0.0f},
+                false)
+            && stepFrames(&world, 120),
+        "character pushes against a 30-kg dynamic crate");
+    expect(
+        scene.instances[boxInstance].transform[3].x > 0.5f,
+        "configured character strength moves the 30-kg crate");
+}
+
 void testSettleAndSleep()
 {
     DynamicScene fixture = makeSettlingScene();
@@ -1478,6 +1819,11 @@ void testCcdDiscrimination()
 
 int main()
 {
+    testCharacterContractsAndGrounding();
+    testCharacterMovementAndWallCollision();
+    testCharacterStairStep();
+    testCharacterCrouchAndBlockedStand();
+    testCharacterPushStrength();
     testSettleAndSleep();
     testLifecycleEpochs();
     testNullAndUninitializedContracts();

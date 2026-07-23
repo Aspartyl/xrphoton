@@ -13,18 +13,23 @@
 #include <Jolt/Core/Memory.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Geometry/AABox.h>
+#include <Jolt/Geometry/Plane.h>
 #include <Jolt/Math/Math.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Body/MassProperties.h>
 #include <Jolt/Physics/Body/MotionQuality.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
+#include <Jolt/Physics/Collision/ShapeFilter.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
 #include <algorithm>
@@ -75,6 +80,21 @@ constexpr float DefaultFriction = 0.5f;
 constexpr float DefaultRestitution = 0.0f;
 constexpr float ConvexRadiusFraction = 0.1f;
 constexpr float MaximumLinearVelocity = 500.0f;
+constexpr float CharacterHeight = 1.8f;
+constexpr float CharacterCrouchHeight = 1.2f;
+constexpr float CharacterRadius = 0.35f;
+constexpr float CharacterHalfCylinder =
+    (CharacterHeight - 2.0f * CharacterRadius) * 0.5f;
+constexpr float CharacterCrouchHalfCylinder =
+    (CharacterCrouchHeight - 2.0f * CharacterRadius) * 0.5f;
+constexpr float CharacterMass = 70.0f;
+constexpr float CharacterPushStrength = 500.0f;
+constexpr float CharacterJumpSpeed = 5.0f;
+constexpr float MaximumCharacterHorizontalSpeed = 12.0f;
+constexpr float CharacterGroundVelocityTolerance = 0.1f;
+constexpr float CharacterStepHeight = 0.4f;
+constexpr float CharacterStickToFloorDistance = 0.5f;
+constexpr float CharacterShapeSwitchMaxPenetration = 0.02f;
 
 // StaticCompoundShape uses uint byte counts for several temporary arrays.
 // Keep pathological hand-built recipes comfortably below every multiplication
@@ -1014,6 +1034,17 @@ struct PhysicsWorld::State
     ObjectVsBroadPhaseLayerFilter objectVsBroadPhase;
     ObjectLayerPairFilter objectLayerPairs;
     JPH::PhysicsSystem physicsSystem;
+    // Declared after PhysicsSystem so the ref-counted CharacterVirtual is released
+    // first during reverse member destruction.
+    JPH::Ref<JPH::CharacterVirtual> character;
+    JPH::ShapeRefC characterStandingShape;
+    JPH::ShapeRefC characterCrouchingShape;
+    JPH::Vec3 characterHorizontalVelocity = JPH::Vec3::sZero();
+    bool characterJumpRequested = false;
+    bool characterCrouchRequested = false;
+    bool characterCrouched = false;
+    bool characterEnabled = true;
+    bool characterNeedsContactRefresh = false;
 
     SceneData* scene = nullptr;
     std::size_t positionCount = 0;
@@ -1070,6 +1101,7 @@ struct PhysicsWorld::State
 
     ~State() noexcept
     {
+        character = nullptr;
         JPH::BodyInterface& bodies = physicsSystem.GetBodyInterface();
         for (const JPH::BodyID body : allBodies) {
             bodies.RemoveBody(body);
@@ -1260,6 +1292,113 @@ bool validateLiveWorld(PhysicsWorld::State* state, std::string_view operation)
         state->failed = true;
         std::cerr << "Physics: " << operation
                   << " detected a bound-scene topology change; the world is now terminal.\n";
+        return false;
+    }
+    return true;
+}
+
+bool stepCharacter(PhysicsWorld::State* state)
+{
+    if (state->character == nullptr) {
+        return true;
+    }
+    if (!state->characterEnabled) {
+        return true;
+    }
+
+    JPH::CharacterVirtual& character = *state->character;
+    const JPH::DefaultBroadPhaseLayerFilter broadPhaseFilter =
+        state->physicsSystem.GetDefaultBroadPhaseLayerFilter(LayerMoving);
+    const JPH::DefaultObjectLayerFilter objectLayerFilter =
+        state->physicsSystem.GetDefaultLayerFilter(LayerMoving);
+    const JPH::BodyFilter bodyFilter;
+    const JPH::ShapeFilter shapeFilter;
+    if (state->characterNeedsContactRefresh) {
+        character.RefreshContacts(
+            broadPhaseFilter,
+            objectLayerFilter,
+            bodyFilter,
+            shapeFilter,
+            state->tempAllocator);
+        state->characterNeedsContactRefresh = false;
+    }
+    if (state->characterCrouchRequested != state->characterCrouched) {
+        const JPH::ShapeRefC& requestedShape = state->characterCrouchRequested
+            ? state->characterCrouchingShape
+            : state->characterStandingShape;
+        if (requestedShape == nullptr) {
+            std::cerr << "Physics: character stance shape is missing.\n";
+            return false;
+        }
+        if (character.SetShape(
+                requestedShape.GetPtr(),
+                CharacterShapeSwitchMaxPenetration,
+                broadPhaseFilter,
+                objectLayerFilter,
+                bodyFilter,
+                shapeFilter,
+                state->tempAllocator)) {
+            state->characterCrouched = state->characterCrouchRequested;
+        }
+    }
+    character.UpdateGroundVelocity();
+
+    const JPH::Vec3 gravity = state->physicsSystem.GetGravity();
+    const JPH::Vec3 up = character.GetUp();
+    const JPH::Vec3 currentVelocity = character.GetLinearVelocity();
+    const JPH::Vec3 groundVelocity = character.GetGroundVelocity();
+    const bool movingTowardsGround =
+        (currentVelocity - groundVelocity).Dot(up)
+        <= CharacterGroundVelocityTolerance;
+    const bool canUseGroundVelocity =
+        character.GetGroundState() == JPH::CharacterBase::EGroundState::OnGround
+        && movingTowardsGround;
+
+    JPH::Vec3 velocity;
+    if (canUseGroundVelocity) {
+        velocity = groundVelocity + state->characterHorizontalVelocity;
+        if (state->characterJumpRequested) {
+            velocity += CharacterJumpSpeed * up;
+        }
+    } else {
+        // Full air control is intentional for this basic test-yard character:
+        // current input replaces horizontal momentum while vertical momentum stays.
+        velocity = state->characterHorizontalVelocity
+            + currentVelocity.Dot(up) * up;
+    }
+    // CharacterVirtual does not integrate gravity itself. Applying it every step
+    // also keeps ordinary ground contact stable and makes takeoff deterministic.
+    velocity += PhysicsFixedDt * gravity;
+    state->characterJumpRequested = false;
+    character.SetLinearVelocity(velocity);
+
+    JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
+    updateSettings.mWalkStairsStepUp = CharacterStepHeight * up;
+    updateSettings.mStickToFloorStepDown =
+        -CharacterStickToFloorDistance * up;
+    character.ExtendedUpdate(
+        PhysicsFixedDt,
+        gravity,
+        updateSettings,
+        broadPhaseFilter,
+        objectLayerFilter,
+        bodyFilter,
+        shapeFilter,
+        state->tempAllocator);
+
+    const JPH::RVec3 position = character.GetPosition();
+    const JPH::Vec3 finalVelocity = character.GetLinearVelocity();
+    if (!coordinateInJoltRange(position.GetX())
+        || !coordinateInJoltRange(position.GetY())
+        || !coordinateInJoltRange(position.GetZ())
+        || !finiteJoltVec3(finalVelocity)
+        || !validateBodyShapeBounds(
+            *character.GetShape(),
+            position,
+            character.GetRotation(),
+            true,
+            "character")) {
+        std::cerr << "Physics: character update produced invalid state.\n";
         return false;
     }
     return true;
@@ -1503,6 +1642,295 @@ bool createPhysicsWorld(
     return false;
 }
 
+bool createPhysicsCharacter(
+    PhysicsWorld* world,
+    std::array<float, 3> position)
+{
+    if (world == nullptr || world->state == nullptr) {
+        std::cerr << "Physics: cannot create a character in a null or "
+                     "uninitialized world.\n";
+        return false;
+    }
+    PhysicsWorld::State& state = *world->state;
+    if (!validateLiveWorld(&state, "character creation")) {
+        return false;
+    }
+    if (state.character != nullptr) {
+        std::cerr << "Physics: this world already has a character.\n";
+        return false;
+    }
+    for (const float component : position) {
+        if (!finite(component) || !coordinateInJoltRange(component)) {
+            std::cerr << "Physics: character position is invalid or outside "
+                         "Jolt's supported range.\n";
+            return false;
+        }
+    }
+
+    try {
+        const auto createCharacterShape = [](
+            float height,
+            float halfCylinder,
+            std::string_view owner,
+            JPH::ShapeRefC* shape) {
+            JPH::CapsuleShapeSettings capsuleSettings{
+                halfCylinder,
+                CharacterRadius,
+            };
+            JPH::ShapeSettings::ShapeResult capsuleResult =
+                capsuleSettings.Create();
+            if (!capsuleResult.IsValid()) {
+                return reportShapeError(capsuleResult, owner);
+            }
+            const JPH::ShapeRefC capsule = capsuleResult.Get();
+
+            // Moving the capsule up by half its total height keeps local Y=0 at
+            // the feet for both stances, so changing shape cannot move the player.
+            JPH::RotatedTranslatedShapeSettings translatedSettings{
+                JPH::Vec3{0.0f, height * 0.5f, 0.0f},
+                JPH::Quat::sIdentity(),
+                capsule.GetPtr(),
+            };
+            JPH::ShapeSettings::ShapeResult translatedResult =
+                translatedSettings.Create();
+            if (!translatedResult.IsValid()) {
+                return reportShapeError(translatedResult, owner);
+            }
+            *shape = translatedResult.Get();
+            return true;
+        };
+
+        JPH::ShapeRefC standingShape;
+        JPH::ShapeRefC crouchingShape;
+        if (!createCharacterShape(
+                CharacterHeight,
+                CharacterHalfCylinder,
+                "standing character capsule",
+                &standingShape)
+            || !createCharacterShape(
+                CharacterCrouchHeight,
+                CharacterCrouchHalfCylinder,
+                "crouching character capsule",
+                &crouchingShape)) {
+            return false;
+        }
+        const JPH::RVec3 feet{
+            position[0],
+            position[1],
+            position[2],
+        };
+        if (!validateBodyShapeBounds(
+                *standingShape,
+                feet,
+                JPH::Quat::sIdentity(),
+                true,
+                "standing character")
+            || !validateBodyShapeBounds(
+                *crouchingShape,
+                feet,
+                JPH::Quat::sIdentity(),
+                true,
+                "crouching character")) {
+            return false;
+        }
+
+        JPH::CharacterVirtualSettings settings;
+        settings.mShape = standingShape;
+        settings.mMass = CharacterMass;
+        settings.mMaxStrength = CharacterPushStrength;
+        settings.mSupportingVolume = JPH::Plane{
+            JPH::Vec3::sAxisY(),
+            -CharacterRadius,
+        };
+        settings.mEnhancedInternalEdgeRemoval = true;
+
+        JPH::Ref<JPH::CharacterVirtual> candidate =
+            new JPH::CharacterVirtual(
+                &settings,
+                feet,
+                JPH::Quat::sIdentity(),
+                &state.physicsSystem);
+        const JPH::DefaultBroadPhaseLayerFilter broadPhaseFilter =
+            state.physicsSystem.GetDefaultBroadPhaseLayerFilter(LayerMoving);
+        const JPH::DefaultObjectLayerFilter objectLayerFilter =
+            state.physicsSystem.GetDefaultLayerFilter(LayerMoving);
+        const JPH::BodyFilter bodyFilter;
+        const JPH::ShapeFilter shapeFilter;
+        candidate->RefreshContacts(
+            broadPhaseFilter,
+            objectLayerFilter,
+            bodyFilter,
+            shapeFilter,
+            state.tempAllocator);
+
+        state.character = std::move(candidate);
+        state.characterStandingShape = std::move(standingShape);
+        state.characterCrouchingShape = std::move(crouchingShape);
+        state.characterHorizontalVelocity = JPH::Vec3::sZero();
+        state.characterJumpRequested = false;
+        state.characterCrouchRequested = false;
+        state.characterCrouched = false;
+        state.characterEnabled = true;
+        state.characterNeedsContactRefresh = false;
+        return true;
+    } catch (const std::bad_alloc&) {
+        std::cerr << "Physics: character creation ran out of memory.\n";
+    } catch (const std::exception& error) {
+        std::cerr << "Physics: character creation failed: "
+                  << error.what() << ".\n";
+    } catch (...) {
+        std::cerr << "Physics: character creation failed with an unknown exception.\n";
+    }
+    return false;
+}
+
+bool setPhysicsCharacterInput(
+    PhysicsWorld* world,
+    std::array<float, 2> horizontalVelocity,
+    bool jumpRequested,
+    bool crouched)
+{
+    if (world == nullptr || world->state == nullptr) {
+        std::cerr << "Physics: cannot control a character in a null or "
+                     "uninitialized world.\n";
+        return false;
+    }
+    PhysicsWorld::State& state = *world->state;
+    if (!validateLiveWorld(&state, "character input")) {
+        return false;
+    }
+    if (state.character == nullptr) {
+        std::cerr << "Physics: this world has no character.\n";
+        return false;
+    }
+    if (!finite(horizontalVelocity[0]) || !finite(horizontalVelocity[1])) {
+        std::cerr << "Physics: character velocity must contain only finite values.\n";
+        return false;
+    }
+
+    if (!state.characterEnabled) {
+        state.characterHorizontalVelocity = JPH::Vec3::sZero();
+        state.characterJumpRequested = false;
+        state.characterCrouchRequested = false;
+        return true;
+    }
+
+    const double lengthSquared =
+        static_cast<double>(horizontalVelocity[0]) * horizontalVelocity[0]
+        + static_cast<double>(horizontalVelocity[1]) * horizontalVelocity[1];
+    const double maximumSquared =
+        static_cast<double>(MaximumCharacterHorizontalSpeed)
+        * MaximumCharacterHorizontalSpeed;
+    if (lengthSquared > maximumSquared) {
+        const double scale = MaximumCharacterHorizontalSpeed
+            / std::sqrt(lengthSquared);
+        for (float& component : horizontalVelocity) {
+            component = static_cast<float>(
+                static_cast<double>(component) * scale);
+        }
+    }
+
+    state.characterHorizontalVelocity = JPH::Vec3{
+        horizontalVelocity[0],
+        0.0f,
+        horizontalVelocity[1],
+    };
+    state.characterJumpRequested =
+        state.characterJumpRequested || jumpRequested;
+    state.characterCrouchRequested = crouched;
+    return true;
+}
+
+bool setPhysicsCharacterEnabled(
+    PhysicsWorld* world,
+    bool enabled)
+{
+    if (world == nullptr || world->state == nullptr) {
+        std::cerr << "Physics: cannot change character state in a null or "
+                     "uninitialized world.\n";
+        return false;
+    }
+    PhysicsWorld::State& state = *world->state;
+    if (!validateLiveWorld(&state, "character state update")) {
+        return false;
+    }
+    if (state.character == nullptr) {
+        std::cerr << "Physics: this world has no character.\n";
+        return false;
+    }
+    if (state.characterEnabled == enabled) {
+        return true;
+    }
+
+    state.characterEnabled = enabled;
+    state.characterHorizontalVelocity = JPH::Vec3::sZero();
+    state.characterJumpRequested = false;
+    state.characterCrouchRequested = false;
+    state.character->SetLinearVelocity(JPH::Vec3::sZero());
+    state.characterNeedsContactRefresh = enabled;
+    return true;
+}
+
+bool queryPhysicsCharacterPosition(
+    const PhysicsWorld* world,
+    std::array<float, 3>* position)
+{
+    if (world == nullptr || world->state == nullptr) {
+        std::cerr << "Physics: cannot query a character in a null or "
+                     "uninitialized world.\n";
+        return false;
+    }
+    PhysicsWorld::State& state = *world->state;
+    if (!validateLiveWorld(&state, "character position query")) {
+        return false;
+    }
+    if (position == nullptr) {
+        std::cerr << "Physics: character position query output is null.\n";
+        return false;
+    }
+    if (state.character == nullptr) {
+        std::cerr << "Physics: this world has no character.\n";
+        return false;
+    }
+
+    const JPH::RVec3 value = state.character->GetPosition();
+    std::array<float, 3> converted{};
+    if (!checkedFloat(value.GetX(), &converted[0])
+        || !checkedFloat(value.GetY(), &converted[1])
+        || !checkedFloat(value.GetZ(), &converted[2])) {
+        std::cerr << "Physics: character position is not representable by the scene.\n";
+        return false;
+    }
+    *position = converted;
+    return true;
+}
+
+bool queryPhysicsCharacterCrouched(
+    const PhysicsWorld* world,
+    bool* crouched)
+{
+    if (world == nullptr || world->state == nullptr) {
+        std::cerr << "Physics: cannot query a character in a null or "
+                     "uninitialized world.\n";
+        return false;
+    }
+    PhysicsWorld::State& state = *world->state;
+    if (!validateLiveWorld(&state, "character stance query")) {
+        return false;
+    }
+    if (crouched == nullptr) {
+        std::cerr << "Physics: character stance query output is null.\n";
+        return false;
+    }
+    if (state.character == nullptr) {
+        std::cerr << "Physics: this world has no character.\n";
+        return false;
+    }
+
+    *crouched = state.characterCrouched;
+    return true;
+}
+
 bool stepPhysics(PhysicsWorld* world, float frameDt)
 {
     if (world == nullptr || world->state == nullptr) {
@@ -1525,6 +1953,12 @@ bool stepPhysics(PhysicsWorld* world, float frameDt)
 
     std::size_t stepCount = 0;
     while (state.accumulator >= fixedDt && stepCount < 6) {
+        if (!stepCharacter(&state)) {
+            state.failed = true;
+            std::cerr << "Physics: character update failed; the world is now "
+                         "terminal.\n";
+            return false;
+        }
         JPH::EPhysicsUpdateError error;
         {
             UpdateStatusAssertScope updateAssertScope;

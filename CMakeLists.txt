@@ -601,6 +601,16 @@ if(BUILD_TESTING)
         Jolt
     )
     add_test(NAME physics COMMAND xrPhotonPhysicsTests)
+
+    add_executable(xrPhotonPlayerTests
+        tests/player_tests.cpp
+        src/player.cpp
+    )
+    target_include_directories(xrPhotonPlayerTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_options(xrPhotonPlayerTests PRIVATE -Wall -Wextra)
+    target_link_libraries(xrPhotonPlayerTests PRIVATE ${XRPHOTON_GLM_TARGET})
+    add_test(NAME player COMMAND xrPhotonPlayerTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -649,6 +659,7 @@ add_executable(xrPhoton
     src/acceleration_structure.cpp
     src/gpu_scene.cpp
     src/camera.cpp
+    src/player.cpp
     src/rt_pipeline.cpp
     src/renderer.cpp
 )

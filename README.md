@@ -25,8 +25,14 @@ way of doing each thing.
 
 ## Status
 
-Right now it renders a compact OGFx test yard that you can fly around
-(WASD + mouse look). Every build includes generated ground, wall, and unit-box
+Right now it renders a compact OGFx test yard that you can explore with a basic
+collision-aware capsule character. WASD runs, Left Shift sprints, Space jumps,
+Left Ctrl crouches, and F1 switches to and from the original collision-free fly
+camera; the player
+is fully suspended while that free camera is active. Each switch into free-camera
+mode starts it at the player's current position and view. Escape
+releases the captured mouse and left click recaptures it. Every build includes
+generated ground, wall, and unit-box
 models assembled into a walled yard, platform, staircase, and crates, plus an
 indexed quad and a permanent two-geometry wedge regression probe placed twice.
 One ochre crate now spawns above the yard, falls, tumbles, settles, and sleeps
@@ -412,8 +418,5 @@ per-frame flow, synchronization, roadmap.
 
 [FORMATS.md](FORMATS.md) — asset-format plan: OGFx, OMFx, and the shared
 offline asset compiler.
-
-[PHYSICS.md](PHYSICS.md) — Jolt integration, rigid-body recipe consumption,
-simulation contracts, acceptance criteria, and upgrade triggers.
 
 [SDK.md](SDK.md) — plan for the modern SDK successor.

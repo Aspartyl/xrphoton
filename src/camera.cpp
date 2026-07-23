@@ -1,5 +1,7 @@
 #include "camera.hpp"
 
+#include "player.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -12,8 +14,6 @@ namespace
 {
 constexpr float Pi = 3.14159265358979323846f;
 constexpr float TwoPi = 2.0f * Pi;
-constexpr float MoveSpeed = 3.0f;
-constexpr float SprintMultiplier = 4.0f;
 constexpr float MouseSensitivity = 0.002f;
 constexpr float PitchLimit = Pi * 89.0f / 180.0f;
 constexpr float NormalizeEpsilonSquared = 1.0e-12f;
@@ -98,16 +98,28 @@ void setCursorCaptured(GLFWwindow* window, bool captured)
 
 } // namespace
 
-void updateCamera(Camera* camera, GLFWwindow* window, float dt)
+CameraUpdate updateCamera(
+    Camera* camera,
+    CameraControls* controls,
+    GLFWwindow* window,
+    float dt,
+    CameraMode mode)
 {
-    if (camera == nullptr || window == nullptr) {
-        return;
+    CameraUpdate update{};
+    if (camera == nullptr || controls == nullptr || window == nullptr) {
+        return update;
     }
+
+    const bool modeToggleDown = keyPressed(window, GLFW_KEY_F1);
+    update.toggleMode = controls->modeTogglePressed(modeToggleDown);
+
+    const bool jumpDown = keyPressed(window, GLFW_KEY_SPACE);
+    const bool jumpPressed = controls->jumpPressed(jumpDown);
 
     if (cursorCaptured(window) && keyPressed(window, GLFW_KEY_ESCAPE)) {
         setCursorCaptured(window, false);
         camera->cursorAnchorValid = false;
-        return;
+        return update;
     }
 
     if (!cursorCaptured(window)) {
@@ -117,8 +129,10 @@ void updateCamera(Camera* camera, GLFWwindow* window, float dt)
             setCursorCaptured(window, true);
         }
 
-        return;
+        return update;
     }
+
+    update.jumpRequested = mode == CameraMode::Player && jumpPressed;
 
     double cursorX = 0.0;
     double cursorY = 0.0;
@@ -145,38 +159,45 @@ void updateCamera(Camera* camera, GLFWwindow* window, float dt)
 
     const CameraBasis basis = makeCameraBasis(camera->yaw, camera->pitch);
 
-    glm::vec3 movement{};
+    const float forwardAxis =
+        (keyPressed(window, GLFW_KEY_W) ? 1.0f : 0.0f)
+        - (keyPressed(window, GLFW_KEY_S) ? 1.0f : 0.0f);
+    const float rightAxis =
+        (keyPressed(window, GLFW_KEY_D) ? 1.0f : 0.0f)
+        - (keyPressed(window, GLFW_KEY_A) ? 1.0f : 0.0f);
+    const bool sprint = keyPressed(window, GLFW_KEY_LEFT_SHIFT);
+    const bool crouched = keyPressed(window, GLFW_KEY_LEFT_CONTROL);
 
-    if (keyPressed(window, GLFW_KEY_W)) {
-        movement += basis.forward;
+    if (mode == CameraMode::Player) {
+        update.crouched = crouched;
+        update.playerVelocity = playerHorizontalVelocity(
+            camera->yaw,
+            forwardAxis,
+            rightAxis,
+            sprint,
+            crouched);
+        return update;
     }
-    if (keyPressed(window, GLFW_KEY_S)) {
-        movement -= basis.forward;
-    }
-    if (keyPressed(window, GLFW_KEY_A)) {
-        movement -= basis.right;
-    }
-    if (keyPressed(window, GLFW_KEY_D)) {
-        movement += basis.right;
-    }
+
+    glm::vec3 movement{};
+    movement += forwardAxis * basis.forward;
+    movement += rightAxis * basis.right;
     if (keyPressed(window, GLFW_KEY_SPACE)) {
         movement += WorldUp;
     }
-    if (keyPressed(window, GLFW_KEY_LEFT_CONTROL)) {
+    if (crouched) {
         movement -= WorldUp;
     }
 
     if (glm::dot(movement, movement) <= NormalizeEpsilonSquared) {
-        return;
+        return update;
     }
 
-    float speed = MoveSpeed;
-
-    if (keyPressed(window, GLFW_KEY_LEFT_SHIFT)) {
-        speed *= SprintMultiplier;
-    }
+    const float speed = PlayerRunSpeed
+        * (sprint ? PlayerSprintMultiplier : 1.0f);
 
     camera->position += normalizeOrZero(movement) * speed * std::max(dt, 0.0f);
+    return update;
 }
 
 CameraPushConstants makeCameraPushConstants(const Camera& camera, float aspect)
