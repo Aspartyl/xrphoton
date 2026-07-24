@@ -611,6 +611,16 @@ if(BUILD_TESTING)
     target_compile_options(xrPhotonPlayerTests PRIVATE -Wall -Wextra)
     target_link_libraries(xrPhotonPlayerTests PRIVATE ${XRPHOTON_GLM_TARGET})
     add_test(NAME player COMMAND xrPhotonPlayerTests)
+
+    add_executable(xrPhotonLightingTests
+        tests/lighting_tests.cpp
+        src/lighting.cpp
+    )
+    target_include_directories(xrPhotonLightingTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_options(xrPhotonLightingTests PRIVATE -Wall -Wextra)
+    target_link_libraries(xrPhotonLightingTests PRIVATE ${XRPHOTON_GLM_TARGET})
+    add_test(NAME lighting COMMAND xrPhotonLightingTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -659,6 +669,7 @@ add_executable(xrPhoton
     src/acceleration_structure.cpp
     src/gpu_scene.cpp
     src/camera.cpp
+    src/lighting.cpp
     src/player.cpp
     src/rt_pipeline.cpp
     src/renderer.cpp
