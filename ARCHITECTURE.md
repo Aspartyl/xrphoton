@@ -998,9 +998,10 @@ Decisions and contracts worth preserving:
 
 - **Shaders are Slang, embedded at build time.** All six stages live in one
   [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
-  (perspective rays from the frame constants, a one-vertex iterative shading loop,
-  direct Lambertian sun lighting with a hard visibility trace, and the
-  storage-image write at binding 1, `[format("rgba8")]` because the device's
+  (perspective rays from the frame constants, a two-vertex iterative shading loop,
+  direct Lambertian sun lighting with a hard visibility trace at each hit, one
+  cosine-weighted diffuse bounce, and the storage-image write at binding 1,
+  `[format("rgba8")]` because the device's
   `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns a
   procedural horizon-to-zenith sky plus a miss flag), `closestHitMain` (indexed BDA fetch of
   sampled albedo and un-oriented shading/geometric normals), and `anyHitMain`
@@ -1066,6 +1067,11 @@ Decisions and contracts worth preserving:
   additionally returns the sampled albedo plus raw shading/geometric normals.
   Shading normals use the inverse-transpose implied by row-vector multiplication
   with `WorldToObject3x4()`; raygen owns their surface orientation and shading use.
+  Secondary directions are cosine-sampled around the oriented shading normal through
+  a sign-stable Duff basis, rejected rather than resampled when they fall below the
+  geometric normal, and launched from the geometric-normal offset. The matching
+  C++/Slang PCG permutation seeds each pixel from its coordinates and frame index;
+  capture mode therefore reproduces a selected noisy frame without accumulation.
 - **Descriptor set:** binding 0 TLAS and binding 1 storage image are raygen-only;
   bindings 2–3 are geometry/material storage buffers visible to hit stages. Binding
   4 is a fixed 1,024-entry combined-image-sampler array visible to closest-hit and
@@ -1139,6 +1145,8 @@ Decisions and contracts worth preserving:
   prefix: four `float3` fields at 16-byte offsets (0/16/32/48). The CPU structs pin
   that prefix plus sun direction at 64, sun radiance at 80, and frame index at 92
   with explicit pads and `static_assert`s on `sizeof` and every `offsetof`.
+  Raygen hashes the frame index with the launch pixel to decorrelate its diffuse
+  sample between interactive frames while keeping fixed-index captures repeatable.
   `float3` rounds up to 16-byte alignment under every relevant GPU layout rule, so
   the offsets are unconditional. Keep the shader and CPU structs field-for-field
   identical.
@@ -1288,12 +1296,13 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **Directional sun and sky landed; indirect and
-   general materials pending** — raygen now owns a one-vertex loop, direct
-   Lambertian sun evaluation, hard alpha-aware shadow rays, and a procedural sky.
-   The renderer still needs the deterministic diffuse bounce, BRDF-based materials,
-   a general iterative bounce loop (keeping pipeline recursion depth at 1),
-   emissive geometry, and a time-varying sun/sky model. Many-light sampling
+4. **Lighting + path tracing.** **Directional sun, sky, and one diffuse bounce
+   landed; general materials pending** — raygen now owns a two-vertex loop, direct
+   Lambertian sun evaluation at both hits, hard alpha-aware shadow rays, a procedural
+   sky, and deterministic cosine-weighted indirect diffuse sampling. The renderer
+   still needs BRDF-based materials, a general multi-bounce loop (while keeping
+   pipeline recursion depth at 1), emissive geometry, and a time-varying sun/sky
+   model. Many-light sampling
    is a first-class requirement, not a stress case — a campsite ringed by
    anomalies at night is the ordinary frame — so NEE lands with light-selection
    sampling from the start and a ReSTIR-class upgrade as the tracked follow-up.
