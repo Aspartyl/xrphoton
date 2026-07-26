@@ -147,8 +147,8 @@ shape/math bridging, static mesh construction, determinism, capacity failure,
 adversarial numeric boundaries, the robust 500 m/s velocity clamp, and CCD
 without creating Vulkan objects.
 
-Deformable skinning and BLAS refits, actual path tracing with lights, and
-temporal accumulation and denoising follow later. Details in
+Deformable skinning and BLAS refits, general BRDF materials and longer paths,
+and temporal accumulation and denoising follow later. Details in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Building
@@ -168,6 +168,20 @@ cmake --preset release
 cmake --build --preset release
 ./build/release/xrPhoton
 ```
+
+For a deterministic image check, render a positive number of successful frames and
+write the final storage image as an sRGB PPM:
+
+```sh
+./build/debug/xrPhoton --capture 8 capture.ppm
+```
+
+Capture mode fixes the camera and extent, advances physics by exactly 1/60 second per
+successful frame, and reads back the last submitted image. It prints the extent,
+final `frameIndex`, and a hash of the raw linear RGBA8 bytes; two fresh runs of the
+same binary on the same machine/driver are expected to match. A resize, window close,
+or out-of-date/suboptimal swapchain fails the capture instead of silently changing
+the sampled frame.
 
 Jolt Physics **v5.6.0** is pinned and vendored under
 [`third_party/jolt`](third_party/jolt). CMake builds it as a static,

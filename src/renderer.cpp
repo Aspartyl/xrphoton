@@ -148,7 +148,7 @@ void recordExecutionBarrier(
 // Record the entire frame into a one-time-submit command buffer:
 //   1. rebuild the TLAS between its cross-frame and traversal barriers,
 //   2. barrier the storage image UNDEFINED -> GENERAL,
-//   3. trace: one ray per pixel writes the storage image (triangle over dark red),
+//   3. trace: one two-vertex path per pixel writes sun/sky-lit radiance,
 //   4. barrier storage GENERAL -> TRANSFER_SRC_OPTIMAL,
 //   5. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
 //   6. blit storage into the acquired image,

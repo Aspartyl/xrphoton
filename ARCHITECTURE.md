@@ -7,9 +7,10 @@ and ownership of its resources, the per-frame flow, and the synchronization mode
 
 xrPhoton renders an interactive ray-traced OGFx test yard. It
 brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
-TLAS over every yard placement, then fires one ray per pixel from either a basic
+TLAS over every yard placement, then launches one path per pixel from either a basic
 collision-aware player view or the original perspective fly camera. The ray-tracing
-shader samples scene materials and
+shader evaluates direct sun, hard alpha-aware visibility, a procedural sky, and one
+cosine-weighted diffuse bounce before it
 writes a device-local storage image that is blitted to the swapchain. The present
 path has two frames in flight, resize handling, and the required descriptor rewrite;
 the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
@@ -193,9 +194,11 @@ the renderer layering.)
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
+| [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free `DirectionalSun`, 96-byte `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain frame state composed by `main()`; shared ABI/test authority, not a GPU resource owner |
+| [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) | Vulkan-free command-line parsing plus checked raw RGBA8 hashing and linear-to-sRGB PPM publication | One-shot capture policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
-| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
+| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
 
 ### Header dependency rule
@@ -206,7 +209,7 @@ Includes are kept acyclic by a deliberate rule:
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
   the scene/RT types they borrow; `gpu_scene.hpp` forward-declares `SceneData`.
 - `renderer.hpp` only **forward-declares** `AccelerationStructure`,
-  `CameraPushConstants`, `FrameResources`, `RayTracingFunctions`, `RtPipeline`,
+  `RaygenPushConstants`, `FrameResources`, `RayTracingFunctions`, `RtPipeline`,
   `SceneData`, and `Swapchain`; it
   never mentions `VulkanContext` — the renderer borrows specific handles, not the
   context, so the unit is decoupled from bring-up entirely.
@@ -254,7 +257,7 @@ The genuine cross-links are resolved in the `.cpp`s, not the headers:
    `RayTracingFunctions` and `createBuffer`; it additionally includes the
    build-generated `raytrace_spv.h` (the embedded shader module — see
    [Ray tracing pipeline](#ray-tracing-pipeline)).
-5. `renderer.cpp` includes `acceleration_structure.hpp`, `camera.hpp`,
+5. `renderer.cpp` includes `acceleration_structure.hpp`, `lighting.hpp`,
    `rt_pipeline.hpp`, `swapchain.hpp`, and `vulkan_context.hpp` to resolve the
    borrowed structs its header only forward-declares and to invoke the per-frame
    TLAS write/rebuild seam.
@@ -438,8 +441,8 @@ returns `1` on failure (RAII handles the unwind):
     structures, and the CPU scene — then the initial
     `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
 16. **Render loop.** Update the camera, call `stepPhysics` (also on resize-dirty
-    iterations), derive the camera push payload, then call
-    `drawFrame(renderer, currentFrame, cameraPush)`;
+    iterations), compose the camera/sun/frame-index raygen payload, then call
+    `drawFrame(renderer, currentFrame, raygenPush)`;
     `drawFrame` writes that slot's complete TLAS instance array and records an
     in-place TLAS rebuild before tracing. Rotate `currentFrame` modulo
     `MaxFramesInFlight`; recreate when GLFW reports a framebuffer resize or
@@ -550,19 +553,20 @@ offset. This happens even on an iteration that will skip drawing for resize, so
 simulation advances at clamped real time rather than presentation count. A physics
 failure is loud and exits the loop.
 
-`main()` then derives the frame's `CameraPushConstants` from the selected camera and
-the current `swap.extent` aspect ratio (read fresh every iteration, so a recreate
-needs no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
+`main()` then derives the camera prefix from the selected camera and current
+`swap.extent` aspect ratio, and composes it with the directional sun and successful
+frame index into `RaygenPushConstants` (the extent is read fresh every iteration, so
+a recreate needs no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
 a dirty iteration goes straight to recreation because some Wayland compositor/driver
 pairs continue scaling an old swapchain without returning `OUT_OF_DATE` or
 `SUBOPTIMAL`. The flag is cleared only after the legal Vulkan extent has been selected
 and recreation succeeds, so a surface-fixed or min/max-clamped extent cannot cause a
 comparison loop. `main()` owns a `currentFrame` cursor and rotates it after every
-`drawFrame(renderer, currentFrame, cameraPush)` call; a resize-dirty iteration skips the
+`drawFrame(renderer, currentFrame, raygenPush)` call; a resize-dirty iteration skips the
 draw and leaves the cursor unchanged. Each slot has its own command buffer,
 image-available semaphore, in-flight fence, and mapped TLAS-instance input.
 `drawFrame` in [src/renderer.cpp](src/renderer.cpp) reaches everything through the
-`Renderer` view (the camera payload rides as a parameter, not a `Renderer` member — it
+`Renderer` view (the raygen payload rides as a parameter, not a `Renderer` member — it
 is per-frame data, not a program-lifetime handle):
 
 ```
@@ -608,11 +612,11 @@ swapchain image:
    frame's trailing storage-image barrier without involving the acquire wait's
    `TRANSFER` stage.
 3. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
-   push the frame's `CameraPushConstants` (`vkCmdPushConstants`, raygen-only —
+   push the frame's `RaygenPushConstants` (`vkCmdPushConstants`, raygen-only —
    recorded into this slot's own command buffer after its fence wait, which is
-   what makes the camera race-free across frames in flight by construction),
+   what makes the frame payload race-free across frames in flight by construction),
    then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
-   extent — one ray per pixel. The immediately preceding rebuild's post-build
+   extent — one two-vertex path per pixel. The immediately preceding rebuild's post-build
    barrier makes the fresh TLAS visible to this traversal.
 4. Barrier the storage image `GENERAL → TRANSFER_SRC_OPTIMAL` (shader-write →
    transfer-read), to be the blit source.
@@ -627,9 +631,19 @@ swapchain image:
 8. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
 
 `recordTraceCommandBuffer` (and its `recordImageBarrier` / `recordExecutionBarrier`
-helpers) are file-private in
-`renderer.cpp`; the unit's exported surface is `drawFrame` and
-`prepareRtForSwapchain`, each taking only the `Renderer` view.
+helpers) are file-private in `renderer.cpp`. Its ordinary exported frame surface is
+`drawFrame` and `prepareRtForSwapchain`, each taking only the `Renderer` view.
+
+Capture mode is a terminal branch after normal frame submissions. It freezes the
+camera and initial extent, advances physics by one fixed step per successful draw,
+and stops immediately after the requested frame count. `readbackStorageImage` waits
+the final slot's render fence (which retires every earlier trace-queue submission),
+reuses that completed command buffer to copy the shared
+`TRANSFER_SRC_OPTIMAL` storage image into a temporary mapped buffer, records a
+`TRANSFER_WRITE → HOST_READ` barrier, and submits the copy without swapchain
+semaphores using a private fence. The returned `StorageImageReadback` owns only
+tightly packed linear RGBA8 bytes. `capture.cpp` hashes those raw bytes with the
+extent and writes an sRGB PPM; it owns no Vulkan state.
 
 ## Synchronization model
 
@@ -672,6 +686,11 @@ Synchronization details worth preserving:
   That same wait precedes `writeTlasInstances`, proving the prior build has stopped
   reading this slot's mapped buffer; the fallible validation/write remains before
   acquire so failure cannot strand an acquired image.
+- **Terminal capture readback.** Capture queues no later draw after its selected
+  frame. Waiting that slot's fence makes the shared storage image safe to copy and
+  makes reusing the slot command buffer legal. The copy submit has no acquire/present
+  semaphore dependency because the image is already in `TRANSFER_SRC_OPTIMAL`; a
+  private fence protects the temporary buffer until its bytes reach the CPU.
 - **Shared TLAS and scratch reuse.** All frame slots rebuild one TLAS with one
   persistent scratch region. The rebuild's pre-barrier has source stages
   `RAY_TRACING_SHADER | ACCELERATION_STRUCTURE_BUILD` and destination stage
