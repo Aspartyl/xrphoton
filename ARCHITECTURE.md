@@ -185,16 +185,16 @@ the renderer layering.)
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render and rigid-recipe data into owned `SceneData`; quaternion component order is crossed explicitly, while source-node names and reserved flags remain format provenance and are dropped | Vulkan-free runtime adapter used by scene producers such as the yard policy; returns no instances or images |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing (including body mesh and collider ranges), bounded instance insertion, and complete whole-scene render/physics validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
-| [src/ray_types.hpp](src/ray_types.hpp) | Build-owned `RayTypeCount` constant and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; currently fixed at one radiance ray type |
+| [src/ray_types.hpp](src/ray_types.hpp) | Build-owned radiance/shadow indices, `RayTypeCount`, and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; fixed at radiance 0, shadow 1, count 2 |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; requires the generated crate dynamic, includes configured recipe-bearing barrel/tail placements, and retires when level/scene data has a real owner |
 | [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, the invisible `CharacterVirtual`, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
 | [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency; never configured by the graphics-free `ogfx-core` build |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
-| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the raygen push payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
+| [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
-| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the camera push-constant range, four-stage/four-group ray tracing pipeline, per-geometry SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
+| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, and the file-private `recordTraceCommandBuffer` / `recordImageBarrier` / `recordExecutionBarrier` | Owns nothing — a parameter bundle over borrowed handles |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
 
@@ -889,8 +889,9 @@ Decisions and contracts worth preserving:
   placements sharing one BLAS. Its SBT record offset is
   `mesh.firstGeometry * RayTypeCount`; `TraceRay` uses the same `RayTypeCount` as
   its geometry-record multiplier, so each local geometry reaches the opaque or
-  alpha-tested record selected for the matching flat geometry. The shared
-  C++/Slang ABI currently fixes `RayTypeCount` at 1. Instance flags remain zero:
+  alpha-tested record selected for the matching flat geometry and semantic ray
+  type. The shared C++/Slang ABI fixes radiance at 0, shadow at 1, and
+  `RayTypeCount` at 2. Instance flags remain zero:
   opacity belongs to each BLAS geometry, not to an instance that may contain
   both classes.
 - **Staged device-local geometry.** `GpuScene` uploads vertex, attribute, index, and
@@ -985,7 +986,7 @@ Decisions and contracts worth preserving:
 
 ## Ray tracing pipeline
 
-The machinery that turns the TLAS into pixels: four shader stages, the pipeline
+The machinery that turns the TLAS into pixels: six shader stages, the pipeline
 over them, the shader binding table `vkCmdTraceRaysKHR` indexes into, and the
 descriptor set binding the TLAS, storage image, geometry records, materials, and
 sampled scene textures. Owned by `RtPipeline`
@@ -995,16 +996,18 @@ program-lifetime except for one resize obligation described below.
 
 Decisions and contracts worth preserving:
 
-- **Shaders are Slang, embedded at build time.** All four stages live in one
+- **Shaders are Slang, embedded at build time.** All six stages live in one
   [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
-  (perspective rays from the camera push constants — see [Camera](#camera) for
-  the payload contract — storage-image write at binding 1, `[format("rgba8")]`
-  because the device's `shaderStorageImageWriteWithoutFormat` is not enabled),
-  `missMain` (the dark red background), `closestHitMain` (indexed BDA fetch of
-  normals/UVs followed by material-factor × sampled-base-color × view-dependent
-  normal shading), and `anyHitMain` (the same indexed UV/material fetch followed
-  by sampled-alpha × material-alpha comparison against `alphaCutoff`, calling
-  `IgnoreHit` below the cutoff). Raygen uses `RAY_FLAG_NONE`: per-geometry BLAS
+  (perspective rays from the frame constants, a one-vertex iterative shading loop,
+  and the storage-image write at binding 1, `[format("rgba8")]` because the device's
+  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns the
+  dark-red background plus a miss flag), `closestHitMain` (indexed BDA fetch of
+  sampled albedo and un-oriented shading/geometric normals), and `anyHitMain`
+  (the same indexed UV/material fetch followed by sampled-alpha × material-alpha
+  comparison against `alphaCutoff`, calling `IgnoreHit` below the cutoff). The
+  behavior-neutral `shadowMissMain` and
+  `shadowAnyHitMain` variants complete the shadow SBT route but are not traced yet.
+  Raygen uses `RAY_FLAG_NONE`: per-geometry BLAS
   flags and SBT selection, not `RAY_FLAG_FORCE_OPAQUE`, decide whether any-hit
   runs. CMake compiles the module with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
@@ -1012,19 +1015,20 @@ Decisions and contracts worth preserving:
   `rt_pipeline.cpp` `#include`s — no runtime shader file paths, keeping the
   single-executable ethos. slangc is located via `find_program` (it is not a
   FindVulkan component).
-- **One module, four stages.** Slang compiles every `[shader(...)]` entry point
+- **One module, six stages.** Slang compiles every `[shader(...)]` entry point
   into a single SPIR-V module, so the pipeline creates one `VkShaderModule` and
   selects stages by `pName`. The module is parked in the owner during creation (the
   scratch-buffer pattern: a failure bare-returns and the destructor cleans up) and
   destroyed as soon as the pipeline exists.
-- **Groups in SBT order.** Group 0 `GENERAL` (raygen), 1 `GENERAL` (miss), 2
-  `TRIANGLES_HIT_GROUP` (opaque, closest hit only), and 3
-  `TRIANGLES_HIT_GROUP` (alpha-tested, shared closest hit plus any-hit). Triangle
-  intersection remains fixed-function. Unused shader indices are set to
+- **Groups in SBT order.** Group 0 is raygen; groups 1–2 are the radiance and
+  shadow misses; groups 3–4 are opaque and alpha-tested radiance hits; groups 5–6
+  are opaque and alpha-tested shadow hits. The opaque shadow group intentionally
+  has no shaders, while the alpha-tested shadow group contains only its any-hit.
+  Triangle intersection remains fixed-function. Unused shader indices are set to
   `VK_SHADER_UNUSED_KHR` *explicitly* — zero-init would leave 0, a valid stage
   index, producing a silently wrong pipeline rather than a validation error.
-  `maxPipelineRayRecursionDepth = 1` (primary rays only; 1 is the spec-guaranteed
-  minimum, so no limit query).
+  `maxPipelineRayRecursionDepth = 1`: every trace originates in raygen, and 1 is
+  the spec-guaranteed minimum, so no limit query is required.
 - **SBT layout.** One host-visible + coherent buffer
   (`SHADER_BINDING_TABLE | SHADER_DEVICE_ADDRESS`), written once at startup. It stays
   mapped because it is a tiny specialized table, independent of the reusable
@@ -1042,11 +1046,11 @@ Decisions and contracts worth preserving:
   and its `size` equals its `stride` (spec requirement). The miss region contains
   `RayTypeCount` records, and the hit region contains
   `geometryCount * RayTypeCount` records interleaved by ray type within each flat
-  geometry. Startup copies group 2's handle into opaque geometry records and group
-  3's handle into alpha-tested records. CMake supplies the same
-  `XRPHOTON_RAY_TYPE_COUNT=1` definition to C++ and Slang; the C++
-  `RayTypeCount`, TLAS instance offsets, SBT layout, and `TraceRay` multiplier are
-  one routing ABI rather than independently tunable values. The callable region
+  geometry. Startup selects groups 3/4 for radiance and 5/6 for shadow according to
+  each geometry's opacity class. CMake supplies the same semantic indices and
+  `XRPHOTON_RAY_TYPE_COUNT=2` definition to C++ and Slang; the C++ constants, TLAS
+  instance offsets, SBT layout, and `TraceRay` arguments are one routing ABI rather
+  than independently tunable values. The callable region
   is empty (`size = stride = 0`) but its
   `deviceAddress` points at the table base: the current VUID (03692)
   unconditionally requires a valid SBT-buffer address, and reusing the existing
@@ -1055,10 +1059,11 @@ Decisions and contracts worth preserving:
 - **BDA/ABI probe.** `GeometryRecord` carries 64-bit device addresses for pre-offset
   index, position, and all-scalar 20-byte attribute streams. C++ `static_assert`s pin
   the 32-byte record layouts; emitted SPIR-V confirms identical offsets/strides.
-  Both hit stages index the record with `InstanceID() + GeometryIndex()` and
-  interpolate UV/material data; closest-hit additionally fetches normals and
-  transforms them with the inverse-transpose implied by row-vector multiplication
-  with `WorldToObject3x4()`.
+  Both radiance hit stages index the record with
+  `InstanceID() + GeometryIndex()` and interpolate UV/material data; closest-hit
+  additionally returns the sampled albedo plus raw shading/geometric normals.
+  Shading normals use the inverse-transpose implied by row-vector multiplication
+  with `WorldToObject3x4()`; raygen owns their surface orientation and shading use.
 - **Descriptor set:** binding 0 TLAS and binding 1 storage image are raygen-only;
   bindings 2–3 are geometry/material storage buffers visible to hit stages. Binding
   4 is a fixed 1,024-entry combined-image-sampler array visible to closest-hit and
@@ -1128,12 +1133,13 @@ Decisions and contracts worth preserving:
   normalizing a zero vector is the classic NaN that permanently poisons the
   position. The GLM column-major to Vulkan row-major 3x4 conversion has one
   owner in `acceleration_structure.cpp`.
-- **Payload ABI.** The shader sees four `float3` fields at 16-byte offsets
-  (0/16/32/48); the CPU struct pins the same shape with explicit pad floats and
-  `static_assert`s on both `sizeof` (64) and the `offsetof` of every field —
-  `float3` rounds up to 16-byte alignment under every GPU layout rule set, so
-  the offsets are unconditional. Keep the shader struct and the CPU struct
-  field-for-field identical.
+- **Frame-constant ABI.** The 96-byte raygen block begins with the stable camera
+  prefix: four `float3` fields at 16-byte offsets (0/16/32/48). The CPU structs pin
+  that prefix plus sun direction at 64, sun radiance at 80, and frame index at 92
+  with explicit pads and `static_assert`s on `sizeof` and every `offsetof`.
+  `float3` rounds up to 16-byte alignment under every relevant GPU layout rule, so
+  the offsets are unconditional. Keep the shader and CPU structs field-for-field
+  identical.
 - **Basis convention.** World y-up; yaw 0 / pitch 0 looks down **+Z**, and
   `right = normalize(cross(WorldUp, forward))`, `up = cross(forward, right)` —
   chosen so world +X maps screen-right and +Y screen-up, exactly the bring-up
@@ -1255,12 +1261,14 @@ Decisions and contracts worth preserving:
    drove N-BLAS generalization and the older GEOMETRY_PLAN sequence that placed the
    opaque/alpha SBT split before any texture consumer. N-BLAS, the base-color
    texture consumer, and the mixed opaque/alpha-tested split are now landed. The
-   runtime has four shader stages/groups, selects a hit record per flat geometry,
+   runtime has six shader stages and seven groups, selects hit records per flat
+   geometry and semantic ray type,
    sets BLAS opacity per range, evaluates texture alpha in any-hit, shares the
-   build-owned `RayTypeCount = 1` routing ABI between C++ and Slang, and does not
-   force rays opaque. Broader skeletal and physics source profiles still require
-   explicit contracts; unsupported source semantics are rejected rather than
-   hidden by a geometry-only conversion.
+   build-owned radiance-0/shadow-1/`RayTypeCount = 2` routing ABI between C++ and
+   Slang, and does not force rays opaque. Shadow records are prepared but remain
+   untraced until direct lighting. Broader skeletal and physics source profiles
+   still require explicit contracts; unsupported source semantics are rejected
+   rather than hidden by a geometry-only conversion.
 3. **Dynamic scene.** **Rigid dynamics landed; deformables pending** — the
    renderer foundation still uses one mapped instance input per `FrameResources`
    slot and a full in-place TLAS rebuild before every trace, with slot rotation and

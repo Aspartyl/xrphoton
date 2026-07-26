@@ -85,11 +85,13 @@ a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
 perspective camera fed to the shader via push constants, writes a storage image
 and blits it to the swapchain, with two frames in flight and proper resize
-handling. The four-stage/four-group pipeline selects an opaque or alpha-tested
-hit record per geometry, marks only opaque BLAS ranges opaque, and lets the
-alpha-tested any-hit shader compare sampled texture alpha against the material
-cutoff. The shared C++/Slang routing ABI currently has `RayTypeCount = 1`, and
-rays are no longer forced opaque. Shaders are written in
+handling. The six-stage/seven-group pipeline carries opaque and alpha-tested hit
+records for both radiance and shadow rays, marks only opaque BLAS ranges opaque,
+and lets each alpha-tested any-hit variant compare sampled texture alpha against
+the material cutoff. The shared C++/Slang routing ABI fixes `RadianceRayType = 0`,
+`ShadowRayType = 1`, and `RayTypeCount = 2`; only radiance is traced so far, while
+the shadow records remain behavior-neutral preparation. Rays are no longer forced
+opaque. Shaders are written in
 [Slang](https://shader-slang.org/) and compiled into the runtime binary at build
 time, so shader deployment is self-contained and needs no runtime shader files.
 

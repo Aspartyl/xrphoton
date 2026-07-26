@@ -507,10 +507,14 @@ add_library(xrPhotonOgfxRuntime STATIC
 target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
 target_link_libraries(xrPhotonOgfxRuntime PUBLIC xrPhotonOgfx ${XRPHOTON_GLM_TARGET})
-# This single value is also passed to slangc below. It is a routing ABI rather than a
-# tunable: changing it requires adding the corresponding miss/hit shader variants.
-set(XRPHOTON_RAY_TYPE_COUNT 1)
+# These values are also passed to slangc below. Together they are a routing ABI rather
+# than tunables: the semantic indices, SBT records, and shader variants change as one.
+set(XRPHOTON_RADIANCE_RAY_TYPE 0)
+set(XRPHOTON_SHADOW_RAY_TYPE 1)
+set(XRPHOTON_RAY_TYPE_COUNT 2)
 target_compile_definitions(xrPhotonOgfxRuntime PUBLIC
+    XRPHOTON_RADIANCE_RAY_TYPE=${XRPHOTON_RADIANCE_RAY_TYPE}
+    XRPHOTON_SHADOW_RAY_TYPE=${XRPHOTON_SHADOW_RAY_TYPE}
     XRPHOTON_RAY_TYPE_COUNT=${XRPHOTON_RAY_TYPE_COUNT})
 
 if(BUILD_TESTING)
@@ -653,6 +657,8 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
     COMMAND ${XRPHOTON_SLANGC}
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytrace.slang
+            -DXRPHOTON_RADIANCE_RAY_TYPE=${XRPHOTON_RADIANCE_RAY_TYPE}
+            -DXRPHOTON_SHADOW_RAY_TYPE=${XRPHOTON_SHADOW_RAY_TYPE}
             -DXRPHOTON_RAY_TYPE_COUNT=${XRPHOTON_RAY_TYPE_COUNT}
             -target spirv
             -fvk-use-entrypoint-name

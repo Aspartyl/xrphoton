@@ -12,7 +12,7 @@ struct GpuScene;
 struct SceneData;
 
 // Owns the ray tracing pipeline machinery: the descriptor set layout binding the TLAS,
-// storage image, and scene records; the pipeline layout plus camera push constants;
+// storage image, and scene records; the pipeline layout plus raygen frame constants;
 // the descriptor pool and the one set allocated from it, the pipeline itself, and the
 // shader binding table buffer.
 // Program-lifetime and swapchain-independent except for one obligation: the storage
@@ -32,7 +32,7 @@ struct RtPipeline
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 
-    // The one shader module holding all four entry points (Slang compiles them into
+    // The one shader module holding all six entry points (Slang compiles them into
     // a single SPIR-V module). Parked here — the scratch-buffer pattern from the AS
     // build, not local RAII — so a failure between module and pipeline creation can
     // bare-return and rely on the destructor; on success it is destroyed immediately
@@ -86,20 +86,20 @@ void writeSceneDescriptorSet(
     VkDescriptorSet descriptorSet,
     const GpuScene& gpuScene);
 
-// Create the pipeline layout (the one descriptor set plus raygen camera push
-// constants) and the ray tracing pipeline: four stages sharing the single embedded
-// shader module, four groups in the SBT-contract order — 0 raygen, 1 miss, 2 opaque
-// triangles-hit (closest hit), 3 alpha-tested triangles-hit (closest + any hit).
-// Primary rays only, so maxPipelineRayRecursionDepth is 1, which the spec guarantees
-// supported. Requires createRtDescriptorSet to have succeeded (uses the set layout
-// and the adopted device); on failure *rt again holds whatever was created and the
+// Create the pipeline layout (the one descriptor set plus raygen frame constants)
+// and the ray tracing pipeline: six stages sharing the embedded shader module and
+// seven groups in SBT-contract order — raygen; radiance/shadow misses; opaque and
+// alpha-tested radiance hits; opaque and alpha-tested shadow hits. Every TraceRay
+// call originates in raygen, so maxPipelineRayRecursionDepth is the spec-guaranteed
+// minimum 1. Requires createRtDescriptorSet to have succeeded (uses the set layout
+// and adopted device); on failure *rt again holds whatever was created and the
 // caller can bare-return.
 VkResult createRtPipeline(
     RtPipeline* rt,
     VkDevice device,
     const RayTracingFunctions& functions);
 
-// Build the shader binding table: fetch the four group handles from the pipeline,
+// Build the shader binding table: fetch the seven group handles from the pipeline,
 // lay out raygen, RayTypeCount miss records, and one class-selected hit record per
 // scene geometry per ray type (each region starts baseAlignment-aligned), and store the four
 // VkStridedDeviceAddressRegionKHRs the trace consumes. The buffer is host-visible +

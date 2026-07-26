@@ -1,10 +1,19 @@
-// All four ray tracing stages live in this one module — Slang compiles every
+// All six ray tracing stages live in this one module — Slang compiles every
 // [shader(...)] entry point into a single SPIR-V module, so the pipeline creates
 // one VkShaderModule and selects stages by entry-point name.
 
-#if XRPHOTON_RAY_TYPE_COUNT != 1
-#error "The current shader module defines exactly one radiance ray type"
+#if XRPHOTON_RAY_TYPE_COUNT != 2
+#error "The shader module defines exactly radiance and shadow ray types"
 #endif
+#if XRPHOTON_RADIANCE_RAY_TYPE != 0
+#error "The radiance ray type must remain SBT index 0"
+#endif
+#if XRPHOTON_SHADOW_RAY_TYPE != 1
+#error "The shadow ray type must remain SBT index 1"
+#endif
+
+static const uint RadianceRayType = XRPHOTON_RADIANCE_RAY_TYPE;
+static const uint ShadowRayType = XRPHOTON_SHADOW_RAY_TYPE;
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
 // swapchain-sized storage image at 1. The [format] attribute stamps the SPIR-V
@@ -73,9 +82,12 @@ struct RaygenPushConstants
 [[vk::push_constant]]
 ConstantBuffer<RaygenPushConstants> frameConstants;
 
-struct Payload
+struct SurfaceHit
 {
-    float3 color;
+    float hitT;
+    float3 albedo;
+    float3 shadingNormal;
+    float3 geometricNormal;
     // Full neighboring primary-ray directions provide explicit screen-space
     // derivatives in hit shaders, where implicit fragment derivatives do not
     // exist. SampleGrad uses the resulting UV footprint for real anisotropy.
@@ -83,14 +95,61 @@ struct Payload
     float3 rayDirectionY;
 };
 
+struct ShadowPayload
+{
+    float visibility;
+};
+
+struct HitMaterialCoordinates
+{
+    float2 uv;
+    uint materialIndex;
+};
+
 struct HitAttributes
 {
-    float3 worldNormal;
+    float3 worldShadingNormal;
+    float3 worldGeometricNormal;
     float2 uv;
     float2 uvDx;
     float2 uvDy;
     uint materialIndex;
 };
+
+HitMaterialCoordinates fetchHitMaterialCoordinates(
+    BuiltInTriangleIntersectionAttributes attribs)
+{
+    GeometryRecord geometry = geometryRecords[InstanceID() + GeometryIndex()];
+    uint* indices = (uint*)geometry.indexAddress;
+    uint baseIndex = 3 * PrimitiveIndex();
+    uint3 triangle = uint3(
+        indices[baseIndex],
+        indices[baseIndex + 1],
+        indices[baseIndex + 2]);
+    VertexAttributes* attributes = (VertexAttributes*)geometry.attributeAddress;
+    float3 weights = float3(
+        1.0 - attribs.barycentrics.x - attribs.barycentrics.y,
+        attribs.barycentrics.x,
+        attribs.barycentrics.y);
+
+    HitMaterialCoordinates result;
+    result.uv = float2(
+        attributes[triangle.x].u,
+        attributes[triangle.x].v) * weights.x
+        + float2(
+            attributes[triangle.y].u,
+            attributes[triangle.y].v) * weights.y
+        + float2(
+            attributes[triangle.z].u,
+            attributes[triangle.z].v) * weights.z;
+    result.materialIndex = geometry.materialIndex;
+    return result;
+}
+
+bool rejectsAlpha(MaterialRecord material, float sampledAlpha)
+{
+    return material.baseColorFactor.a * sampledAlpha < material.alphaCutoff;
+}
 
 float2 uvGradient(
     float3 worldDelta,
@@ -115,7 +174,7 @@ float2 uvGradient(
 
 HitAttributes fetchHitAttributes(
     BuiltInTriangleIntersectionAttributes attribs,
-    Payload payload)
+    SurfaceHit payload)
 {
     GeometryRecord geometry = geometryRecords[InstanceID() + GeometryIndex()];
     uint* indices = (uint*)geometry.indexAddress;
@@ -141,7 +200,7 @@ HitAttributes fetchHitAttributes(
     HitAttributes result;
     // With HLSL row-vector multiplication, WorldToObject's 3x3 block applies the
     // required object-to-world inverse-transpose normal transform.
-    result.worldNormal = normalize(
+    result.worldShadingNormal = normalize(
         mul(objectNormal, (float3x3)WorldToObject3x4()));
     result.uv = float2(a.u, a.v) * weights.x
         + float2(b.u, b.v) * weights.y
@@ -169,6 +228,8 @@ HitAttributes fetchHitAttributes(
     float3 worldC = mul(ObjectToWorld3x4(), float4(objectC, 1.0));
     float3 positionEdge1 = worldB - worldA;
     float3 positionEdge2 = worldC - worldA;
+    result.worldGeometricNormal = normalize(
+        cross(positionEdge1, positionEdge2));
     float2 uvEdge1 = float2(b.u - a.u, b.v - a.v);
     float2 uvEdge2 = float2(c.u - a.u, c.v - a.v);
 
@@ -206,6 +267,29 @@ HitAttributes fetchHitAttributes(
     return result;
 }
 
+struct OrientedSurfaceNormals
+{
+    float3 shading;
+    float3 geometric;
+};
+
+OrientedSurfaceNormals orientSurfaceNormals(
+    float3 shadingNormal,
+    float3 geometricNormal,
+    float3 wo)
+{
+    OrientedSurfaceNormals result;
+    result.geometric = dot(geometricNormal, wo) < 0.0
+        ? -geometricNormal
+        : geometricNormal;
+    result.shading = dot(shadingNormal, wo) < 0.0
+        ? -shadingNormal
+        : shadingNormal;
+    if (dot(result.shading, result.geometric) <= 0.0)
+        result.shading = result.geometric;
+    return result;
+}
+
 [shader("raygeneration")]
 void rayGenMain()
 {
@@ -230,60 +314,110 @@ void rayGenMain()
     ray.TMin = 0.001;
     ray.TMax = 100.0;
 
-    Payload payload;
-    payload.color = float3(0.0);
-    payload.rayDirectionX = normalize(
+    float3 rayDirectionX = normalize(
         frameConstants.camera.forward
         + (ndc.x + ndcStep.x) * frameConstants.camera.right
         - ndc.y * frameConstants.camera.up);
-    payload.rayDirectionY = normalize(
+    float3 rayDirectionY = normalize(
         frameConstants.camera.forward
         + ndc.x * frameConstants.camera.right
         - (ndc.y + ndcStep.y) * frameConstants.camera.up);
 
-    // Opaque BLAS ranges bypass any-hit through their geometry flag; alpha-tested
-    // ranges must remain eligible for their SBT-selected any-hit shader. Hit records
-    // are interleaved by ray type per geometry; this module currently traces type 0.
-    TraceRay(
-        topLevelAS,
-        RAY_FLAG_NONE,
-        0xFF,
-        0,
-        XRPHOTON_RAY_TYPE_COUNT,
-        0,
-        ray,
-        payload);
+    static const uint MaxPathVertices = 1;
+    float3 radiance = float3(0.0);
+    float3 throughput = float3(1.0);
+    for (uint pathVertex = 0; pathVertex < MaxPathVertices; ++pathVertex)
+    {
+        SurfaceHit hit;
+        hit.hitT = -1.0;
+        hit.albedo = float3(0.0);
+        hit.shadingNormal = float3(0.0);
+        hit.geometricNormal = float3(0.0);
+        hit.rayDirectionX = rayDirectionX;
+        hit.rayDirectionY = rayDirectionY;
 
-    outputImage[pixel] = float4(payload.color, 1.0);
+        // Opaque BLAS ranges bypass any-hit through their geometry flag;
+        // alpha-tested ranges remain eligible for their SBT-selected any-hit shader.
+        TraceRay(
+            topLevelAS,
+            RAY_FLAG_NONE,
+            0xFF,
+            RadianceRayType,
+            XRPHOTON_RAY_TYPE_COUNT,
+            RadianceRayType,
+            ray,
+            hit);
+
+        if (hit.hitT < 0.0)
+        {
+            radiance += throughput * hit.albedo;
+            break;
+        }
+
+        float3 wo = -ray.Direction;
+        // Preserve the legacy view term byte-for-byte at this behavior-neutral
+        // boundary. The orientation helper above becomes the surface convention
+        // when directional lighting starts consuming both normals in the next step.
+        float viewFacing = abs(dot(hit.shadingNormal, wo));
+        radiance += throughput * hit.albedo * (0.2 + 0.8 * viewFacing);
+    }
+
+    outputImage[pixel] = float4(radiance, 1.0);
 }
 
 [shader("miss")]
-void missMain(inout Payload payload)
+void missMain(inout SurfaceHit payload)
 {
     // Dark red keeps miss pixels visually distinct from gallery materials.
-    payload.color = float3(0.24, 0.02, 0.015);
+    payload.hitT = -1.0;
+    payload.albedo = float3(0.24, 0.02, 0.015);
 }
 
 [shader("closesthit")]
-void closestHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes attribs)
+void closestHitMain(
+    inout SurfaceHit payload,
+    BuiltInTriangleIntersectionAttributes attribs)
 {
     HitAttributes hit = fetchHitAttributes(attribs, payload);
     MaterialRecord material = materials[hit.materialIndex];
-    float3 baseColor = material.baseColorFactor.rgb
+    payload.hitT = RayTCurrent();
+    payload.albedo = material.baseColorFactor.rgb
         * sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
               .SampleGrad(hit.uv, hit.uvDx, hit.uvDy).rgb;
-    payload.color = baseColor
-        * (0.2 + 0.8 * abs(dot(hit.worldNormal, -WorldRayDirection())));
+    payload.shadingNormal = hit.worldShadingNormal;
+    payload.geometricNormal = hit.worldGeometricNormal;
 }
 
 [shader("anyhit")]
-void anyHitMain(inout Payload payload, BuiltInTriangleIntersectionAttributes attribs)
+void anyHitMain(
+    inout SurfaceHit payload,
+    BuiltInTriangleIntersectionAttributes attribs)
 {
     HitAttributes hit = fetchHitAttributes(attribs, payload);
     MaterialRecord material = materials[hit.materialIndex];
-    float alpha = material.baseColorFactor.a
-        * sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
-              .SampleGrad(hit.uv, hit.uvDx, hit.uvDy).a;
-    if (alpha < material.alphaCutoff)
+    float sampledAlpha =
+        sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
+            .SampleGrad(hit.uv, hit.uvDx, hit.uvDy).a;
+    if (rejectsAlpha(material, sampledAlpha))
+        IgnoreHit();
+}
+
+[shader("miss")]
+void shadowMissMain(inout ShadowPayload payload)
+{
+    payload.visibility = 1.0;
+}
+
+[shader("anyhit")]
+void shadowAnyHitMain(
+    inout ShadowPayload payload,
+    BuiltInTriangleIntersectionAttributes attribs)
+{
+    HitMaterialCoordinates hit = fetchHitMaterialCoordinates(attribs);
+    MaterialRecord material = materials[hit.materialIndex];
+    float sampledAlpha =
+        sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
+            .SampleLevel(hit.uv, 0).a;
+    if (rejectsAlpha(material, sampledAlpha))
         IgnoreHit();
 }

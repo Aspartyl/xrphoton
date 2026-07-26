@@ -6,15 +6,16 @@
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
-#include <array>
 #include <iostream>
+#include <iterator>
 #include <vector>
 
 #include <vulkan/vulkan.h>
 
-// Build-generated: the embedded SPIR-V module holding all four ray tracing entry
+// Build-generated: the embedded SPIR-V module holding all six ray tracing entry
 // points (see the shader custom command in CMakeLists.txt).
 #include "raytrace_spv.h"
 
@@ -24,14 +25,19 @@ namespace
 {
 // Group order is a serialized-in-memory contract with the SBT builder below.
 constexpr uint32_t RaygenGroup = 0;
-constexpr uint32_t MissGroup = 1;
-constexpr uint32_t OpaqueHitGroup = 2;
-constexpr uint32_t AlphaTestedHitGroup = 3;
-constexpr uint32_t GroupCount = 4;
+constexpr uint32_t RadianceMissGroup = 1;
+constexpr uint32_t ShadowMissGroup = 2;
+constexpr uint32_t OpaqueRadianceHitGroup = 3;
+constexpr uint32_t AlphaTestedRadianceHitGroup = 4;
+constexpr uint32_t OpaqueShadowHitGroup = 5;
+constexpr uint32_t AlphaTestedShadowHitGroup = 6;
+constexpr uint32_t GroupCount = 7;
 
-// This pipeline currently supplies one miss shader and one radiance variant of each
-// hit class. Raising the build-owned constant must add the shadow variants atomically.
-static_assert(RayTypeCount == 1);
+// Both semantic ray types have dedicated miss and hit records. Their shared build
+// definitions must change atomically with this table and the Slang entry points.
+static_assert(RadianceRayType == 0);
+static_assert(ShadowRayType == 1);
+static_assert(ShadowRayType < RayTypeCount && RayTypeCount == 2);
 
 // Round a value up to the next multiple of alignment, valid for any alignment. The
 // AS build's bit-mask alignUp is only correct for powers of two — spec-guaranteed for
@@ -287,9 +293,9 @@ VkResult createRtPipeline(
         return result;
     }
 
-    // All four stages reference the one module; the entry-point names are the ones
+    // All six stages reference the one module; the entry-point names are the ones
     // the shader compile preserved (-fvk-use-entrypoint-name).
-    VkPipelineShaderStageCreateInfo stages[4]{};
+    VkPipelineShaderStageCreateInfo stages[6]{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     stages[0].module = rt->shaderModule;
@@ -299,18 +305,26 @@ VkResult createRtPipeline(
     stages[1].module = rt->shaderModule;
     stages[1].pName = "missMain";
     stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    stages[2].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
     stages[2].module = rt->shaderModule;
-    stages[2].pName = "closestHitMain";
+    stages[2].pName = "shadowMissMain";
     stages[3].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[3].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    stages[3].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
     stages[3].module = rt->shaderModule;
-    stages[3].pName = "anyHitMain";
+    stages[3].pName = "closestHitMain";
+    stages[4].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[4].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    stages[4].module = rt->shaderModule;
+    stages[4].pName = "anyHitMain";
+    stages[5].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[5].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    stages[5].module = rt->shaderModule;
+    stages[5].pName = "shadowAnyHitMain";
 
-    // Group order is the SBT contract: 0 raygen, 1 miss, 2 opaque hit, 3 alpha-tested
-    // hit. Every shader index a
-    // group does not use must be VK_SHADER_UNUSED_KHR explicitly — zero-init would
-    // leave 0, which is a valid stage index (the raygen stage).
+    // Group order is the SBT contract: raygen; radiance/shadow misses; opaque and
+    // alpha-tested radiance hits; then opaque and alpha-tested shadow hits. Every
+    // shader index a group does not use must be VK_SHADER_UNUSED_KHR explicitly —
+    // zero-init would leave 0, which is a valid stage index (the raygen stage).
     VkRayTracingShaderGroupCreateInfoKHR groups[GroupCount]{};
     for (VkRayTracingShaderGroupCreateInfoKHR& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
@@ -321,25 +335,35 @@ VkResult createRtPipeline(
     }
     groups[RaygenGroup].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
     groups[RaygenGroup].generalShader = 0;
-    groups[MissGroup].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-    groups[MissGroup].generalShader = 1;
-    groups[OpaqueHitGroup].type =
+    groups[RadianceMissGroup].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[RadianceMissGroup].generalShader = 1;
+    groups[ShadowMissGroup].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[ShadowMissGroup].generalShader = 2;
+    groups[OpaqueRadianceHitGroup].type =
         VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[OpaqueHitGroup].closestHitShader = 2;
-    // Both classes share closest-hit shading. Only alpha-tested ranges pay for the
-    // any-hit stage, selected through their per-geometry SBT records.
-    groups[AlphaTestedHitGroup].type =
+    groups[OpaqueRadianceHitGroup].closestHitShader = 3;
+    // Both radiance classes share closest-hit surface evaluation. Only alpha-tested
+    // ranges pay for their any-hit stage, selected through per-geometry SBT records.
+    groups[AlphaTestedRadianceHitGroup].type =
         VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[AlphaTestedHitGroup].closestHitShader = 2;
-    groups[AlphaTestedHitGroup].anyHitShader = 3;
+    groups[AlphaTestedRadianceHitGroup].closestHitShader = 3;
+    groups[AlphaTestedRadianceHitGroup].anyHitShader = 4;
+    // An accepted shadow hit leaves its payload's occluded initialization untouched.
+    // Opaque records therefore need no shaders; alpha-tested records run only the
+    // lean cutoff any-hit stage and likewise need no closest hit.
+    groups[OpaqueShadowHitGroup].type =
+        VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[AlphaTestedShadowHitGroup].type =
+        VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[AlphaTestedShadowHitGroup].anyHitShader = 5;
 
     VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo{};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-    pipelineCreateInfo.stageCount = 4;
+    pipelineCreateInfo.stageCount = static_cast<uint32_t>(std::size(stages));
     pipelineCreateInfo.pStages = stages;
     pipelineCreateInfo.groupCount = GroupCount;
     pipelineCreateInfo.pGroups = groups;
-    // Primary rays only; 1 is the spec-guaranteed minimum for
+    // Every TraceRay call originates in raygen; 1 is the spec-guaranteed minimum for
     // maxRayRecursionDepth, so no limit query is needed.
     pipelineCreateInfo.maxPipelineRayRecursionDepth = 1;
     pipelineCreateInfo.layout = rt->pipelineLayout;
@@ -472,18 +496,30 @@ VkResult buildShaderBindingTable(
         table + raygenOffset,
         handles.data() + RaygenGroup * handleSize,
         handleSize);
+    std::array<uint32_t, RayTypeCount> missGroups{};
+    missGroups[RadianceRayType] = RadianceMissGroup;
+    missGroups[ShadowRayType] = ShadowMissGroup;
     for (uint32_t rayType = 0; rayType < RayTypeCount; ++rayType) {
         std::memcpy(
             table + missOffset + static_cast<VkDeviceSize>(rayType) * recordStride,
-            handles.data() + MissGroup * handleSize,
+            handles.data()
+                + static_cast<VkDeviceSize>(missGroups[rayType]) * handleSize,
             handleSize);
     }
+    std::array<uint32_t, RayTypeCount> opaqueHitGroups{};
+    opaqueHitGroups[RadianceRayType] = OpaqueRadianceHitGroup;
+    opaqueHitGroups[ShadowRayType] = OpaqueShadowHitGroup;
+    std::array<uint32_t, RayTypeCount> alphaTestedHitGroups{};
+    alphaTestedHitGroups[RadianceRayType] = AlphaTestedRadianceHitGroup;
+    alphaTestedHitGroups[ShadowRayType] = AlphaTestedShadowHitGroup;
     for (VkDeviceSize recordIndex = 0; recordIndex < hitRecordCount; ++recordIndex) {
         const std::size_t geometryIndex =
             static_cast<std::size_t>(recordIndex / RayTypeCount);
+        const uint32_t rayType =
+            static_cast<uint32_t>(recordIndex % RayTypeCount);
         const uint32_t groupIndex = scene.geometries[geometryIndex].alphaTested
-            ? AlphaTestedHitGroup
-            : OpaqueHitGroup;
+            ? alphaTestedHitGroups[rayType]
+            : opaqueHitGroups[rayType];
         std::memcpy(
             table + hitOffset + recordIndex * recordStride,
             handles.data() + static_cast<VkDeviceSize>(groupIndex) * handleSize,
