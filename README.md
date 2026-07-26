@@ -89,9 +89,12 @@ handling. The six-stage/seven-group pipeline carries opaque and alpha-tested hit
 records for both radiance and shadow rays, marks only opaque BLAS ranges opaque,
 and lets each alpha-tested any-hit variant compare sampled texture alpha against
 the material cutoff. The shared C++/Slang routing ABI fixes `RadianceRayType = 0`,
-`ShadowRayType = 1`, and `RayTypeCount = 2`; only radiance is traced so far, while
-the shadow records remain behavior-neutral preparation. Rays are no longer forced
-opaque. Shaders are written in
+`ShadowRayType = 1`, and `RayTypeCount = 2`. Raygen shades one surface vertex with
+the engine-supplied directional sun, traces hard visibility rays through the
+shadow records, and returns a procedural sky when radiance rays miss. Alpha-tested
+shadow rays pass through the same texture cutouts as visible rays. Indirect sky
+lighting is not active yet, so directly occluded surfaces remain black. Rays are
+not forced opaque. Shaders are written in
 [Slang](https://shader-slang.org/) and compiled into the runtime binary at build
 time, so shader deployment is self-contained and needs no runtime shader files.
 

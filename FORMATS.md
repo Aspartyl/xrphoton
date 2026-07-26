@@ -681,8 +681,9 @@ image indices. Alpha-tested geometry is accepted: its class selects the
 alpha-tested hit-group records, leaves the corresponding BLAS geometry
 non-opaque, and runs texture-alpha any-hit rejection. Opaque ranges retain the
 opaque BLAS flag and bypass any-hit. Named radiance/shadow indices plus
-`RayTypeCount == 2` form one shared C++/Slang routing ABI; the shadow records are
-prepared but not yet traced, and no trace uses `RAY_FLAG_FORCE_OPAQUE`.
+`RayTypeCount == 2` form one shared C++/Slang routing ABI. Direct sunlight now
+traces the shadow records; alpha-tested shadow hits apply the same material-alpha
+cutoff and ignore transparent texels. No trace uses `RAY_FLAG_FORCE_OPAQUE`.
 
 Both schema and runtime byte decoders validate and reconstruct optional rigid
 physics records. [`src/ogfx_loader.cpp`](src/ogfx_loader.cpp) now copies their

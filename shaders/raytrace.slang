@@ -14,6 +14,17 @@
 
 static const uint RadianceRayType = XRPHOTON_RADIANCE_RAY_TYPE;
 static const uint ShadowRayType = XRPHOTON_SHADOW_RAY_TYPE;
+static const float SceneTMax = 100.0;
+static const float ShadowTMax = 1.0e30;
+static const float SurfaceRayOffset = 1.0e-3;
+static const float InversePi = 0.31830988618379067154;
+
+float3 skyRadiance(float3 direction)
+{
+    static const float3 HorizonRadiance = float3(0.32, 0.38, 0.46);
+    static const float3 ZenithRadiance = float3(0.055, 0.12, 0.28);
+    return lerp(HorizonRadiance, ZenithRadiance, saturate(direction.y));
+}
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
 // swapchain-sized storage image at 1. The [format] attribute stamps the SPIR-V
@@ -310,9 +321,9 @@ void rayGenMain()
         + ndc.x * frameConstants.camera.right
         - ndc.y * frameConstants.camera.up);
     // tMin keeps self-intersection conventions even though nothing here can
-    // self-intersect; tMax comfortably covers the unit-scale scene.
+    // self-intersect; SceneTMax comfortably covers the unit-scale scene.
     ray.TMin = 0.001;
-    ray.TMax = 100.0;
+    ray.TMax = SceneTMax;
 
     float3 rayDirectionX = normalize(
         frameConstants.camera.forward
@@ -354,23 +365,53 @@ void rayGenMain()
             break;
         }
 
-        float3 wo = -ray.Direction;
-        // Preserve the legacy view term byte-for-byte at this behavior-neutral
-        // boundary. The orientation helper above becomes the surface convention
-        // when directional lighting starts consuming both normals in the next step.
-        float viewFacing = abs(dot(hit.shadingNormal, wo));
-        radiance += throughput * hit.albedo * (0.2 + 0.8 * viewFacing);
+        float3 worldPosition = ray.Origin + ray.Direction * hit.hitT;
+        OrientedSurfaceNormals normals = orientSurfaceNormals(
+            hit.shadingNormal,
+            hit.geometricNormal,
+            -ray.Direction);
+        float shadingCosine = dot(normals.shading, frameConstants.sunDirection);
+        float geometricCosine = dot(normals.geometric, frameConstants.sunDirection);
+        if (shadingCosine > 0.0 && geometricCosine > 0.0)
+        {
+            ShadowPayload shadow;
+            shadow.visibility = 0.0;
+
+            RayDesc shadowRay;
+            shadowRay.Origin = worldPosition
+                + normals.geometric * SurfaceRayOffset;
+            shadowRay.Direction = frameConstants.sunDirection;
+            shadowRay.TMin = 0.0;
+            shadowRay.TMax = ShadowTMax;
+
+            TraceRay(
+                topLevelAS,
+                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+                    | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                0xFF,
+                ShadowRayType,
+                XRPHOTON_RAY_TYPE_COUNT,
+                ShadowRayType,
+                shadowRay,
+                shadow);
+
+            radiance += throughput
+                * hit.albedo
+                * InversePi
+                * frameConstants.sunRadiance
+                * shadingCosine
+                * shadow.visibility;
+        }
     }
 
-    outputImage[pixel] = float4(radiance, 1.0);
+    outputImage[pixel] = float4(saturate(radiance), 1.0);
 }
 
 [shader("miss")]
 void missMain(inout SurfaceHit payload)
 {
-    // Dark red keeps miss pixels visually distinct from gallery materials.
     payload.hitT = -1.0;
-    payload.albedo = float3(0.24, 0.02, 0.015);
+    payload.albedo = skyRadiance(WorldRayDirection());
 }
 
 [shader("closesthit")]

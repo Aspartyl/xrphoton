@@ -999,17 +999,19 @@ Decisions and contracts worth preserving:
 - **Shaders are Slang, embedded at build time.** All six stages live in one
   [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
   (perspective rays from the frame constants, a one-vertex iterative shading loop,
-  and the storage-image write at binding 1, `[format("rgba8")]` because the device's
-  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns the
-  dark-red background plus a miss flag), `closestHitMain` (indexed BDA fetch of
+  direct Lambertian sun lighting with a hard visibility trace, and the
+  storage-image write at binding 1, `[format("rgba8")]` because the device's
+  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns a
+  procedural horizon-to-zenith sky plus a miss flag), `closestHitMain` (indexed BDA fetch of
   sampled albedo and un-oriented shading/geometric normals), and `anyHitMain`
   (the same indexed UV/material fetch followed by sampled-alpha × material-alpha
   comparison against `alphaCutoff`, calling `IgnoreHit` below the cutoff). The
-  behavior-neutral `shadowMissMain` and
-  `shadowAnyHitMain` variants complete the shadow SBT route but are not traced yet.
-  Raygen uses `RAY_FLAG_NONE`: per-geometry BLAS
-  flags and SBT selection, not `RAY_FLAG_FORCE_OPAQUE`, decide whether any-hit
-  runs. CMake compiles the module with `slangc
+  shadow route initializes visibility to occluded, lets `shadowMissMain` mark an
+  unobstructed sun, and uses the lean `shadowAnyHitMain` to pass through the same
+  alpha cutouts without fetching normals or gradients. Radiance rays use
+  `RAY_FLAG_NONE`; shadow rays accept the first hit and skip closest-hit. In both
+  cases per-geometry BLAS flags and SBT selection, not `RAY_FLAG_FORCE_OPAQUE`,
+  decide whether any-hit runs. CMake compiles the module with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
   self-contained C header (`raytrace_spv.h`, includes prepended by the build) that
   `rt_pipeline.cpp` `#include`s — no runtime shader file paths, keeping the
@@ -1076,7 +1078,7 @@ Decisions and contracts worth preserving:
   the image write declares `IMAGE_LAYOUT_GENERAL`, which the frame's first barrier
   makes true before every trace.
 - **Pipeline layout: the one set layout plus a raygen-only push-constant range**
-  (`sizeof(CameraPushConstants)`, 64 bytes at offset 0). The frame path's
+  (`sizeof(RaygenPushConstants)`, 96 bytes at offset 0). The frame path's
   `vkCmdPushConstants` uses the identical stage flags — the
   `vkCmdPushConstants` VUIDs require every pushed byte+stage to fall inside a
   declared range and the push to cover every stage of any range it overlaps.
@@ -1265,8 +1267,9 @@ Decisions and contracts worth preserving:
    geometry and semantic ray type,
    sets BLAS opacity per range, evaluates texture alpha in any-hit, shares the
    build-owned radiance-0/shadow-1/`RayTypeCount = 2` routing ABI between C++ and
-   Slang, and does not force rays opaque. Shadow records are prepared but remain
-   untraced until direct lighting. Broader skeletal and physics source profiles
+   Slang, and does not force rays opaque. Direct Lambertian sun lighting now traces
+   those shadow records from raygen, including texture-cutout rejection; radiance
+   misses return the procedural sky. Broader skeletal and physics source profiles
    still require explicit contracts; unsupported source semantics are rejected
    rather than hidden by a geometry-only conversion.
 3. **Dynamic scene.** **Rigid dynamics landed; deformables pending** — the
@@ -1285,10 +1288,12 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** Pending — the renderer becomes an actual path
-   tracer: BRDF-based materials, an iterative bounce loop in raygen (keeping
-   pipeline recursion depth at 1), next-event estimation with shadow rays,
-   emissive geometry, and a sun/sky model for time-of-day. Many-light sampling
+4. **Lighting + path tracing.** **Directional sun and sky landed; indirect and
+   general materials pending** — raygen now owns a one-vertex loop, direct
+   Lambertian sun evaluation, hard alpha-aware shadow rays, and a procedural sky.
+   The renderer still needs the deterministic diffuse bounce, BRDF-based materials,
+   a general iterative bounce loop (keeping pipeline recursion depth at 1),
+   emissive geometry, and a time-varying sun/sky model. Many-light sampling
    is a first-class requirement, not a stress case — a campsite ringed by
    anomalies at night is the ordinary frame — so NEE lands with light-selection
    sampling from the start and a ReSTIR-class upgrade as the tracked follow-up.
