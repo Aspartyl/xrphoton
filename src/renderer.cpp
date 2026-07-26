@@ -5,10 +5,14 @@
 #include "rt_pipeline.hpp"
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
+#include "vk_mem_alloc.h"
 
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
+#include <new>
+#include <utility>
 
 #include <vulkan/vulkan.h>
 
@@ -16,6 +20,78 @@ namespace xrphoton
 {
 namespace
 {
+class TemporaryBuffer
+{
+public:
+    VmaAllocator allocator = nullptr;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = nullptr;
+
+    TemporaryBuffer() = default;
+    TemporaryBuffer(const TemporaryBuffer&) = delete;
+    TemporaryBuffer& operator=(const TemporaryBuffer&) = delete;
+
+    ~TemporaryBuffer()
+    {
+        if (allocator != nullptr
+            && buffer != VK_NULL_HANDLE
+            && allocation != nullptr) {
+            vmaDestroyBuffer(allocator, buffer, allocation);
+        }
+    }
+};
+
+class TemporaryFence
+{
+public:
+    VkDevice device = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+
+    TemporaryFence() = default;
+    TemporaryFence(const TemporaryFence&) = delete;
+    TemporaryFence& operator=(const TemporaryFence&) = delete;
+
+    ~TemporaryFence()
+    {
+        if (device != VK_NULL_HANDLE && fence != VK_NULL_HANDLE) {
+            vkDestroyFence(device, fence, nullptr);
+        }
+    }
+};
+
+bool checkedReadbackByteCount(
+    VkExtent2D extent,
+    VkDeviceSize* deviceByteCount,
+    std::size_t* hostByteCount)
+{
+    if (deviceByteCount == nullptr
+        || hostByteCount == nullptr
+        || extent.width == 0
+        || extent.height == 0) {
+        return false;
+    }
+
+    constexpr std::uint64_t ChannelCount = 4;
+    const std::uint64_t width = extent.width;
+    const std::uint64_t height = extent.height;
+    if (width > std::numeric_limits<std::uint64_t>::max() / height) {
+        return false;
+    }
+    const std::uint64_t pixelCount = width * height;
+    if (pixelCount > std::numeric_limits<std::uint64_t>::max() / ChannelCount) {
+        return false;
+    }
+    const std::uint64_t byteCount = pixelCount * ChannelCount;
+    if (byteCount > std::numeric_limits<VkDeviceSize>::max()
+        || byteCount > std::numeric_limits<std::size_t>::max()) {
+        return false;
+    }
+
+    *deviceByteCount = static_cast<VkDeviceSize>(byteCount);
+    *hostByteCount = static_cast<std::size_t>(byteCount);
+    return true;
+}
+
 void recordImageBarrier(
     VkCommandBuffer commandBuffer,
     VkImage image,
@@ -426,5 +502,209 @@ VkResult drawFrame(
     // Frame succeeded; surface a SUBOPTIMAL acquire (if any) so the caller can still
     // decide to recreate the swapchain.
     return acquireResult;
+}
+
+VkResult readbackStorageImage(
+    const Renderer& renderer,
+    std::uint32_t finalSubmittedFrameSlot,
+    StorageImageReadback* output)
+{
+    if (output == nullptr
+        || finalSubmittedFrameSlot >= MaxFramesInFlight
+        || renderer.device == VK_NULL_HANDLE
+        || renderer.allocator == nullptr
+        || renderer.traceQueue == VK_NULL_HANDLE
+        || renderer.frames == nullptr
+        || renderer.swap == nullptr
+        || renderer.swap->storageImage == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    const Swapchain& swap = *renderer.swap;
+    VkDeviceSize deviceByteCount = 0;
+    std::size_t hostByteCount = 0;
+    if (!checkedReadbackByteCount(
+            swap.extent,
+            &deviceByteCount,
+            &hostByteCount)) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    const FrameResources& frame = renderer.frames[finalSubmittedFrameSlot];
+    if (frame.commandBuffer == VK_NULL_HANDLE
+        || frame.inFlightFence == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    try {
+        VkResult result = vkWaitForFences(
+            renderer.device,
+            1,
+            &frame.inFlightFence,
+            VK_TRUE,
+            std::numeric_limits<std::uint64_t>::max());
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        StorageImageReadback candidate;
+        candidate.width = swap.extent.width;
+        candidate.height = swap.extent.height;
+        if (hostByteCount > candidate.rgba8.max_size()) {
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        candidate.rgba8.resize(hostByteCount);
+
+        TemporaryBuffer readbackBuffer;
+        readbackBuffer.allocator = renderer.allocator;
+        result = createBuffer(
+            renderer.allocator,
+            deviceByteCount,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            &readbackBuffer.buffer,
+            &readbackBuffer.allocation);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        VmaAllocationInfo allocationInfo{};
+        vmaGetAllocationInfo(
+            renderer.allocator,
+            readbackBuffer.allocation,
+            &allocationInfo);
+        if (allocationInfo.pMappedData == nullptr) {
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+
+        result = vkResetCommandBuffer(frame.commandBuffer, 0);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        result = vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.bufferOffset = 0;
+        copyRegion.bufferRowLength = 0;
+        copyRegion.bufferImageHeight = 0;
+        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.mipLevel = 0;
+        copyRegion.imageSubresource.baseArrayLayer = 0;
+        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageOffset = {0, 0, 0};
+        copyRegion.imageExtent = {
+            swap.extent.width,
+            swap.extent.height,
+            1,
+        };
+
+        vkCmdCopyImageToBuffer(
+            frame.commandBuffer,
+            swap.storageImage,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            readbackBuffer.buffer,
+            1,
+            &copyRegion);
+
+        VkBufferMemoryBarrier hostReadBarrier{};
+        hostReadBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        hostReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        hostReadBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        hostReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostReadBarrier.buffer = readbackBuffer.buffer;
+        hostReadBarrier.offset = 0;
+        hostReadBarrier.size = deviceByteCount;
+
+        vkCmdPipelineBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            0,
+            0,
+            nullptr,
+            1,
+            &hostReadBarrier,
+            0,
+            nullptr);
+
+        result = vkEndCommandBuffer(frame.commandBuffer);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        // Use a private fence for the one-shot copy. The frame slot's render fence
+        // remains signaled, so a failed readback submit cannot poison later slot reuse
+        // even though capture itself treats every readback failure as terminal.
+        TemporaryFence copyFence;
+        copyFence.device = renderer.device;
+        VkFenceCreateInfo fenceCreateInfo{};
+        fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        result = vkCreateFence(
+            renderer.device,
+            &fenceCreateInfo,
+            nullptr,
+            &copyFence.fence);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &frame.commandBuffer;
+        result = vkQueueSubmit(
+            renderer.traceQueue,
+            1,
+            &submitInfo,
+            copyFence.fence);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        result = vkWaitForFences(
+            renderer.device,
+            1,
+            &copyFence.fence,
+            VK_TRUE,
+            std::numeric_limits<std::uint64_t>::max());
+        if (result != VK_SUCCESS) {
+            // DEVICE_LOST is equivalent to retirement for resource-lifetime purposes.
+            // For another wait failure, make a bounded retirement attempt before the
+            // temporary owners unwind; device-idle is the fallback if queue-idle
+            // itself fails.
+            if (result != VK_ERROR_DEVICE_LOST) {
+                VkResult retirementResult =
+                    vkQueueWaitIdle(renderer.traceQueue);
+                if (retirementResult != VK_SUCCESS
+                    && retirementResult != VK_ERROR_DEVICE_LOST) {
+                    retirementResult = vkDeviceWaitIdle(renderer.device);
+                }
+                if (retirementResult == VK_ERROR_DEVICE_LOST) {
+                    return VK_ERROR_DEVICE_LOST;
+                }
+            }
+            return result;
+        }
+
+        std::memcpy(
+            candidate.rgba8.data(),
+            allocationInfo.pMappedData,
+            hostByteCount);
+        *output = std::move(candidate);
+        return VK_SUCCESS;
+    } catch (const std::bad_alloc&) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+        return VK_ERROR_UNKNOWN;
+    }
 }
 }

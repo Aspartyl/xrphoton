@@ -1,5 +1,6 @@
 #include "acceleration_structure.hpp"
 #include "camera.hpp"
+#include "capture.hpp"
 #include "gallery.hpp"
 #include "gpu_scene.hpp"
 #include "physics.hpp"
@@ -13,8 +14,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -50,8 +53,20 @@ constexpr bool ValidationRequested = false;
 // Program entry point and orchestration: bring up GLFW and Vulkan in dependency order,
 // then run the render loop. Resources are owned by the RAII VulkanContext / Swapchain,
 // so every failure path is a bare `return 1;` and cleanup happens in their destructors.
-int main()
+int main(int argumentCount, char** arguments)
 {
+    CommandLineOptions commandLine;
+    std::string commandLineError;
+    if (!parseCommandLine(
+            argumentCount,
+            arguments,
+            &commandLine,
+            &commandLineError)) {
+        std::cerr << commandLineError << '\n';
+        return 1;
+    }
+    const bool captureMode = commandLine.mode == CommandLineMode::Capture;
+
     std::cout << "xrPhoton booting...\n";
 
     // Declared first so it outlives (and is destroyed after) the Swapchain below; it
@@ -500,6 +515,7 @@ int main()
     const Renderer renderer{
         .physicalDevice = physicalDevice,
         .device = ctx.device,
+        .allocator = ctx.allocator,
         .traceQueue = traceQueue,
         .presentQueue = presentQueue,
         .frames = ctx.frames.data(),
@@ -517,17 +533,12 @@ int main()
 
     std::cout << "Wrote Vulkan ray tracing descriptor set (TLAS + storage image).\n";
 
-    std::cout << "Player: WASD run, Left Shift sprint, Left Ctrl crouch, Space jump.\n"
-                 "Free camera: WASD move, Left Shift boost, Space/Ctrl up/down.\n"
-                 "Shared: F1 switch view, Escape release mouse, left click recapture.\n";
-    std::cout << "Entering GLFW event loop in player mode.\n";
-
-    glfwSetInputMode(ctx.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
-        glfwSetInputMode(ctx.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
-    }
-
     Camera playerCamera{
+        .position = loadedGallery.spawn.position,
+        .yaw = loadedGallery.spawn.yaw,
+        .pitch = loadedGallery.spawn.pitch,
+    };
+    const Camera captureCamera{
         .position = loadedGallery.spawn.position,
         .yaw = loadedGallery.spawn.yaw,
         .pitch = loadedGallery.spawn.pitch,
@@ -537,6 +548,148 @@ int main()
     CameraMode cameraMode = CameraMode::Player;
     double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
+
+    if (captureMode) {
+        if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
+            std::cerr << "Failed to disable the player character for capture.\n";
+            return 1;
+        }
+
+        const VkExtent2D captureExtent = swap.extent;
+        std::cout << "Capture start: extent="
+                  << captureExtent.width << 'x' << captureExtent.height
+                  << " requestedFrames=" << commandLine.captureFrameCount
+                  << '\n';
+
+        std::uint32_t successfulFrameCount = 0;
+        std::uint32_t frameCounter = 0;
+        std::uint32_t lastSubmittedSlot = 0;
+        std::uint32_t lastRenderedFrameIndex = 0;
+
+        while (successfulFrameCount < commandLine.captureFrameCount) {
+            glfwPollEvents();
+
+            if (glfwWindowShouldClose(ctx.window)) {
+                std::cerr << "Capture incomplete: window closed after "
+                          << successfulFrameCount << " of "
+                          << commandLine.captureFrameCount
+                          << " successful frames.\n";
+                return 1;
+            }
+
+            int framebufferWidth = 0;
+            int framebufferHeight = 0;
+            glfwGetFramebufferSize(
+                ctx.window,
+                &framebufferWidth,
+                &framebufferHeight);
+            if (framebufferResized
+                || swap.extent.width != captureExtent.width
+                || swap.extent.height != captureExtent.height
+                || framebufferWidth <= 0
+                || framebufferHeight <= 0
+                || static_cast<std::uint32_t>(framebufferWidth)
+                    != captureExtent.width
+                || static_cast<std::uint32_t>(framebufferHeight)
+                    != captureExtent.height) {
+                std::cerr << "Capture failed: framebuffer extent changed from "
+                          << captureExtent.width << 'x' << captureExtent.height
+                          << "; deterministic capture does not recreate the "
+                             "swapchain.\n";
+                return 1;
+            }
+
+            if (!stepPhysics(&physicsWorld, PhysicsFixedDt)) {
+                std::cerr << "Failed to advance physics world for capture.\n";
+                return 1;
+            }
+
+            const float aspect = static_cast<float>(captureExtent.width)
+                / static_cast<float>(captureExtent.height);
+            const std::uint32_t submittedSlot = currentFrame;
+            const std::uint32_t submittedFrameIndex = frameCounter;
+            const VkResult frameResult = drawFrame(
+                renderer,
+                submittedSlot,
+                makeCameraPushConstants(captureCamera, aspect));
+
+            if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
+                || frameResult == VK_SUBOPTIMAL_KHR) {
+                std::cerr << "Capture failed: fixed swapchain became "
+                          << (frameResult == VK_ERROR_OUT_OF_DATE_KHR
+                                  ? "out of date"
+                                  : "suboptimal")
+                          << " after " << successfulFrameCount
+                          << " successful frames.\n";
+                return 1;
+            }
+            if (frameResult != VK_SUCCESS) {
+                std::cerr << "Failed to draw Vulkan capture frame: "
+                          << formatVkResult(frameResult) << ".\n";
+                return 1;
+            }
+
+            lastSubmittedSlot = submittedSlot;
+            lastRenderedFrameIndex = submittedFrameIndex;
+            ++successfulFrameCount;
+            ++frameCounter;
+            currentFrame = (currentFrame + 1) % MaxFramesInFlight;
+        }
+
+        StorageImageReadback readback;
+        const VkResult readbackResult = readbackStorageImage(
+            renderer,
+            lastSubmittedSlot,
+            &readback);
+        if (readbackResult != VK_SUCCESS) {
+            std::cerr << "Failed to read back Vulkan storage image: "
+                      << formatVkResult(readbackResult) << ".\n";
+            return 1;
+        }
+
+        std::uint64_t hash = 0;
+        if (!hashCaptureImage(
+                readback.width,
+                readback.height,
+                readback.rgba8,
+                &hash)) {
+            std::cerr << "Failed to hash captured storage-image bytes.\n";
+            return 1;
+        }
+
+        std::string publicationError;
+        if (!writeCapturePpm(
+                commandLine.captureOutputPath,
+                readback.width,
+                readback.height,
+                readback.rgba8,
+                &publicationError)) {
+            std::cerr << "Failed to publish capture PPM '"
+                      << commandLine.captureOutputPath << "': "
+                      << publicationError << '\n';
+            return 1;
+        }
+
+        std::cout << "Capture complete: extent="
+                  << readback.width << 'x' << readback.height
+                  << " successfulFrames=" << successfulFrameCount
+                  << " frameIndex=" << lastRenderedFrameIndex
+                  << " hash=0x"
+                  << std::hex << std::nouppercase
+                  << std::setw(16) << std::setfill('0') << hash
+                  << std::dec << std::setfill(' ') << '\n';
+        return 0;
+    }
+
+    std::cout << "Player: WASD run, Left Shift sprint, Left Ctrl crouch, Space jump.\n"
+                 "Free camera: WASD move, Left Shift boost, Space/Ctrl up/down.\n"
+                 "Shared: F1 switch view, Escape release mouse, left click recapture.\n";
+    std::cout << "Entering GLFW event loop in player mode.\n";
+
+    glfwSetInputMode(ctx.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
+        glfwSetInputMode(ctx.window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+    }
 
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();

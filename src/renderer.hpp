@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include <vulkan/vulkan.h>
+
+#include "vma_fwd.hpp"
 
 namespace xrphoton
 {
@@ -24,6 +27,7 @@ struct Renderer
 {
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = nullptr;
     VkQueue traceQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     const FrameResources* frames = nullptr;
@@ -32,6 +36,15 @@ struct Renderer
     const RayTracingFunctions* functions = nullptr;
     const RtPipeline* rtPipeline = nullptr;
     const Swapchain* swap = nullptr;
+};
+
+// CPU-owned copy of the shared resize-bound storage image. Pixels are tightly packed
+// row-major R8G8B8A8_UNORM bytes in linear space; no Vulkan/VMA handle escapes with it.
+struct StorageImageReadback
+{
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba8;
 };
 
 // The RT pipeline's two obligations whenever the swapchain (re)appears, kept as one
@@ -55,4 +68,16 @@ VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
     const CameraPushConstants& camera);
+
+// Copy the storage image produced by the latest submitted frame into host memory.
+// Rendering must have stopped immediately after finalSubmittedFrameSlot's successful
+// draw: at least one draw must have succeeded in that slot, no later frame may be
+// queued, no swapchain recreation may intervene, and no thread may concurrently use
+// the trace queue or frame command pool. The function waits that slot's render fence,
+// performs one semaphore-free copy submission with a private fence on traceQueue, and
+// leaves the storage image in TRANSFER_SRC_OPTIMAL. On failure, *output is unchanged.
+VkResult readbackStorageImage(
+    const Renderer& renderer,
+    std::uint32_t finalSubmittedFrameSlot,
+    StorageImageReadback* output);
 }

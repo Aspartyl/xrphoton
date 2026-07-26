@@ -555,9 +555,10 @@ final successful draw. The function:
    `vkCmdCopyImageToBuffer` from the storage image's final
    `TRANSFER_SRC_OPTIMAL` layout with tight `VkBufferImageCopy` packing, and records a
    `TRANSFER_WRITE → HOST_READ` buffer barrier (`TRANSFER → HOST`);
-4. resets the slot fence only once a submit is guaranteed, submits the copy without
-   swapchain semaphores, waits the copy fence, copies mapped bytes into the output,
-   and destroys the temporary VMA allocation on every path.
+4. creates a private one-shot fence, submits the copy without swapchain semaphores,
+   waits the copy fence, copies mapped bytes into the output, and destroys the
+   temporary fence and VMA allocation on every path. The already-signaled frame fence
+   remains untouched, so a failed copy submit cannot poison later slot reuse.
 
 This public function owns GPU readback and synchronization only. It does not parse
 CLI arguments, hash pixels, or write files. Host-allocation failure is caught at this

@@ -621,6 +621,19 @@ if(BUILD_TESTING)
     target_compile_options(xrPhotonLightingTests PRIVATE -Wall -Wextra)
     target_link_libraries(xrPhotonLightingTests PRIVATE ${XRPHOTON_GLM_TARGET})
     add_test(NAME lighting COMMAND xrPhotonLightingTests)
+
+    add_executable(xrPhotonCaptureTests
+        tests/capture_tests.cpp
+        src/capture.cpp
+    )
+    target_include_directories(xrPhotonCaptureTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_options(xrPhotonCaptureTests PRIVATE -Wall -Wextra)
+    add_test(
+        NAME capture
+        COMMAND xrPhotonCaptureTests
+            ${CMAKE_CURRENT_BINARY_DIR}/capture-test.ppm
+            ${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
@@ -661,6 +674,7 @@ add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER})
 
 add_executable(xrPhoton
     src/main.cpp
+    src/capture.cpp
     src/gallery.cpp
     src/physics.cpp
     src/third_party_impl.cpp
@@ -717,4 +731,28 @@ target_link_libraries(xrPhoton
         glfw
         ${XRPHOTON_GLM_TARGET}
         Jolt
+)
+
+if(BUILD_TESTING)
+    add_test(
+        NAME capture_cli
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE=$<TARGET_FILE:xrPhoton>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/capture_cli_test.cmake
+    )
+endif()
+
+# Capture needs a real presentation-capable Vulkan RT device and active compositor,
+# so keep the reproducibility/publication proof opt-in rather than making ordinary
+# graphics-free CTest depend on the local desktop session.
+add_custom_target(xrPhotonCaptureProof
+    COMMAND ${CMAKE_COMMAND}
+        -DENGINE=$<TARGET_FILE:xrPhoton>
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/capture-proof
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/capture_runtime_proof.cmake
+    DEPENDS xrPhoton
+    COMMENT "Running deterministic capture and publication proof"
+    VERBATIM
+    USES_TERMINAL
 )
