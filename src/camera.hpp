@@ -81,8 +81,9 @@ struct CameraUpdate
     bool toggleMode = false;
 };
 
-// The shader sees four float3 values at 16-byte offsets. The explicit pads pin the
-// CPU payload to the same shape, and the offset asserts make that ABI visible.
+// The shader sees this stable 64-byte camera prefix as four float3 values at 16-byte
+// offsets. The explicit pads pin the CPU payload to the same shape, and the offset
+// asserts make that ABI visible.
 struct CameraPushConstants
 {
     glm::vec3 origin;  float pad0 = 0.0f;
@@ -91,7 +92,7 @@ struct CameraPushConstants
     glm::vec3 up;      float pad3 = 0.0f;
 };
 static_assert(sizeof(CameraPushConstants) == 64,
-    "must match the shader's push-constant block and stay within the 128-byte spec minimum");
+    "must match the camera prefix of the shader's push-constant block");
 static_assert(offsetof(CameraPushConstants, origin) == 0
     && offsetof(CameraPushConstants, forward) == 16
     && offsetof(CameraPushConstants, right) == 32
@@ -108,6 +109,6 @@ CameraUpdate updateCamera(
     float dt,
     CameraMode mode);
 
-// Derive the frame's raygen payload from camera state and swapchain aspect ratio.
+// Derive the camera portion of the raygen payload from state and swapchain aspect.
 CameraPushConstants makeCameraPushConstants(const Camera& camera, float aspect);
 }

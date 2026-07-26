@@ -10,8 +10,8 @@
 namespace xrphoton
 {
 struct AccelerationStructure;
-struct CameraPushConstants;
 struct FrameResources;
+struct RaygenPushConstants;
 struct RayTracingFunctions;
 struct RtPipeline;
 struct SceneData;
@@ -57,7 +57,7 @@ struct StorageImageReadback
 bool prepareRtForSwapchain(const Renderer& renderer);
 
 // Render and present one frame using frameIndex's command buffer and sync objects,
-// pushing the camera payload into that command buffer before tracing. Steps: wait the
+// pushing the raygen payload into that command buffer before tracing. Steps: wait the
 // in-flight fence -> rewrite that slot's TLAS instances -> acquire an image -> record
 // the TLAS rebuild and trace -> submit -> present.
 // OUT_OF_DATE and SUBOPTIMAL are returned (not treated as errors) so the caller can
@@ -67,7 +67,7 @@ bool prepareRtForSwapchain(const Renderer& renderer);
 VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
-    const CameraPushConstants& camera);
+    const RaygenPushConstants& pushConstants);
 
 // Copy the storage image produced by the latest submitted frame into host memory.
 // Rendering must have stopped immediately after finalSubmittedFrameSlot's successful

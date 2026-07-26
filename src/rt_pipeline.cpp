@@ -1,7 +1,7 @@
 #include "rt_pipeline.hpp"
 
-#include "camera.hpp"
 #include "gpu_scene.hpp"
+#include "lighting.hpp"
 #include "scene.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
@@ -256,7 +256,7 @@ VkResult createRtPipeline(
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     pushRange.offset = 0;
-    pushRange.size = sizeof(CameraPushConstants);
+    pushRange.size = sizeof(RaygenPushConstants);
 
     VkPipelineLayoutCreateInfo layoutCreateInfo{};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;

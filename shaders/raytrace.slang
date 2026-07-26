@@ -61,8 +61,17 @@ struct CameraPushConstants
     float3 up;
 };
 
+struct RaygenPushConstants
+{
+    CameraPushConstants camera;
+    float3 sunDirection;
+    float pad0;
+    float3 sunRadiance;
+    uint frameIndex;
+};
+
 [[vk::push_constant]]
-ConstantBuffer<CameraPushConstants> camera;
+ConstantBuffer<RaygenPushConstants> frameConstants;
 
 struct Payload
 {
@@ -211,8 +220,11 @@ void rayGenMain()
     // negated here to keep world y-up: that flip belongs to dispatch space, not the
     // camera basis the CPU sends.
     RayDesc ray;
-    ray.Origin = camera.origin;
-    ray.Direction = normalize(camera.forward + ndc.x * camera.right - ndc.y * camera.up);
+    ray.Origin = frameConstants.camera.origin;
+    ray.Direction = normalize(
+        frameConstants.camera.forward
+        + ndc.x * frameConstants.camera.right
+        - ndc.y * frameConstants.camera.up);
     // tMin keeps self-intersection conventions even though nothing here can
     // self-intersect; tMax comfortably covers the unit-scale scene.
     ray.TMin = 0.001;
@@ -221,9 +233,13 @@ void rayGenMain()
     Payload payload;
     payload.color = float3(0.0);
     payload.rayDirectionX = normalize(
-        camera.forward + (ndc.x + ndcStep.x) * camera.right - ndc.y * camera.up);
+        frameConstants.camera.forward
+        + (ndc.x + ndcStep.x) * frameConstants.camera.right
+        - ndc.y * frameConstants.camera.up);
     payload.rayDirectionY = normalize(
-        camera.forward + ndc.x * camera.right - (ndc.y + ndcStep.y) * camera.up);
+        frameConstants.camera.forward
+        + ndc.x * frameConstants.camera.right
+        - (ndc.y + ndcStep.y) * frameConstants.camera.up);
 
     // Opaque BLAS ranges bypass any-hit through their geometry flag; alpha-tested
     // ranges must remain eligible for their SBT-selected any-hit shader. Hit records

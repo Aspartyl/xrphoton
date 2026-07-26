@@ -1,7 +1,7 @@
 #include "renderer.hpp"
 
 #include "acceleration_structure.hpp"
-#include "camera.hpp"
+#include "lighting.hpp"
 #include "rt_pipeline.hpp"
 #include "swapchain.hpp"
 #include "vulkan_context.hpp"
@@ -160,7 +160,7 @@ VkResult recordTraceCommandBuffer(
     const RtPipeline& rt,
     const AccelerationStructure& accel,
     uint32_t frameSlot,
-    const CameraPushConstants& camera,
+    const RaygenPushConstants& pushConstants,
     VkImage storageImage,
     VkImage swapchainImage,
     VkExtent2D extent)
@@ -218,8 +218,8 @@ VkResult recordTraceCommandBuffer(
         rt.pipelineLayout,
         VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         0,
-        sizeof(CameraPushConstants),
-        &camera);
+        sizeof(RaygenPushConstants),
+        &pushConstants);
 
     // recordTlasRebuild's in-frame post-build barrier made the fresh TLAS visible to
     // this traversal. The dispatch dimensions were gated against the device limits
@@ -360,7 +360,7 @@ bool prepareRtForSwapchain(const Renderer& renderer)
 VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
-    const CameraPushConstants& camera)
+    const RaygenPushConstants& pushConstants)
 {
     const Swapchain& swap = *renderer.swap;
     const FrameResources& frame = renderer.frames[frameIndex];
@@ -430,7 +430,7 @@ VkResult drawFrame(
         *renderer.rtPipeline,
         *renderer.accel,
         frameIndex,
-        camera,
+        pushConstants,
         swap.storageImage,
         swap.images[imageIndex],
         swap.extent);

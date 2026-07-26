@@ -3,6 +3,7 @@
 #include "capture.hpp"
 #include "gallery.hpp"
 #include "gpu_scene.hpp"
+#include "lighting.hpp"
 #include "physics.hpp"
 #include "player.hpp"
 #include "renderer.hpp"
@@ -548,6 +549,8 @@ int main(int argumentCount, char** arguments)
     CameraMode cameraMode = CameraMode::Player;
     double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
+    uint32_t frameCounter = 0;
+    DirectionalSun sun = DefaultSun;
 
     if (captureMode) {
         if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
@@ -562,7 +565,6 @@ int main(int argumentCount, char** arguments)
                   << '\n';
 
         std::uint32_t successfulFrameCount = 0;
-        std::uint32_t frameCounter = 0;
         std::uint32_t lastSubmittedSlot = 0;
         std::uint32_t lastRenderedFrameIndex = 0;
 
@@ -611,7 +613,10 @@ int main(int argumentCount, char** arguments)
             const VkResult frameResult = drawFrame(
                 renderer,
                 submittedSlot,
-                makeCameraPushConstants(captureCamera, aspect));
+                makeRaygenPushConstants(
+                    makeCameraPushConstants(captureCamera, aspect),
+                    sun,
+                    submittedFrameIndex));
 
             if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
                 || frameResult == VK_SUBOPTIMAL_KHR) {
@@ -782,8 +787,12 @@ int main(int argumentCount, char** arguments)
             frameResult = drawFrame(
                 renderer,
                 currentFrame,
-                makeCameraPushConstants(renderCamera, aspect));
+                makeRaygenPushConstants(
+                    makeCameraPushConstants(renderCamera, aspect),
+                    sun,
+                    frameCounter));
             currentFrame = (currentFrame + 1) % MaxFramesInFlight;
+            ++frameCounter;
         }
 
         // The surface no longer matches the swapchain (typically a resize): rebuild it
