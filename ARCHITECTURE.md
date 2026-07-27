@@ -9,8 +9,8 @@ xrPhoton renders an interactive ray-traced OGFx test yard. It
 brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
 TLAS over every yard placement, then launches one path per pixel from either a basic
 collision-aware player view or the original perspective fly camera. The ray-tracing
-shader evaluates direct sun, hard alpha-aware visibility, a procedural sky, and one
-cosine-weighted diffuse bounce before it
+shader evaluates direct sun, hard alpha-aware visibility, a procedural sky, and up to
+eight Lambert+GGX surface vertices before it
 stores linear radiance in a device-local float HDR image. A compute pass applies
 fixed-exposure Reinhard tonemapping into an 8-bit linear image, which is blitted to
 the sRGB swapchain. The present path has two frames in flight, resize handling, and
@@ -625,7 +625,7 @@ swapchain image:
    recorded into this slot's own command buffer after its fence wait, which is
    what makes the frame payload race-free across frames in flight by construction),
    then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
-   extent — one two-vertex path per pixel. The immediately preceding rebuild's post-build
+   extent — one path of up to eight surface vertices per pixel. The immediately preceding rebuild's post-build
    barrier makes the fresh TLAS visible to this traversal.
 4. Keep HDR in `GENERAL` while making ray-tracing shader writes visible to compute
    shader reads. Discard/transition LDR `UNDEFINED → GENERAL`, bind the tonemap
@@ -1021,9 +1021,10 @@ Decisions and contracts worth preserving:
 
 - **Shaders are Slang, embedded at build time.** All six stages live in one
   [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
-  (perspective rays from the frame constants, a two-vertex iterative shading loop,
-  direct Lambertian sun lighting with a hard visibility trace at each hit, one
-  cosine-weighted diffuse bounce, and the HDR storage-image write at binding 1,
+  (perspective rays from the frame constants, an eight-vertex iterative throughput
+  loop, direct Lambert+GGX sun lighting with a hard visibility trace at each hit,
+  sampled diffuse/GGX indirect transport with Russian roulette, and the HDR
+  storage-image write at binding 1,
   `[format("rgba16f")]` because the device's
   `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns a
   procedural horizon-to-zenith sky plus a miss flag), `closestHitMain` (indexed BDA fetch of
@@ -1090,13 +1091,19 @@ Decisions and contracts worth preserving:
   additionally returns the sampled albedo plus raw shading/geometric normals.
   Shading normals use the inverse-transpose implied by row-vector multiplication
   with `WorldToObject3x4()`; raygen owns their surface orientation and shading use.
-  Secondary directions are cosine-sampled around the oriented shading normal through
-  a sign-stable Duff basis, rejected rather than resampled when they fall below the
-  geometric normal, and launched from the geometric-normal offset. The matching
+  Raygen fetches the hit material's scalar perceptual roughness and dielectric F0,
+  evaluates Lambert diffuse plus isotropic GGX with Schlick Fresnel and Smith masking,
+  and samples normalized-energy diffuse/specular lobes with cosine or GGX VNDF
+  sampling. The matching mixture PDF drives throughput; paths reach at most eight
+  vertices and use `[0.05, 0.95]` throughput-based Russian roulette after vertex 3.
+  Secondary directions use a sign-stable Duff basis, are rejected rather than
+  resampled when they fall below the geometric normal, and launch from the
+  geometric-normal offset. The matching
   C++/Slang PCG permutation seeds each pixel from its coordinates and frame index;
   capture mode therefore reproduces a selected noisy frame without accumulation.
 - **Descriptor set:** binding 0 TLAS and binding 1 HDR storage image are raygen-only;
-  bindings 2–3 are geometry/material storage buffers visible to hit stages. Binding
+  binding 2 is the geometry storage buffer visible to hit stages, while binding 3's
+  material records are visible to hit stages and raygen for BRDF scalar lookup. Binding
   4 is a fixed 1,024-entry combined-image-sampler array visible to closest-hit and
   any-hit. Startup writes every slot: real scene images first, then the
   white fallback view in every unused slot, all sharing one sampler. The shader uses
@@ -1313,9 +1320,10 @@ Decisions and contracts worth preserving:
    geometry and semantic ray type,
    sets BLAS opacity per range, evaluates texture alpha in any-hit, shares the
    build-owned radiance-0/shadow-1/`RayTypeCount = 2` routing ABI between C++ and
-   Slang, and does not force rays opaque. Direct Lambertian sun lighting now traces
-   those shadow records from raygen, including texture-cutout rejection; radiance
-   misses return the procedural sky. Broader skeletal and physics source profiles
+   Slang, and does not force rays opaque. Lambert+GGX sun lighting now traces those
+   shadow records from raygen, including texture-cutout rejection; radiance misses
+   return the procedural sky and indirect paths use the matching BRDF mixture.
+   Broader skeletal and physics source profiles
    still require explicit contracts; unsupported source semantics are rejected
    rather than hidden by a geometry-only conversion.
 3. **Dynamic scene.** **Rigid dynamics landed; deformables pending** — the
@@ -1334,13 +1342,13 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **Directional sun, sky, and one diffuse bounce
-   landed; general materials pending** — raygen now owns a two-vertex loop, direct
-   Lambertian sun evaluation at both hits, hard alpha-aware shadow rays, a procedural
-   sky, and deterministic cosine-weighted indirect diffuse sampling. The renderer
-   still needs BRDF-based materials, a general multi-bounce loop (while keeping
-   pipeline recursion depth at 1), emissive geometry, and a time-varying sun/sky
-   model. Many-light sampling
+4. **Lighting + path tracing.** **HDR, general dielectric materials, and multi-bounce
+   transport landed** — raygen owns an eight-vertex loop, direct Lambert+GGX sun
+   evaluation at every hit, hard alpha-aware shadow rays, a procedural sky,
+   diffuse/GGX VNDF mixture sampling, and Russian roulette. OGFx material v2 carries
+   roughness/F0 while v1 maps to deliberate defaults. The renderer still needs
+   metallic/transmissive material classes, emissive geometry, and a time-varying
+   sun/sky model. Many-light sampling
    is a first-class requirement, not a stress case — a campsite ringed by
    anomalies at night is the ordinary frame — so NEE lands with light-selection
    sampling from the start and a ReSTIR-class upgrade as the tracked follow-up.

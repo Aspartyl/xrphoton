@@ -56,6 +56,8 @@ xrphoton::ogfx::Model makeQuad()
     model.materials.emplace_back();
     model.materials[0].baseColorFactor = {0.25f, 0.5f, 0.75f, 0.875f};
     model.materials[0].alphaCutoff = 0.375f;
+    model.materials[0].perceptualRoughness = 0.3f;
+    model.materials[0].dielectricF0 = 0.08f;
     return model;
 }
 
@@ -264,6 +266,8 @@ void testGeneratedYardAsset(
             && material.baseColorFactor[3] == expectedColor[3]
             && material.baseColorImage == 0
             && material.alphaCutoff == 0.5f
+            && material.perceptualRoughness == 1.0f
+            && material.dielectricF0 == 0.04f
             && material.baseColorTexture.empty(),
         std::string(name) + " retains its untextured opaque material");
 
@@ -418,8 +422,10 @@ void testSceneConversion()
             && loaded.scene.materials[0].baseColorFactor[3] == 0.875f
             && loaded.scene.materials[0].baseColorImage == 0
             && loaded.scene.materials[0].baseColorTexture.empty()
-            && loaded.scene.materials[0].alphaCutoff == 0.375f,
-        "runtime material fields include an empty texture-reference carrier");
+            && loaded.scene.materials[0].alphaCutoff == 0.375f
+            && loaded.scene.materials[0].perceptualRoughness == 0.3f
+            && loaded.scene.materials[0].dielectricF0 == 0.08f,
+        "runtime material fields include v2 BRDF scalars and an empty texture reference");
     expect(loaded.scene.instances.empty(), "OGFx decoding creates no world instances");
     expect(loaded.scene.images.empty(), "the untextured adapter fixture creates no images");
     expect(loaded.scene.physicsBodies.empty()

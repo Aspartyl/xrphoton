@@ -61,24 +61,21 @@ and tonemap land here; histories remain phase 5. The capture/readback seam conti
 to read this post-tonemap LDR image, not the HDR target, so its byte/hash contract and
 final-layout assumption survive the resource split.
 
-The slice already establishes an iterative throughput loop with
-`MaxPathVertices = 2`; after HDR is live, this phase raises that cap, adds Russian
-roulette, and replaces Lambert with the first rough/specular BRDF. `MaterialRecord`
-gains scalar perceptual roughness and dielectric `F0`. The BRDF-data route is decided
-now, not then: texture-sampled values stay owned by closest-hit (it owns the
+The completed BRDF slice extends the iterative throughput loop from
+`MaxPathVertices = 2` to 8, adds Russian roulette, and replaces Lambert-only transport
+with the first rough/specular BRDF. `MaterialRecord` now carries scalar perceptual
+roughness and dielectric `F0`. Texture-sampled values stay owned by closest-hit (it owns the
 UV-gradient machinery), which returns sampled results plus `materialIndex` in
-`SurfaceHit`; binding 3's material records — visible only to hit stages today
-(`rt_pipeline.cpp:108-121`) — gain raygen visibility so the loop fetches the scalar
+`SurfaceHit`; binding 3's material records also have raygen visibility so the loop fetches the scalar
 BRDF parameters by that index.
 
-The BRDF answer is one isotropic dielectric model: Lambert diffuse plus GGX
+The BRDF is one isotropic dielectric model: Lambert diffuse plus GGX
 Trowbridge-Reitz specular, Schlick Fresnel from scalar `F0`, and Smith masking/
 shadowing. Perceptual roughness maps to
 `alpha = max(roughness², 1e-4)`; diffuse is Fresnel-attenuated so the two lobes do not
 simply add energy. Sampling chooses between the diffuse and GGX lobes with their
 normalized energy weights, uses visible-normal (VNDF) sampling for GGX, and evaluates
-the matching mixture PDF. The phase raises `MaxPathVertices` to 8 and starts Russian
-roulette after vertex 3, using clamped
+the matching mixture PDF. Russian roulette starts after vertex 3, using clamped
 maximum-throughput survival probability `[0.05, 0.95]` (zero throughput terminates
 first) and dividing surviving throughput by that probability. These choices consume
 the same deterministic RNG stream; no recursive shader calls appear.
@@ -87,11 +84,11 @@ This is an explicit **OGFX_MATERIALS v2**, not a reuse of v1 reserved words by
 stealth. Version 1 continues to require zero at record offsets 24 and 28 exactly as
 today (`FORMATS.md:466-474`) and maps to deliberate runtime defaults
 (`roughness = 1.0`, `dielectricF0 = 0.04`). Version 2 gives those two words their new
-finite `[0, 1]` scalar meanings. The new decoder accepts both versions, the writer
+finite `[0, 1]` scalar meanings. The decoder accepts both versions, the writer
 keeps emitting v1 when every material has the v1 defaults (preserving existing
 canonical bytes), and emits v2 only when explicit values require it. Compiler,
 writer, schema/runtime decoder, loader, Blender/legacy mapping, and v1→runtime-default
-tests land atomically. Every accepted legacy shader profile gets an explicit mapping;
+tests landed atomically. Every accepted legacy shader profile gets an explicit mapping;
 an unknown source shader still fails rather than inheriting guessed BRDF values.
 
 All `TraceRay` calls stay in raygen, so `maxPipelineRayRecursionDepth` stays at the
@@ -315,8 +312,8 @@ accepted: 1 spp of stochastic bounce produces visible per-frame noise shimmer.
 Sun/sky radiance constants are chosen so the lit yard stays inside the 8-bit range
 (fixed implicit exposure of 1.0). The phase-2 HDR/tonemap foundation is now live:
 raygen writes current-frame `R16G16B16A16_SFLOAT` radiance and fixed-exposure Reinhard
-compute tonemapping produces the shared LDR image. Rough/specular transport still
-follows; temporal history, moments, and
+compute tonemapping produces the shared LDR image. Rough/specular transport now uses
+the phase-2 dielectric GGX path described above; temporal history, moments, and
 reprojection remain phase 5.
 
 ### 3.2 Routing-ABI changes: `RayTypeCount` 1 → 2
@@ -810,9 +807,10 @@ successful frames (`frameIndex = 7`), deliberately beyond
 
 ## 4. Risks and open questions
 
-- **8-bit output budget.** Radiance clips at 1.0; badly tuned sun energy flattens lit
-  faces. Mitigation: tune constants at step 6; real fix is the HDR target at the
-  head of phase 2. Watch for shadow-region banding at 8 bits.
+- **8-bit output budget (resolved by phase 2).** Current-frame lighting now remains
+  HDR until the Reinhard pass, so values above 1.0 roll off instead of clipping at
+  the raygen write. The final LDR image can still show quantization or banding until
+  temporal accumulation and denoising land.
 - **1-spp shimmer without accumulation.** Expected and accepted; if it obscures the
   visual check, the oracle path (fixed frameIndex) provides a still image without
   changing the design.
@@ -831,8 +829,8 @@ successful frames (`frameIndex = 7`), deliberately beyond
 - **Capture-hash stability.** The hash pins device + driver + binary — GPU float
   math and Jolt determinism are same-machine guarantees, not portable ones. It is a
   local regression oracle, never a golden file to commit.
-- **Payload growth.** The immediate `SurfaceHit` is 16 scalars. Phase 2 explicitly
-  adds `materialIndex`; phase 4 explicitly adds evaluated
+- **Payload growth.** The immediate `SurfaceHit` is now 17 scalars including phase 2's
+  `materialIndex`; phase 4 explicitly adds evaluated
   emission/conditional-light-PDF data. Those bounded additions are part of the
   pipeline contract. Scalar BRDF records remain raygen-visible so every later
   parameter does not become another payload field.

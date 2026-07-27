@@ -1125,6 +1125,9 @@ private:
             }
             materialIndex = static_cast<std::uint32_t>(model_.materials.size());
             ogfx::Material material{};
+            // Both accepted model/model_aref profiles lack scalar BRDF authoring.
+            material.perceptualRoughness = ogfx::DefaultPerceptualRoughness;
+            material.dielectricF0 = ogfx::DefaultDielectricF0;
             material.baseColorTexture = textureName;
             if (alphaTested) {
                 material.alphaCutoff = ModelAlphaReference;

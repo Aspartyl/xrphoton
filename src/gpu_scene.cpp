@@ -698,6 +698,8 @@ VkResult createGpuScene(
             sizeof(source.baseColorFactor));
         destination.baseColorTexture = source.baseColorImage;
         destination.alphaCutoff = source.alphaCutoff;
+        destination.perceptualRoughness = source.perceptualRoughness;
+        destination.dielectricF0 = source.dielectricF0;
     }
 
     return uploadDeviceLocalBuffer(

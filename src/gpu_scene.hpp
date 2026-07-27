@@ -39,13 +39,15 @@ struct MaterialRecord
     float baseColorFactor[4] = {};
     uint32_t baseColorTexture = 0;
     float alphaCutoff = 0.0f;
-    uint32_t pad0 = 0;
-    uint32_t pad1 = 0;
+    float perceptualRoughness = 1.0f;
+    float dielectricF0 = 0.04f;
 };
 static_assert(sizeof(MaterialRecord) == 32);
 static_assert(offsetof(MaterialRecord, baseColorFactor) == 0
     && offsetof(MaterialRecord, baseColorTexture) == 16
-    && offsetof(MaterialRecord, alphaCutoff) == 20);
+    && offsetof(MaterialRecord, alphaCutoff) == 20
+    && offsetof(MaterialRecord, perceptualRoughness) == 24
+    && offsetof(MaterialRecord, dielectricF0) == 28);
 
 struct SceneTexture
 {

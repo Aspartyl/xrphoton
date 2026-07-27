@@ -546,6 +546,9 @@ bool modelsEqual(const Model& left, const Model& right)
     for (std::size_t index = 0; index < left.materials.size(); ++index) {
         if (left.materials[index].baseColorFactor != right.materials[index].baseColorFactor
             || left.materials[index].alphaCutoff != right.materials[index].alphaCutoff
+            || left.materials[index].perceptualRoughness
+                != right.materials[index].perceptualRoughness
+            || left.materials[index].dielectricF0 != right.materials[index].dielectricF0
             || left.materials[index].baseColorTexture != right.materials[index].baseColorTexture) {
             return false;
         }
@@ -1099,7 +1102,7 @@ void testRequiredChunkRules()
         expectRejected(assembleFile(chunks), expectedChunkName(id), "flags");
 
         chunks = source;
-        chunkById(&chunks, id).version = 2;
+        chunkById(&chunks, id).version = id == ChunkId::Materials ? 3 : 2;
         expectRejected(assembleFile(chunks), expectedChunkName(id), "version");
 
         chunks = source;
@@ -1153,6 +1156,26 @@ void testPayloadFramingAndScalars()
     chunks = splitChunks(canonical);
     writeU32(&chunkById(&chunks, ChunkId::Materials).payload, 44, 1);
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "materials[0].reserved1");
+
+    chunks = splitChunks(canonical);
+    RawChunk& materialV2 = chunkById(&chunks, ChunkId::Materials);
+    materialV2.version = xrphoton::ogfx::MaterialChunkVersion2;
+    writeF32(&materialV2.payload, 40, 0.25f);
+    writeF32(&materialV2.payload, 44, 0.08f);
+    const DecodeResult decodedMaterialV2 = xrphoton::ogfx::decodeModel(
+        assembleFile(chunks),
+        "material-v2.ogfx");
+    expect(
+        decodedMaterialV2
+            && decodedMaterialV2.model.materials[0].perceptualRoughness == 0.25f
+            && decodedMaterialV2.model.materials[0].dielectricF0 == 0.08f,
+        "runtime decoder accepts and preserves material chunk v2");
+
+    writeF32(&materialV2.payload, 40, std::numeric_limits<float>::quiet_NaN());
+    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "perceptualRoughness");
+    writeF32(&materialV2.payload, 40, 0.25f);
+    writeF32(&materialV2.payload, 44, 1.01f);
+    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "dielectricF0");
 
     chunks = splitChunks(canonical);
     writeU32(&chunkById(&chunks, ChunkId::Model).payload, 0, 1);

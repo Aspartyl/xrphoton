@@ -39,6 +39,8 @@ struct SceneMaterial
     float baseColorFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     uint32_t baseColorImage = 0;
     float alphaCutoff = 0.5f;
+    float perceptualRoughness = 1.0f;
+    float dielectricF0 = 0.04f;
     // Exact logical texture reference carried by OGFx. Resolution assigns the
     // scene-global baseColorImage later; an empty string means no reference.
     std::string baseColorTexture;

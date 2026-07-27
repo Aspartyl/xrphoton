@@ -325,11 +325,18 @@ private:
                         std::to_string(RequiredChunkFlags),
                         std::to_string(flags));
                 }
-                if (version != ChunkVersion) {
+                const bool supportedMaterialVersion =
+                    id == static_cast<std::uint32_t>(ChunkId::Materials)
+                    && (version == MaterialChunkVersion1
+                        || version == MaterialChunkVersion2);
+                if (version != ChunkVersion && !supportedMaterialVersion) {
                     return reject(
                         id,
                         "version",
-                        std::to_string(ChunkVersion),
+                        id == static_cast<std::uint32_t>(ChunkId::Materials)
+                            ? std::to_string(MaterialChunkVersion1) + " or "
+                                + std::to_string(MaterialChunkVersion2)
+                            : std::to_string(ChunkVersion),
                         std::to_string(version));
                 }
             } else if (isKnownOptionalChunk(id)) {
@@ -701,21 +708,44 @@ private:
             }
 
             const std::uint32_t textureOffset = readU32(bytes_, recordOffset + 20);
-            const std::uint32_t recordReserved0 = readU32(bytes_, recordOffset + 24);
-            const std::uint32_t recordReserved1 = readU32(bytes_, recordOffset + 28);
-            if (recordReserved0 != 0) {
-                return reject(
-                    chunk.id,
-                    indexedField("materials", index, "reserved0"),
-                    "0",
-                    std::to_string(recordReserved0));
-            }
-            if (recordReserved1 != 0) {
-                return reject(
-                    chunk.id,
-                    indexedField("materials", index, "reserved1"),
-                    "0",
-                    std::to_string(recordReserved1));
+            if (chunk.version == MaterialChunkVersion1) {
+                const std::uint32_t recordReserved0 = readU32(bytes_, recordOffset + 24);
+                const std::uint32_t recordReserved1 = readU32(bytes_, recordOffset + 28);
+                if (recordReserved0 != 0) {
+                    return reject(
+                        chunk.id,
+                        indexedField("materials", index, "reserved0"),
+                        "0",
+                        std::to_string(recordReserved0));
+                }
+                if (recordReserved1 != 0) {
+                    return reject(
+                        chunk.id,
+                        indexedField("materials", index, "reserved1"),
+                        "0",
+                        std::to_string(recordReserved1));
+                }
+            } else {
+                material.perceptualRoughness = readF32(bytes_, recordOffset + 24);
+                material.dielectricF0 = readF32(bytes_, recordOffset + 28);
+                if (!std::isfinite(material.perceptualRoughness)
+                    || material.perceptualRoughness < 0.0f
+                    || material.perceptualRoughness > 1.0f) {
+                    return reject(
+                        chunk.id,
+                        indexedField("materials", index, "perceptualRoughness"),
+                        "a finite f32 in [0, 1]",
+                        std::to_string(material.perceptualRoughness));
+                }
+                if (!std::isfinite(material.dielectricF0)
+                    || material.dielectricF0 < 0.0f
+                    || material.dielectricF0 > 1.0f) {
+                    return reject(
+                        chunk.id,
+                        indexedField("materials", index, "dielectricF0"),
+                        "a finite f32 in [0, 1]",
+                        std::to_string(material.dielectricF0));
+                }
             }
 
             textureReferenceOffsets_.push_back(textureOffset);

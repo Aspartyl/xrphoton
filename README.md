@@ -90,11 +90,14 @@ in flight and proper resize handling. The six-stage/seven-group pipeline carries
 records for both radiance and shadow rays, marks only opaque BLAS ranges opaque,
 and lets each alpha-tested any-hit variant compare sampled texture alpha against
 the material cutoff. The shared C++/Slang routing ABI fixes `RadianceRayType = 0`,
-`ShadowRayType = 1`, and `RayTypeCount = 2`. Raygen traces a two-vertex path: it
-shades each hit with the engine-supplied directional sun, traces hard visibility
-rays through the shadow records, and launches one cosine-weighted diffuse bounce.
-That bounce gathers the procedural sky or sunlit reflected surfaces, filling
-directly occluded regions and producing early color bleeding. A PCG hash seeded by
+`ShadowRayType = 1`, and `RayTypeCount = 2`. Raygen traces paths of up to eight
+surface vertices. It evaluates an energy-aware Lambert diffuse plus isotropic GGX
+dielectric BRDF under the directional sun, traces hard visibility rays through the
+shadow records, and samples matching diffuse/GGX lobes for indirect transport.
+GGX uses visible-normal sampling; Russian roulette starts after vertex three. These
+bounces gather the procedural sky or sunlit reflected surfaces, filling directly
+occluded regions, producing color bleeding, and carrying rough or sharp reflections.
+A PCG hash seeded by
 pixel and frame index makes the one-sample noise repeatable in capture mode.
 Alpha-tested shadow and bounce rays pass through the same texture cutouts as visible
 rays. Rays are not forced opaque. Shaders are written in
@@ -148,7 +151,7 @@ shape/math bridging, static mesh construction, determinism, capacity failure,
 adversarial numeric boundaries, the robust 500 m/s velocity clamp, and CCD
 without creating Vulkan objects.
 
-Deformable skinning and BLAS refits, general BRDF materials and longer paths,
+Deformable skinning and BLAS refits, metallic/transmissive and emissive materials,
 and temporal accumulation and denoising follow later. Details in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 

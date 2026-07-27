@@ -643,6 +643,10 @@ ogfx::DecodeResult decodeStaticMesh(
     });
     model.meshes.push_back({.firstGeometry = 0, .geometryCount = 1});
     ogfx::Material material{};
+    // XRBM v1/v2 predate scalar BRDF fields, so their deliberate mapping is the
+    // backward-compatible rough dielectric rather than guessed Blender state.
+    material.perceptualRoughness = ogfx::DefaultPerceptualRoughness;
+    material.dielectricF0 = ogfx::DefaultDielectricF0;
     material.alphaCutoff = alphaCutoff;
     material.baseColorTexture = std::move(textureReference);
     model.materials.push_back(std::move(material));

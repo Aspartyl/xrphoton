@@ -601,6 +601,8 @@ bool modelsEqual(const Model& left, const Model& right)
         const auto& b = right.materials[index];
         if (a.baseColorFactor != b.baseColorFactor
             || a.alphaCutoff != b.alphaCutoff
+            || a.perceptualRoughness != b.perceptualRoughness
+            || a.dielectricF0 != b.dielectricF0
             || a.baseColorTexture != b.baseColorTexture) {
             return false;
         }
@@ -853,7 +855,11 @@ void testAcceptedProgressiveAlphaBoxProfile()
         "alpha-tested and opaque geometry flags share one texture material exactly");
     expect(model.materials.size() == 1
             && model.materials[0].baseColorTexture == RigidTextureName
-            && model.materials[0].alphaCutoff == 128.0f / 255.0f,
+            && model.materials[0].alphaCutoff == 128.0f / 255.0f
+            && model.materials[0].perceptualRoughness
+                == xrphoton::ogfx::DefaultPerceptualRoughness
+            && model.materials[0].dielectricF0
+                == xrphoton::ogfx::DefaultDielectricF0,
         "models/model_aref maps to the shipped 128 alpha reference");
 
     expect(model.physicsColliders.size() == 2,
@@ -1523,7 +1529,11 @@ void expectPinnedAlphaTailModel(const Model& model)
         "the flattened pseudodog tail owns both child geometries through one mesh");
     expect(model.materials.size() == 1
             && model.materials[0].baseColorTexture == "act\\act_pseudodog_fur"
-            && model.materials[0].alphaCutoff == 128.0f / 255.0f,
+            && model.materials[0].alphaCutoff == 128.0f / 255.0f
+            && model.materials[0].perceptualRoughness
+                == xrphoton::ogfx::DefaultPerceptualRoughness
+            && model.materials[0].dielectricF0
+                == xrphoton::ogfx::DefaultDielectricF0,
         "the children share one fur material with the shipped model_aref cutoff");
 
     if (model.positions.size() == 930) {

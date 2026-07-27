@@ -43,6 +43,7 @@ struct PreparedModel
     std::vector<Bounds> geometryBounds;
     std::vector<std::uint32_t> materialTextureOffsets;
     std::vector<std::uint8_t> materialStringArena;
+    std::uint32_t materialChunkVersion = MaterialChunkVersion1;
     std::vector<PhysicsStringOffsets> physicsStringOffsets;
     std::vector<std::uint8_t> physicsStringArena;
     std::uint32_t physicsChunkVersion = RigidPhysicsChunkVersion1;
@@ -237,6 +238,30 @@ SerializeResult prepareModel(
                 indexedField("materials", index, "alphaCutoff"),
                 "a finite f32",
                 "a non-finite value");
+        }
+        if (!std::isfinite(material.perceptualRoughness)
+            || material.perceptualRoughness < 0.0f
+            || material.perceptualRoughness > 1.0f) {
+            return failure(
+                diagnosticName,
+                ChunkId::Materials,
+                indexedField("materials", index, "perceptualRoughness"),
+                "a finite f32 in [0, 1]",
+                std::to_string(material.perceptualRoughness));
+        }
+        if (!std::isfinite(material.dielectricF0)
+            || material.dielectricF0 < 0.0f
+            || material.dielectricF0 > 1.0f) {
+            return failure(
+                diagnosticName,
+                ChunkId::Materials,
+                indexedField("materials", index, "dielectricF0"),
+                "a finite f32 in [0, 1]",
+                std::to_string(material.dielectricF0));
+        }
+        if (material.perceptualRoughness != DefaultPerceptualRoughness
+            || material.dielectricF0 != DefaultDielectricF0) {
+            prepared->materialChunkVersion = MaterialChunkVersion2;
         }
         if (material.baseColorTexture.empty()) {
             prepared->materialTextureOffsets.push_back(NoTextureReference);
@@ -919,7 +944,12 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         appendU32(&result.bytes, mesh.geometryCount);
     }
 
-    appendChunkHeader(&result.bytes, ChunkId::Materials, materialBytes);
+    appendChunkHeader(
+        &result.bytes,
+        ChunkId::Materials,
+        materialBytes,
+        RequiredChunkFlags,
+        prepared.materialChunkVersion);
     appendU32(&result.bytes, static_cast<std::uint32_t>(model.materials.size()));
     appendU32(
         &result.bytes,
@@ -933,8 +963,13 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         }
         appendF32(&result.bytes, material.alphaCutoff);
         appendU32(&result.bytes, prepared.materialTextureOffsets[index]);
-        appendU32(&result.bytes, 0);
-        appendU32(&result.bytes, 0);
+        if (prepared.materialChunkVersion == MaterialChunkVersion1) {
+            appendU32(&result.bytes, 0);
+            appendU32(&result.bytes, 0);
+        } else {
+            appendF32(&result.bytes, material.perceptualRoughness);
+            appendF32(&result.bytes, material.dielectricF0);
+        }
     }
     result.bytes.insert(
         result.bytes.end(),

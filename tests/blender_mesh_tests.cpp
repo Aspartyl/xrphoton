@@ -297,6 +297,8 @@ bool modelsEqual(const Model& left, const Model& right)
         const auto& b = right.materials[index];
         if (a.baseColorFactor != b.baseColorFactor
             || a.alphaCutoff != b.alphaCutoff
+            || a.perceptualRoughness != b.perceptualRoughness
+            || a.dielectricF0 != b.dielectricF0
             || a.baseColorTexture != b.baseColorTexture) {
             return false;
         }
@@ -326,6 +328,10 @@ void expectOneOpaqueGeometry(const Model& model, std::size_t indexCount)
             && model.materials[0].baseColorFactor
                 == std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}
             && model.materials[0].alphaCutoff == 0.5f
+            && model.materials[0].perceptualRoughness
+                == xrphoton::ogfx::DefaultPerceptualRoughness
+            && model.materials[0].dielectricF0
+                == xrphoton::ogfx::DefaultDielectricF0
             && model.materials[0].baseColorTexture.empty(),
         "material-free Blender input receives one canonical opaque material");
 }
@@ -356,6 +362,10 @@ void expectOneAlphaTestedGeometry(
             && model.materials[0].baseColorFactor
                 == std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}
             && model.materials[0].alphaCutoff == alphaCutoff
+            && model.materials[0].perceptualRoughness
+                == xrphoton::ogfx::DefaultPerceptualRoughness
+            && model.materials[0].dielectricF0
+                == xrphoton::ogfx::DefaultDielectricF0
             && model.materials[0].baseColorTexture == textureReference,
         "textured Blender input retains its logical DDS reference and cutoff");
 }

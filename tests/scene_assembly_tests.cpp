@@ -127,6 +127,8 @@ bool sameMaterial(
     }
     return left.baseColorImage == right.baseColorImage
         && left.alphaCutoff == right.alphaCutoff
+        && left.perceptualRoughness == right.perceptualRoughness
+        && left.dielectricF0 == right.dielectricF0
         && left.baseColorTexture == right.baseColorTexture;
 }
 

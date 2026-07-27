@@ -255,11 +255,14 @@ xrphoton::ogfx::Model buildTestWedge()
         .geometryCount = 2,
     });
 
-    // The standing material shader multiplies these factors by the white fallback
-    // texture and a normal term, preserving the faces' blue/green identities.
+    // Contrasting roughness makes the permanent two-face probe exercise both sharp
+    // and broad GGX response while the colors preserve its geometry-index identity.
     model.materials.resize(2);
     model.materials[0].baseColorFactor = {0.25f, 0.45f, 1.0f, 1.0f};
+    model.materials[0].perceptualRoughness = 0.12f;
+    model.materials[0].dielectricF0 = 0.08f;
     model.materials[1].baseColorFactor = {0.15f, 1.0f, 0.25f, 1.0f};
+    model.materials[1].perceptualRoughness = 0.85f;
     return model;
 }
 

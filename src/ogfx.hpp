@@ -35,6 +35,10 @@ inline constexpr std::uint32_t GeometryRecordSize = 48;
 inline constexpr std::uint32_t MeshRecordSize = 8;
 inline constexpr std::uint32_t MaterialHeaderSize = 16;
 inline constexpr std::uint32_t MaterialRecordSize = 32;
+inline constexpr std::uint32_t MaterialChunkVersion1 = 1;
+inline constexpr std::uint32_t MaterialChunkVersion2 = 2;
+inline constexpr float DefaultPerceptualRoughness = 1.0f;
+inline constexpr float DefaultDielectricF0 = 0.04f;
 inline constexpr std::uint32_t PositionRecordSize = 12;
 inline constexpr std::uint32_t AttributeRecordSize = 20;
 inline constexpr std::uint32_t IndexRecordSize = 4;
@@ -99,8 +103,10 @@ struct Material
 {
     std::array<float, 4> baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
     float alphaCutoff = 0.5f;
+    float perceptualRoughness = DefaultPerceptualRoughness;
+    float dielectricF0 = DefaultDielectricF0;
 
-    // OGFx v1 stores logical texture references in its string arena. Both decoder
+    // OGFx stores logical texture references in its string arena. Both decoder
     // profiles preserve them so the runtime texture resolver can load the image.
     std::string baseColorTexture;
 };

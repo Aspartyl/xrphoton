@@ -120,7 +120,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     bindings[3].binding = 3;
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = hitStageFlags;
+    bindings[3].stageFlags = hitStageFlags | VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     bindings[4].binding = 4;
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[4].descriptorCount = MaxSceneTextures;

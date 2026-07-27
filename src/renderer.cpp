@@ -148,7 +148,7 @@ void recordExecutionBarrier(
 
 // Record the entire frame into a one-time-submit command buffer:
 //   1. rebuild the TLAS between its cross-frame and traversal barriers,
-//   2. discard/transition HDR, then trace one two-vertex path per pixel into it,
+//   2. discard/transition HDR, then trace one multi-vertex path per pixel into it,
 //   3. make HDR writes visible to compute and discard/transition the LDR output,
 //   4. compute-tonemap HDR radiance into the 8-bit LDR output,
 //   5. make LDR writes visible to transfer and blit it into the acquired image,

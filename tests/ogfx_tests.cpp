@@ -720,6 +720,64 @@ void testTextureStringArena()
     }
 }
 
+void testMaterialChunkVersion2()
+{
+    Model defaultModel = makeQuad();
+    const SerializeResult version1 =
+        xrphoton::ogfx::serializeModel(defaultModel, "material-v1.ogfx");
+    expect(static_cast<bool>(version1), "default BRDF material serializes as v1");
+    if (!version1) {
+        std::cerr << version1.error << '\n';
+        return;
+    }
+    const std::size_t version1Header = chunkHeaderOffset(version1.bytes, ChunkId::Materials);
+    expect(
+        readU32(version1.bytes, version1Header + 8)
+            == xrphoton::ogfx::MaterialChunkVersion1,
+        "default roughness and F0 preserve material chunk v1");
+    expect(
+        readU32(version1.bytes, version1Header + 32 + 40) == 0
+            && readU32(version1.bytes, version1Header + 32 + 44) == 0,
+        "material v1 keeps both reserved record words zero");
+
+    Model explicitModel = makeQuad();
+    explicitModel.materials[0].perceptualRoughness = 0.2f;
+    explicitModel.materials[0].dielectricF0 = 0.08f;
+    const SerializeResult version2 =
+        xrphoton::ogfx::serializeModel(explicitModel, "material-v2.ogfx");
+    expect(static_cast<bool>(version2), "explicit BRDF material serializes as v2");
+    if (!version2) {
+        std::cerr << version2.error << '\n';
+        return;
+    }
+    const std::size_t version2Header = chunkHeaderOffset(version2.bytes, ChunkId::Materials);
+    expect(
+        readU32(version2.bytes, version2Header + 8)
+            == xrphoton::ogfx::MaterialChunkVersion2,
+        "nondefault roughness or F0 selects material chunk v2");
+    expect(
+        readF32(version2.bytes, version2Header + 32 + 40) == 0.2f
+            && readF32(version2.bytes, version2Header + 32 + 44) == 0.08f,
+        "material v2 writes roughness and F0 at the former reserved offsets");
+
+    const xrphoton::ogfx::DecodeResult decoded =
+        xrphoton::ogfx::decodeModelSchema(version2.bytes, "material-v2.ogfx");
+    expect(static_cast<bool>(decoded), "schema decoder accepts material chunk v2");
+    if (decoded) {
+        expect(
+            decoded.model.materials[0].perceptualRoughness == 0.2f
+                && decoded.model.materials[0].dielectricF0 == 0.08f,
+            "schema decoder preserves material v2 BRDF scalars");
+        const SerializeResult roundTrip =
+            xrphoton::ogfx::serializeModel(decoded.model, "material-v2-roundtrip.ogfx");
+        expect(
+            roundTrip && roundTrip.bytes == version2.bytes,
+            "material v2 decode and reserialize is byte-canonical");
+    } else {
+        std::cerr << decoded.error << '\n';
+    }
+}
+
 void testRigidPhysicsChunk()
 {
     const Model model = makeRigidPhysicsQuad();
@@ -958,6 +1016,16 @@ void testValidation()
     }
     {
         Model model = makeQuad();
+        model.materials[0].perceptualRoughness = -0.01f;
+        expectRejected(std::move(model), "perceptualRoughness");
+    }
+    {
+        Model model = makeQuad();
+        model.materials[0].dielectricF0 = std::numeric_limits<float>::quiet_NaN();
+        expectRejected(std::move(model), "dielectricF0");
+    }
+    {
+        Model model = makeQuad();
         model.geometries[0].firstVertex = 1;
         expectRejected(std::move(model), "firstVertex");
     }
@@ -1162,6 +1230,7 @@ int main()
     testSphereEnclosureRounding();
     testAsymmetricBoundsAndMaterialFraming();
     testTextureStringArena();
+    testMaterialChunkVersion2();
     testRigidPhysicsChunk();
     testBoxPhysicsChunkVersion2();
     testValidation();
