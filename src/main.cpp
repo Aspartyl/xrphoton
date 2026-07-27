@@ -10,6 +10,7 @@
 #include "rt_pipeline.hpp"
 #include "scene.hpp"
 #include "swapchain.hpp"
+#include "tonemap_pipeline.hpp"
 #include "vulkan_context.hpp"
 
 #include <algorithm>
@@ -509,6 +510,17 @@ int main(int argumentCount, char** arguments)
     writeSceneDescriptorSet(ctx.device, rtPipeline.descriptorSet, gpuScene);
     std::cout << "Wrote Vulkan scene descriptor bindings.\n";
 
+    TonemapPipeline tonemapPipeline;
+    const VkResult tonemapPipelineResult = createTonemapPipeline(
+        &tonemapPipeline,
+        ctx.device);
+    if (tonemapPipelineResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan tonemap pipeline: "
+                  << formatVkResult(tonemapPipelineResult) << ".\n";
+        return 1;
+    }
+    std::cout << "Created Vulkan HDR tonemap pipeline.\n";
+
     // The renderer's non-owning view over everything the frame path uses, created
     // last — after every handle it borrows exists. The handle members are copies of
     // program-lifetime objects; swap is a pointer because its members are replaced
@@ -524,15 +536,16 @@ int main(int argumentCount, char** arguments)
         .scene = &sceneData,
         .functions = &rayTracingFunctions,
         .rtPipeline = &rtPipeline,
+        .tonemapPipeline = &tonemapPipeline,
         .swap = &swap,
     };
 
     if (!prepareRtForSwapchain(renderer)) {
-        std::cerr << "Swapchain extent exceeds the device's ray dispatch limits.\n";
+        std::cerr << "Swapchain extent exceeds the device's trace/tonemap dispatch limits.\n";
         return 1;
     }
 
-    std::cout << "Wrote Vulkan ray tracing descriptor set (TLAS + storage image).\n";
+    std::cout << "Wrote Vulkan render descriptors (TLAS + HDR/LDR images).\n";
 
     Camera playerCamera{
         .position = loadedGallery.spawn.position,
@@ -647,7 +660,7 @@ int main(int argumentCount, char** arguments)
             lastSubmittedSlot,
             &readback);
         if (readbackResult != VK_SUCCESS) {
-            std::cerr << "Failed to read back Vulkan storage image: "
+            std::cerr << "Failed to read back Vulkan LDR output image: "
                       << formatVkResult(readbackResult) << ".\n";
             return 1;
         }
@@ -658,7 +671,7 @@ int main(int argumentCount, char** arguments)
                 readback.height,
                 readback.rgba8,
                 &hash)) {
-            std::cerr << "Failed to hash captured storage-image bytes.\n";
+            std::cerr << "Failed to hash captured LDR bytes.\n";
             return 1;
         }
 
@@ -814,10 +827,10 @@ int main(int argumentCount, char** arguments)
                 return 1;
             }
 
-            // The recreate rebuilt the storage image, so the RT pipeline's descriptor
-            // set and dispatch-limit check must run again before the next trace.
+            // The recreate rebuilt both render targets, so both descriptor sets and
+            // dispatch-limit checks must run again before the next frame.
             if (!prepareRtForSwapchain(renderer)) {
-                std::cerr << "Swapchain extent exceeds the device's ray dispatch limits.\n";
+                std::cerr << "Swapchain extent exceeds the device's trace/tonemap dispatch limits.\n";
                 return 1;
             }
 

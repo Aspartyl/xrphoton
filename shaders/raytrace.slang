@@ -42,15 +42,15 @@ float3 skyRadiance(float3 direction)
 }
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
-// swapchain-sized storage image at 1. The [format] attribute stamps the SPIR-V
+// swapchain-sized HDR radiance image at 1. The [format] attribute stamps the SPIR-V
 // image format, required for storage-image writes without the
 // shaderStorageImageWriteWithoutFormat feature.
 [[vk::binding(0, 0)]]
 uniform RaytracingAccelerationStructure topLevelAS;
 
 [[vk::binding(1, 0)]]
-[format("rgba8")]
-uniform RWTexture2D<float4> outputImage;
+[format("rgba16f")]
+uniform RWTexture2D<float4> hdrRadianceImage;
 
 // All-scalar or explicitly aligned records mirror scene.hpp/gpu_scene.hpp exactly.
 struct VertexAttributes
@@ -476,7 +476,7 @@ void rayGenMain()
         rayDirectionY = bounceDirection;
     }
 
-    outputImage[pixel] = float4(saturate(radiance), 1.0);
+    hdrRadianceImage[pixel] = float4(max(radiance, 0.0), 1.0);
 }
 
 [shader("miss")]

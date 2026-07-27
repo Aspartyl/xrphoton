@@ -4,6 +4,7 @@
 #include "lighting.hpp"
 #include "rt_pipeline.hpp"
 #include "swapchain.hpp"
+#include "tonemap_pipeline.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
@@ -147,21 +148,22 @@ void recordExecutionBarrier(
 
 // Record the entire frame into a one-time-submit command buffer:
 //   1. rebuild the TLAS between its cross-frame and traversal barriers,
-//   2. barrier the storage image UNDEFINED -> GENERAL,
-//   3. trace: one two-vertex path per pixel writes sun/sky-lit radiance,
-//   4. barrier storage GENERAL -> TRANSFER_SRC_OPTIMAL,
-//   5. barrier the acquired image UNDEFINED -> TRANSFER_DST_OPTIMAL,
-//   6. blit storage into the acquired image,
-//   7. chain the next trace behind this frame's storage-image read,
-//   8. barrier the acquired image TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR.
+//   2. discard/transition HDR, then trace one two-vertex path per pixel into it,
+//   3. make HDR writes visible to compute and discard/transition the LDR output,
+//   4. compute-tonemap HDR radiance into the 8-bit LDR output,
+//   5. make LDR writes visible to transfer and blit it into the acquired image,
+//   6. close both shared-image cross-frame hazards with execution dependencies,
+//   7. transition the acquired image to PRESENT_SRC_KHR.
 VkResult recordTraceCommandBuffer(
     VkCommandBuffer commandBuffer,
     const RayTracingFunctions& functions,
     const RtPipeline& rt,
+    const TonemapPipeline& tonemap,
     const AccelerationStructure& accel,
     uint32_t frameSlot,
     const RaygenPushConstants& pushConstants,
-    VkImage storageImage,
+    VkImage hdrRadianceImage,
+    VkImage ldrOutputImage,
     VkImage swapchainImage,
     VkExtent2D extent)
 {
@@ -186,13 +188,13 @@ VkResult recordTraceCommandBuffer(
     colorRange.baseArrayLayer = 0;
     colorRange.layerCount = 1;
 
-    // Discard the previous storage contents and hand the whole image to the raygen
+    // Discard the previous HDR contents and hand the whole image to the raygen
     // shader. The source stage chains from the previous frame's trailing execution
     // barrier without intersecting the acquire wait's TRANSFER stage, so tracing can
     // still run before this frame's swapchain image is acquired.
     recordImageBarrier(
         commandBuffer,
-        storageImage,
+        hdrRadianceImage,
         VK_IMAGE_LAYOUT_UNDEFINED,
         VK_IMAGE_LAYOUT_GENERAL,
         0,
@@ -234,15 +236,62 @@ VkResult recordTraceCommandBuffer(
         extent.height,
         1);
 
-    // Trace writes become visible to the blit's reads.
+    // Preserve HDR radiance in GENERAL while making raygen writes visible to the
+    // tonemap compute shader's storage-image reads.
     recordImageBarrier(
         commandBuffer,
-        storageImage,
+        hdrRadianceImage,
+        VK_IMAGE_LAYOUT_GENERAL,
+        VK_IMAGE_LAYOUT_GENERAL,
+        VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        colorRange);
+
+    // This pass fully overwrites LDR. UNDEFINED intentionally discards last frame's
+    // pixels; the previous frame's trailing transfer->compute execution dependency
+    // still orders this write after its blit/read completes.
+    recordImageBarrier(
+        commandBuffer,
+        ldrOutputImage,
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_GENERAL,
+        0,
+        VK_ACCESS_SHADER_WRITE_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        colorRange);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap.pipeline);
+    vkCmdBindDescriptorSets(
+        commandBuffer,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        tonemap.pipelineLayout,
+        0,
+        1,
+        &tonemap.descriptorSet,
+        0,
+        nullptr);
+    vkCmdPushConstants(
+        commandBuffer,
+        tonemap.pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(TonemapState),
+        &tonemap.state);
+
+    const TonemapDispatch tonemapDispatch = makeTonemapDispatch(extent.width, extent.height);
+    vkCmdDispatch(commandBuffer, tonemapDispatch.x, tonemapDispatch.y, 1);
+
+    recordImageBarrier(
+        commandBuffer,
+        ldrOutputImage,
         VK_IMAGE_LAYOUT_GENERAL,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_ACCESS_SHADER_WRITE_BIT,
         VK_ACCESS_TRANSFER_READ_BIT,
-        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         colorRange);
 
@@ -280,10 +329,10 @@ VkResult recordTraceCommandBuffer(
     };
 
     // Keep this as a blit, not a copy: blit performs format conversion. The selected
-    // swapchain format is sRGB, so the storage UNORM value is encoded for presentation.
+    // swapchain format is sRGB, so the LDR UNORM value is encoded for presentation.
     vkCmdBlitImage(
         commandBuffer,
-        storageImage,
+        ldrOutputImage,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         swapchainImage,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -291,17 +340,18 @@ VkResult recordTraceCommandBuffer(
         &blitRegion,
         VK_FILTER_NEAREST);
 
-    // A later frame may discard/transition the shared storage image before this frame
-    // retires. Chain that next trace behind this blit's storage-image read without
-    // creating a memory dependency; a write-after-read hazard only needs execution
-    // ordering, and using RAY_TRACING_SHADER as the destination avoids the acquire wait's
-    // TRANSFER stage. This barrier must stay after the frame's LAST storage-image read:
-    // a read recorded below it would sit outside the dependency and silently reopen the
-    // cross-frame hazard.
+    // Both resize-bound images are shared by frames in flight. Their next uses discard
+    // and overwrite, so write-after-read only needs execution ordering: compute's HDR
+    // read must finish before next frame's raygen write, and transfer's LDR read must
+    // finish before next frame's compute write. Keep these after each image's last read.
+    recordExecutionBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
     recordExecutionBarrier(
         commandBuffer,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     // Transition into the layout the presentation engine requires. The dstStageMask is
     // BOTTOM_OF_PIPE because no further GPU stage consumes the image; the render-finished
@@ -325,13 +375,19 @@ VkResult recordTraceCommandBuffer(
 bool prepareRtForSwapchain(const Renderer& renderer)
 {
     const RtPipeline& rt = *renderer.rtPipeline;
+    const TonemapPipeline& tonemap = *renderer.tonemapPipeline;
     const Swapchain& swap = *renderer.swap;
 
     writeRtDescriptorSet(
         renderer.device,
         rt.descriptorSet,
         renderer.accel->tlas,
-        swap.storageImageView);
+        swap.hdrRadianceImageView);
+    writeTonemapDescriptorSet(
+        renderer.device,
+        tonemap.descriptorSet,
+        swap.hdrRadianceImageView,
+        swap.ldrOutputImageView);
 
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProperties{};
     rtProperties.sType =
@@ -349,8 +405,16 @@ bool prepareRtForSwapchain(const Renderer& renderer)
     const VkPhysicalDeviceLimits& limits = properties.properties.limits;
     const uint64_t width = swap.extent.width;
     const uint64_t height = swap.extent.height;
+    const TonemapDispatch tonemapDispatch = makeTonemapDispatch(
+        swap.extent.width,
+        swap.extent.height);
 
-    return width <= static_cast<uint64_t>(limits.maxComputeWorkGroupCount[0])
+    return TonemapLocalSizeX <= limits.maxComputeWorkGroupSize[0]
+        && TonemapLocalSizeY <= limits.maxComputeWorkGroupSize[1]
+        && TonemapLocalSizeX * TonemapLocalSizeY <= limits.maxComputeWorkGroupInvocations
+        && tonemapDispatch.x <= limits.maxComputeWorkGroupCount[0]
+        && tonemapDispatch.y <= limits.maxComputeWorkGroupCount[1]
+        && width <= static_cast<uint64_t>(limits.maxComputeWorkGroupCount[0])
             * limits.maxComputeWorkGroupSize[0]
         && height <= static_cast<uint64_t>(limits.maxComputeWorkGroupCount[1])
             * limits.maxComputeWorkGroupSize[1]
@@ -428,10 +492,12 @@ VkResult drawFrame(
         frame.commandBuffer,
         *renderer.functions,
         *renderer.rtPipeline,
+        *renderer.tonemapPipeline,
         *renderer.accel,
         frameIndex,
         pushConstants,
-        swap.storageImage,
+        swap.hdrRadianceImage,
+        swap.ldrOutputImage,
         swap.images[imageIndex],
         swap.extent);
 
@@ -516,7 +582,7 @@ VkResult readbackStorageImage(
         || renderer.traceQueue == VK_NULL_HANDLE
         || renderer.frames == nullptr
         || renderer.swap == nullptr
-        || renderer.swap->storageImage == VK_NULL_HANDLE) {
+        || renderer.swap->ldrOutputImage == VK_NULL_HANDLE) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
@@ -608,7 +674,7 @@ VkResult readbackStorageImage(
 
         vkCmdCopyImageToBuffer(
             frame.commandBuffer,
-            swap.storageImage,
+            swap.ldrOutputImage,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             readbackBuffer.buffer,
             1,

@@ -11,8 +11,10 @@ TLAS over every yard placement, then launches one path per pixel from either a b
 collision-aware player view or the original perspective fly camera. The ray-tracing
 shader evaluates direct sun, hard alpha-aware visibility, a procedural sky, and one
 cosine-weighted diffuse bounce before it
-writes a device-local storage image that is blitted to the swapchain. The present
-path has two frames in flight, resize handling, and the required descriptor rewrite;
+stores linear radiance in a device-local float HDR image. A compute pass applies
+fixed-exposure Reinhard tonemapping into an 8-bit linear image, which is blitted to
+the sRGB swapchain. The present path has two frames in flight, resize handling, and
+the required descriptor rewrites;
 the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
 The repository-owned crate is now a live Jolt body: it spawns above the yard,
 falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
@@ -198,6 +200,7 @@ the renderer layering.)
 | [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) | Vulkan-free command-line parsing plus checked raw RGBA8 hashing and linear-to-sRGB PPM publication | One-shot capture policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
+| [src/tonemap.hpp](src/tonemap.hpp) / [src/tonemap_pipeline.hpp](src/tonemap_pipeline.hpp) / [.cpp](src/tonemap_pipeline.cpp) | Fixed exposure/dispatch ABI plus `TonemapPipeline`, its two-image descriptor set, compute pipeline, and resize rewrite | Program lifetime pipeline over resize-bound HDR/LDR images |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
 
@@ -282,17 +285,17 @@ cross-file surface is declared in the headers.
 
 ## Ownership model
 
-Six RAII owners — split by resource lifetime:
+Seven RAII owners — split by resource lifetime:
 
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
   window, the instance, the debug messenger, the surface, the device, the one
   `VmaAllocator`, the command pool, and the `frames` array. Each `FrameResources`
   slot owns one command buffer, one image-available semaphore, and one in-flight fence.
 - **`Swapchain`** (recreated on resize) owns: the swapchain, its images, its image
-  views, the format/extent, the **per-image** render-finished semaphores, and the
-  **storage image** (the trace output target — its `VkImage`, `VmaAllocation`, and
-  `VkImageView`), which is sized to the swapchain extent and so rides the same
-  recreate path. Its `VkDevice` and `VmaAllocator` are **non-owning** — borrowed
+  views, the format/extent, the **per-image** render-finished semaphores, and two
+  render targets: float **HDR radiance** plus 8-bit **LDR output**. Both are sized to
+  the swapchain extent and ride the same recreate path. Its `VkDevice` and
+  `VmaAllocator` are **non-owning** — borrowed
   from `VulkanContext` and used only to destroy the children above.
 - **`GpuScene`** (program lifetime, created once at startup) owns the device-local
   position, attribute, index, geometry-record, and material buffers; every sampled
@@ -328,6 +331,9 @@ Six RAII owners — split by resource lifetime:
   trace consumes, and — transiently, during creation only — the shader module. Like
   the others it borrows its `VkDevice` and `VmaAllocator`. Its destructor needs no extension entry
   points (`vkDestroyPipeline` etc. are core), unlike `AccelerationStructure`.
+- **`TonemapPipeline`** (program lifetime) owns its two-storage-image descriptor
+  set/layout/pool, compute pipeline layout, pipeline, fixed `TonemapState`, and a
+  transient shader module during creation. Resize only rewrites its HDR/LDR views.
 
 Things that are neither created nor destroyed by the program (`physicalDevice`, the
 `VkQueue` handles, the resolved `RayTracingFunctions`) stay as plain `main()` locals.
@@ -436,18 +442,20 @@ returns `1` on failure (RAII handles the unwind):
 14. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
     `buildShaderBindingTable` → `writeSceneDescriptorSet` — see
     [Ray tracing pipeline](#ray-tracing-pipeline).
-15. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
+15. **Tonemap pipeline.** Create its descriptor machinery and embedded compute
+    pipeline; image bindings are supplied by the shared prepare step below.
+16. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
     and object it borrows exists, including `ctx.frames.data()`, the acceleration
     structures, and the CPU scene — then the initial
     `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
-16. **Render loop.** Update the camera, call `stepPhysics` (also on resize-dirty
+17. **Render loop.** Update the camera, call `stepPhysics` (also on resize-dirty
     iterations), compose the camera/sun/frame-index raygen payload, then call
     `drawFrame(renderer, currentFrame, raygenPush)`;
     `drawFrame` writes that slot's complete TLAS instance array and records an
     in-place TLAS rebuild before tracing. Rotate `currentFrame` modulo
     `MaxFramesInFlight`; recreate when GLFW reports a framebuffer resize or
     acquire/present returns out-of-date/suboptimal, followed by
-    `prepareRtForSwapchain` against the fresh storage image.
+    `prepareRtForSwapchain` against the fresh HDR/LDR images.
 
 ### Device selection
 
@@ -474,8 +482,9 @@ chooses the first suitable GPU.
 
 `hasRequiredSwapchainSupport` now covers the render path's format prerequisites, not
 just raw swapchain support: beyond a usable format, present mode, and the required
-image usages, it requires that the storage format
-(`R8G8B8A8_UNORM`) supports the storage/transfer/blit-source features and that at
+image usages, it requires that the HDR format (`R16G16B16A16_SFLOAT`) supports
+storage access, that the LDR format (`R8G8B8A8_UNORM`) supports the
+storage/transfer/blit-source features, and that at
 least one available surface format is an 8-bit **sRGB** format paired with
 `SRGB_NONLINEAR` and usable as a blit destination. Device selection and format choice
 use the same predicate, so multi-GPU selection cannot pick a device that passes the
@@ -591,8 +600,8 @@ Advancing the cursor even after an acquire returns out-of-date is safe: that fra
 slot did not submit work, so its fence remains signaled and its image-available
 semaphore was not consumed by a queue submission.
 
-`recordTraceCommandBuffer` records a one-time-submit buffer with eight steps —
-rebuild the TLAS, trace into the storage image, then blit it into the acquired
+`recordTraceCommandBuffer` records a one-time-submit buffer — rebuild the TLAS,
+trace into HDR, tonemap into LDR, then blit LDR into the acquired
 swapchain image:
 
 1. `recordTlasRebuild` records a pre-build memory barrier from
@@ -604,12 +613,12 @@ swapchain image:
    to AS read. The first dependency orders the shared TLAS and scratch after older
    rebuilds and traversal; the second makes this rebuild visible to this frame's
    trace.
-2. Barrier the storage image `UNDEFINED → GENERAL` (`srcStageMask`
+2. Barrier the HDR image `UNDEFINED → GENERAL` (`srcStageMask`
    `RAY_TRACING_SHADER`, destination `RAY_TRACING_SHADER`/`SHADER_WRITE`;
    `oldLayout` `UNDEFINED` discards prior contents — the whole image is
    overwritten). `GENERAL` is the layout storage-image writes require and must match
    what the descriptor set declared. The source stage chains from the previous
-   frame's trailing storage-image barrier without involving the acquire wait's
+   frame's trailing HDR barrier without involving the acquire wait's
    `TRANSFER` stage.
 3. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
    push the frame's `RaygenPushConstants` (`vkCmdPushConstants`, raygen-only —
@@ -618,17 +627,19 @@ swapchain image:
    then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
    extent — one two-vertex path per pixel. The immediately preceding rebuild's post-build
    barrier makes the fresh TLAS visible to this traversal.
-4. Barrier the storage image `GENERAL → TRANSFER_SRC_OPTIMAL` (shader-write →
-   transfer-read), to be the blit source.
-5. Barrier the acquired image `UNDEFINED → TRANSFER_DST_OPTIMAL`, the blit destination.
-6. `vkCmdBlitImage` storage → swapchain (matching extents, `VK_FILTER_NEAREST`). A
+4. Keep HDR in `GENERAL` while making ray-tracing shader writes visible to compute
+   shader reads. Discard/transition LDR `UNDEFINED → GENERAL`, bind the tonemap
+   compute pipeline, push fixed exposure 1.0, and dispatch ceil-divided 8×8 groups.
+   The shader bounds-checks partial edge groups and maps `x` to `x / (1 + x)`.
+5. Barrier LDR `GENERAL → TRANSFER_SRC_OPTIMAL` (compute-write → transfer-read).
+6. Barrier the acquired image `UNDEFINED → TRANSFER_DST_OPTIMAL`, the blit destination.
+7. `vkCmdBlitImage` LDR → swapchain (matching extents, `VK_FILTER_NEAREST`). A
    **blit**, not a copy, on purpose: the selected swapchain format is always sRGB, so
-   format conversion gamma-encodes the storage `UNORM` value for presentation here.
-7. Execution-only barrier `TRANSFER → RAY_TRACING_SHADER`, so a later frame cannot
-   overwrite the shared storage image until this frame's blit has finished reading
-   it. No memory dependency is needed for this write-after-read hazard; only ordering
-   matters.
-8. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
+   format conversion gamma-encodes the LDR `UNORM` value for presentation here.
+8. Execution-only barriers `COMPUTE → RAY_TRACING_SHADER` for HDR reuse and
+   `TRANSFER → COMPUTE` for LDR reuse. These write-after-read hazards need ordering,
+   not a memory dependency.
+9. Barrier the acquired image `TRANSFER_DST_OPTIMAL → PRESENT_SRC_KHR` for presentation.
 
 `recordTraceCommandBuffer` (and its `recordImageBarrier` / `recordExecutionBarrier`
 helpers) are file-private in `renderer.cpp`. Its ordinary exported frame surface is
@@ -638,8 +649,8 @@ Capture mode is a terminal branch after normal frame submissions. It freezes the
 camera and initial extent, advances physics by one fixed step per successful draw,
 and stops immediately after the requested frame count. `readbackStorageImage` waits
 the final slot's render fence (which retires every earlier trace-queue submission),
-reuses that completed command buffer to copy the shared
-`TRANSFER_SRC_OPTIMAL` storage image into a temporary mapped buffer, records a
+reuses that completed command buffer to copy the shared tonemapped
+`TRANSFER_SRC_OPTIMAL` LDR image into a temporary mapped buffer, records a
 `TRANSFER_WRITE → HOST_READ` barrier, and submits the copy without swapchain
 semaphores using a private fence. The returned `StorageImageReadback` owns only
 tightly packed linear RGBA8 bytes. `capture.cpp` hashes those raw bytes with the
@@ -661,21 +672,19 @@ Synchronization details worth preserving:
 
 - **Stage matching and pre-acquire overlap.** The acquire semaphore waits at
   `TRANSFER`, matching the first thing the submit does to the *swapchain* image: the
-  blit-destination transition (step 5) and the blit itself (step 6), both `TRANSFER`
+  blit-destination transition (step 6) and the blit itself (step 7), both `TRANSFER`
   work. So the swapchain transition cannot begin before the image is acquired. The
   TLAS rebuild and trace (steps 1–3) run outside that wait stage, so the GPU is free
   to rebuild and trace before — or overlapping — the acquire; only the blit onto the
   swapchain image is serialized behind it. The present barrier's `dstStageMask` is
   `BOTTOM_OF_PIPE` because no later GPU stage consumes the image — the render-finished
   semaphore is what the present actually waits on.
-- **Shared storage image reuse.** The storage image is still one image shared by all
-  frame slots. To keep frame N+1 from discarding it while frame N's blit is still
-  reading it, the frame records a trailing execution-only barrier after the blit:
-  `TRANSFER → RAY_TRACING_SHADER`. The next frame's leading `UNDEFINED → GENERAL`
-  transition uses `srcStageMask = RAY_TRACING_SHADER`, chaining onto that trailing
-  barrier. This orders "old blit read" before "new trace write" without making ray
-  tracing wait on the acquire semaphore's `TRANSFER` stage. `oldLayout = UNDEFINED`
-  still discards prior contents, so `srcAccessMask` stays zero.
+- **Shared render-target reuse.** One HDR and one LDR image are shared by all frame
+  slots. A trailing `COMPUTE → RAY_TRACING_SHADER` dependency orders the old HDR
+  read before the next trace write. A separate `TRANSFER → COMPUTE` dependency orders
+  the old LDR blit read before the next tonemap write. The next frame deliberately
+  transitions each from `UNDEFINED` because both passes fully overwrite their target;
+  source access remains zero while the execution chains preserve the W-A-R ordering.
 - **Per-image, not per-frame, render-finished semaphores.** A present is signaled
   against the specific acquired image, so these are sized to the image count and
   indexed by `imageIndex`, even though command buffers, image-available semaphores,
@@ -687,7 +696,7 @@ Synchronization details worth preserving:
   reading this slot's mapped buffer; the fallible validation/write remains before
   acquire so failure cannot strand an acquired image.
 - **Terminal capture readback.** Capture queues no later draw after its selected
-  frame. Waiting that slot's fence makes the shared storage image safe to copy and
+  frame. Waiting that slot's fence makes the shared LDR image safe to copy and
   makes reusing the slot command buffer legal. The copy submit has no acquire/present
   semaphore dependency because the image is already in `TRANSFER_SRC_OPTIMAL`; a
   private fence protects the temporary buffer until its bytes reach the CPU.
@@ -741,8 +750,8 @@ Vulkan extent, which may be surface-fixed or capability-clamped.
 Selection policy inside `createSwapchain`:
 
 - **Format:** restricted to `B8G8R8A8_SRGB` or `R8G8B8A8_SRGB`, paired with
-  `SRGB_NONLINEAR` and usable as a blit destination. Prefer BGRA, then RGBA; UNORM and
-  10-bit formats are rejected until the renderer has an explicit output-encoding pass.
+  `SRGB_NONLINEAR` and usable as a blit destination. Prefer BGRA, then RGBA; other
+  formats remain outside the deliberately pinned 8-bit sRGB presentation contract.
   The suitability gate uses the same predicate and guarantees one candidate exists.
 - **Present mode:** prefer `MAILBOX`; fall back to `FIFO` (always supported).
 - **Extent:** the surface's `currentExtent` when fixed; otherwise the window
@@ -753,38 +762,33 @@ Selection policy inside `createSwapchain`:
 - **Usage:** `TRANSFER_DST` (for the blit destination) + `COLOR_ATTACHMENT` (reserved
   for later attachment-based rendering). A surface lacking either is rejected.
 
-## Storage image
+## HDR and LDR render targets
 
-The **storage image** is the trace output target: a device-local image
-`vkCmdTraceRaysKHR` writes and the frame then blits to the acquired swapchain
-image. It is owned by `Swapchain` because it tracks the swapchain extent and
-must be rebuilt on resize, so it rides the existing
+The frame uses two device-local storage images. `vkCmdTraceRaysKHR` writes linear
+radiance into HDR; the tonemap compute pass reads HDR and writes LDR; the frame blits
+LDR to the acquired swapchain image. Both are owned by `Swapchain` because they track
+its extent and must be rebuilt on resize, so they ride the existing
 `createSwapchainResources` / `destroySwapchainResources` / `recreateSwapchain`
-machinery rather than introducing a new lifetime path. A **single** image suffices
-for now even with two frames in flight: the frame path adds explicit barriers so a
-later frame cannot overwrite it until the previous frame's blit has finished reading
-from it. Per-frame storage images remain a possible future simplification if the app
-needs deeper overlap.
+machinery rather than introducing a new lifetime path. One image of each kind suffices
+with two frames in flight because the frame path explicitly orders their shared reuse.
 
-- **Format:** `R8G8B8A8_UNORM` — a member of Vulkan's guaranteed storage-image set,
-  defined once as `StorageImageFormat` in `swapchain.cpp` so the suitability gate and
-  the allocation use the exact same value.
-- **Usage:** `STORAGE` (the traceRays write) `| TRANSFER_SRC` (blit source), with
+- **Formats:** HDR is `R16G16B16A16_SFLOAT`; LDR is `R8G8B8A8_UNORM`. The device
+  suitability gate and allocations use the same constants in `swapchain.cpp`.
+- **Usage:** HDR is `STORAGE`; LDR is `STORAGE | TRANSFER_SRC`, with
   `TILING_OPTIMAL`, 1 mip / 1 layer, and `EXCLUSIVE` sharing. Unlike the swapchain
   images, it is only ever touched on the trace queue, so it needs no cross-family
   sharing.
 - **Memory:** `vmaCreateImage` uses `VMA_MEMORY_USAGE_AUTO` with `DEVICE_LOCAL`
   required; VMA selects, allocates, and binds a compatible memory type.
 - **Capability gating:** see [Device selection](#device-selection). Selection
-  guarantees a supported device; `createStorageImage` keeps a cheap backstop that
+  guarantees a supported device; creation keeps a cheap backstop that
   re-asserts the format helpers and fails `VK_ERROR_FEATURE_NOT_PRESENT` on a logic
   error rather than a supported device.
-- **Image view:** what the RT descriptor set binds (storage image, binding 1). Because
-  the view is recreated with the swapchain, every recreate obligates a descriptor
-  rewrite — see [Ray tracing pipeline](#ray-tracing-pipeline).
-- **Lifetime:** created **last** in `createSwapchainResources` (after the
-  render-finished semaphores, when `swap->extent` is populated) and destroyed **first**
-  in `destroySwapchainResources` (reverse creation order). Teardown is null-guarded, so
+- **Image views:** RT binding 1 points at HDR. Tonemap bindings 0/1 point at HDR/LDR,
+  both declared `GENERAL`. Every recreate rewrites all three view bindings after its
+  device-idle wait.
+- **Lifetime:** created after the render-finished semaphores, when `swap->extent` is
+  populated, and destroyed before those semaphores. Teardown is null-guarded, so
   a partial create and the recreate error path both clean up through the same path.
 
 ## Physics
@@ -1007,7 +1011,7 @@ Decisions and contracts worth preserving:
 
 The machinery that turns the TLAS into pixels: six shader stages, the pipeline
 over them, the shader binding table `vkCmdTraceRaysKHR` indexes into, and the
-descriptor set binding the TLAS, storage image, geometry records, materials, and
+descriptor set binding the TLAS, HDR radiance image, geometry records, materials, and
 sampled scene textures. Owned by `RtPipeline`
 ([src/rt_pipeline.hpp](src/rt_pipeline.hpp)), created once at startup in three
 steps (`createRtDescriptorSet` → `createRtPipeline` → `buildShaderBindingTable`),
@@ -1019,8 +1023,8 @@ Decisions and contracts worth preserving:
   [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
   (perspective rays from the frame constants, a two-vertex iterative shading loop,
   direct Lambertian sun lighting with a hard visibility trace at each hit, one
-  cosine-weighted diffuse bounce, and the storage-image write at binding 1,
-  `[format("rgba8")]` because the device's
+  cosine-weighted diffuse bounce, and the HDR storage-image write at binding 1,
+  `[format("rgba16f")]` because the device's
   `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns a
   procedural horizon-to-zenith sky plus a miss flag), `closestHitMain` (indexed BDA fetch of
   sampled albedo and un-oriented shading/geometric normals), and `anyHitMain`
@@ -1091,7 +1095,7 @@ Decisions and contracts worth preserving:
   geometric normal, and launched from the geometric-normal offset. The matching
   C++/Slang PCG permutation seeds each pixel from its coordinates and frame index;
   capture mode therefore reproduces a selected noisy frame without accumulation.
-- **Descriptor set:** binding 0 TLAS and binding 1 storage image are raygen-only;
+- **Descriptor set:** binding 0 TLAS and binding 1 HDR storage image are raygen-only;
   bindings 2–3 are geometry/material storage buffers visible to hit stages. Binding
   4 is a fixed 1,024-entry combined-image-sampler array visible to closest-hit and
   any-hit. Startup writes every slot: real scene images first, then the
@@ -1108,18 +1112,33 @@ Decisions and contracts worth preserving:
   `vkCmdPushConstants` VUIDs require every pushed byte+stage to fall inside a
   declared range and the push to cover every stage of any range it overlaps.
   The payload contract itself lives in [Camera](#camera).
-- **The resize contract.** The storage image view is recreated with the swapchain,
+- **The resize contract.** Both render-target views are recreated with the swapchain,
   so after every successful `recreateSwapchain` the render loop calls
-  `prepareRtForSwapchain`, which (a) rewrites the descriptor set to the fresh view
+  `prepareRtForSwapchain`, which (a) rewrites the RT output plus tonemap HDR/LDR
+  descriptors to the fresh views
   — race-free because the recreate device-idles first — and (b) re-gates the trace
-  dispatch dimensions (`swap.extent`) against the `vkCmdTraceRaysKHR` VUIDs
+  and compute dispatch dimensions (`swap.extent`) against their VUIDs
   (compute work-group limits × `maxRayDispatchInvocationCount`; spec minimum 2^30,
   so any realistic swapchain passes — checked anyway to fail loudly rather than hit
   undefined behavior on an exotic driver). The same call runs once at startup, so
-  the two post-recreate obligations are one code path.
+  all post-recreate obligations are one code path.
 - **Teardown.** `~RtPipeline` waits for device idle, then destroys pipeline →
   (parked shader module, failure paths only) → pipeline layout → descriptor pool →
   descriptor set layout → SBT buffer/allocation, all null-guarded.
+
+## Tonemap pipeline
+
+`TonemapPipeline` is a separate program-lifetime RAII owner. Its compute descriptor
+set binds HDR and LDR as storage images in `GENERAL`; its four-byte push constant is
+the fixed exposure in `TonemapState`. CMake compiles
+[shaders/tonemap.slang](shaders/tonemap.slang) into its own embedded SPIR-V header,
+and the pipeline selects `tonemapMain` with an 8×8 local size. The dispatch dimensions
+come from the Vulkan-free `makeTonemapDispatch` helper, are checked against device
+limits during swapchain preparation, and round up so the shader's bounds check covers
+non-multiple extents. The pass clamps only negative radiance, applies per-channel
+Reinhard `x / (1 + x)` at exposure 1.0, and writes opaque linear RGBA8. The existing
+UNORM-to-sRGB blit remains the sole output encoding step. There is no history or
+adaptation state in this pass.
 
 ## Camera
 

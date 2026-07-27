@@ -12,10 +12,10 @@ struct GpuScene;
 struct SceneData;
 
 // Owns the ray tracing pipeline machinery: the descriptor set layout binding the TLAS,
-// storage image, and scene records; the pipeline layout plus raygen frame constants;
+// HDR radiance image, and scene records; the pipeline layout plus raygen frame constants;
 // the descriptor pool and the one set allocated from it, the pipeline itself, and the
 // shader binding table buffer.
-// Program-lifetime and swapchain-independent except for one obligation: the storage
+// Program-lifetime and swapchain-independent except for one obligation: the HDR
 // image view is recreated with the swapchain, so the descriptor set must be rewritten
 // after every recreate (the set handle is held here for exactly that — it is freed
 // implicitly with the pool). Its VkDevice is non-owning (borrowed from VulkanContext);
@@ -60,7 +60,7 @@ struct RtPipeline
     ~RtPipeline();
 };
 
-// Create the descriptor set layout (binding 0 the TLAS, binding 1 the storage image,
+// Create the descriptor set layout (binding 0 the TLAS, binding 1 the HDR radiance image,
 // bindings 2–3 the geometry/material records, and binding 4 the fixed scene-texture
 // array), a pool sized for exactly one set,
 // and allocate that set.
@@ -68,16 +68,16 @@ struct RtPipeline
 // and ~RtPipeline cleans it up; the caller can bare-return.
 VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device);
 
-// Point the set's bindings at the TLAS (binding 0) and the storage image view in
+// Point the set's bindings at the TLAS (binding 0) and the HDR radiance image view in
 // GENERAL layout (binding 1). Called once at startup and again after every successful
-// swapchain recreate: the storage image view is recreated with the swapchain, and
+// swapchain recreate: the HDR image view is recreated with the swapchain, and
 // recreateSwapchain's device-idle guarantees the set is not referenced by pending
 // work, which vkUpdateDescriptorSets requires.
 void writeRtDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,
     VkAccelerationStructureKHR tlas,
-    VkImageView storageImageView);
+    VkImageView hdrRadianceImageView);
 
 // Write the program-lifetime scene buffers and every slot of the fixed texture array
 // once at startup. Resize only rewrites bindings 0–1 through writeRtDescriptorSet.

@@ -638,13 +638,19 @@ if(BUILD_TESTING)
         COMMAND xrPhotonCaptureTests
             ${CMAKE_CURRENT_BINARY_DIR}/capture-test.ppm
             ${CMAKE_CURRENT_BINARY_DIR})
+
+    add_executable(xrPhotonTonemapTests tests/tonemap_tests.cpp)
+    target_include_directories(xrPhotonTonemapTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_options(xrPhotonTonemapTests PRIVATE -Wall -Wextra)
+    add_test(NAME tonemap COMMAND xrPhotonTonemapTests)
 endif()
 
 # The Slang compiler is not a FindVulkan component, so locate it directly.
 find_program(XRPHOTON_SLANGC slangc REQUIRED
     DOC "Slang compiler (slangc) used to build the ray tracing shaders")
 
-# The shader module is compiled to SPIR-V at build time and embedded as a C
+# The shader modules are compiled to SPIR-V at build time and embedded as C
 # header (-source-embed-style u32 emits a uint32_t array plus a _sizeInBytes
 # constant), keeping the executable free of runtime file paths. Slang compiles
 # every [shader(...)] entry point into the one module; -fvk-use-entrypoint-name
@@ -652,6 +658,7 @@ find_program(XRPHOTON_SLANGC slangc REQUIRED
 # direct SPIR-V emission targets 1.5; ray tracing needs at least 1.4.
 set(SHADER_HEADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(SHADER_HEADER ${SHADER_HEADER_DIR}/raytrace_spv.h)
+set(TONEMAP_SHADER_HEADER ${SHADER_HEADER_DIR}/tonemap_spv.h)
 add_custom_command(
     OUTPUT ${SHADER_HEADER}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
@@ -676,7 +683,25 @@ add_custom_command(
     VERBATIM
 )
 
-add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER})
+add_custom_command(
+    OUTPUT ${TONEMAP_SHADER_HEADER}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
+    COMMAND ${XRPHOTON_SLANGC}
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.slang
+            -entry tonemapMain
+            -target spirv
+            -fvk-use-entrypoint-name
+            -source-embed-style u32
+            -source-embed-name tonemap_spv
+            -o ${TONEMAP_SHADER_HEADER}
+    COMMAND sed -i -e "1i #include <stddef.h>" -e "1i #include <stdint.h>"
+            ${TONEMAP_SHADER_HEADER}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.slang
+    COMMENT "Compiling tonemap.slang to SPIR-V header"
+    VERBATIM
+)
+
+add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER} ${TONEMAP_SHADER_HEADER})
 
 add_executable(xrPhoton
     src/main.cpp
@@ -692,6 +717,7 @@ add_executable(xrPhoton
     src/lighting.cpp
     src/player.cpp
     src/rt_pipeline.cpp
+    src/tonemap_pipeline.cpp
     src/renderer.cpp
 )
 

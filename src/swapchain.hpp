@@ -25,11 +25,15 @@ struct Swapchain
     VkFormat imageFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     std::vector<VkSemaphore> renderFinishedSemaphores;
-    // Resize-bound trace output target. Ray tracing writes this image, then the frame
-    // path blits it into the acquired swapchain image for presentation.
-    VkImage storageImage = VK_NULL_HANDLE;
-    VmaAllocation storageImageAllocation = nullptr;
-    VkImageView storageImageView = VK_NULL_HANDLE;
+    // Resize-bound render targets. Ray tracing preserves scene radiance in the float
+    // image; compute tonemapping writes the 8-bit linear image that presentation and
+    // deterministic capture consume.
+    VkImage hdrRadianceImage = VK_NULL_HANDLE;
+    VmaAllocation hdrRadianceImageAllocation = nullptr;
+    VkImageView hdrRadianceImageView = VK_NULL_HANDLE;
+    VkImage ldrOutputImage = VK_NULL_HANDLE;
+    VmaAllocation ldrOutputImageAllocation = nullptr;
+    VkImageView ldrOutputImageView = VK_NULL_HANDLE;
 
     Swapchain() = default;
     Swapchain(const Swapchain&) = delete;
@@ -44,9 +48,9 @@ struct Swapchain
 // share one definition of "adequate swapchain support".
 bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
 
-// Populate *swap with a fresh swapchain, its image views, and one render-finished
-// semaphore per image. On failure the partially built resources are owned by *swap and
-// torn down by ~Swapchain (or the next recreateSwapchain), so the caller need not unwind.
+// Populate *swap with a fresh swapchain, its image views, one render-finished semaphore
+// per image, and the HDR/LDR render targets. On failure the partially built resources
+// are owned by *swap and torn down by ~Swapchain (or the next recreateSwapchain).
 VkResult createSwapchainResources(
     Swapchain* swap,
     VkPhysicalDevice physicalDevice,

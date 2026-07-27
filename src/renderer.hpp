@@ -16,6 +16,7 @@ struct RayTracingFunctions;
 struct RtPipeline;
 struct SceneData;
 struct Swapchain;
+struct TonemapPipeline;
 
 // The renderer's view of everything the frame path uses. Owns nothing: Vulkan handles
 // are borrowed copies from VulkanContext, while scene, acceleration-structure, pipeline,
@@ -35,10 +36,11 @@ struct Renderer
     const SceneData* scene = nullptr;
     const RayTracingFunctions* functions = nullptr;
     const RtPipeline* rtPipeline = nullptr;
+    const TonemapPipeline* tonemapPipeline = nullptr;
     const Swapchain* swap = nullptr;
 };
 
-// CPU-owned copy of the shared resize-bound storage image. Pixels are tightly packed
+// CPU-owned copy of the shared resize-bound LDR output image. Pixels are tightly packed
 // row-major R8G8B8A8_UNORM bytes in linear space; no Vulkan/VMA handle escapes with it.
 struct StorageImageReadback
 {
@@ -47,13 +49,9 @@ struct StorageImageReadback
     std::vector<std::uint8_t> rgba8;
 };
 
-// The RT pipeline's two obligations whenever the swapchain (re)appears, kept as one
-// code path: rewrite the descriptor set to the current storage image view (the view
-// is recreated with the swapchain; the recreate's device-idle makes the rewrite
-// race-free), and gate the trace dispatch dimensions against the device limits. The
-// spec minimum for maxRayDispatchInvocationCount is 2^30, so any realistic swapchain
-// passes — checked anyway to fail loudly rather than hit undefined behavior on an
-// exotic driver.
+// Rewrite the RT and tonemap descriptors to the current HDR/LDR views and gate both
+// trace and compute dispatch dimensions against device limits. Resize idles the device,
+// so rewriting these program-lifetime descriptor sets is race-free.
 bool prepareRtForSwapchain(const Renderer& renderer);
 
 // Render and present one frame using frameIndex's command buffer and sync objects,
@@ -69,13 +67,13 @@ VkResult drawFrame(
     uint32_t frameIndex,
     const RaygenPushConstants& pushConstants);
 
-// Copy the storage image produced by the latest submitted frame into host memory.
+// Copy the tonemapped LDR image produced by the latest submitted frame into host memory.
 // Rendering must have stopped immediately after finalSubmittedFrameSlot's successful
 // draw: at least one draw must have succeeded in that slot, no later frame may be
 // queued, no swapchain recreation may intervene, and no thread may concurrently use
 // the trace queue or frame command pool. The function waits that slot's render fence,
 // performs one semaphore-free copy submission with a private fence on traceQueue, and
-// leaves the storage image in TRANSFER_SRC_OPTIMAL. On failure, *output is unchanged.
+// leaves the LDR image in TRANSFER_SRC_OPTIMAL. On failure, *output is unchanged.
 VkResult readbackStorageImage(
     const Renderer& renderer,
     std::uint32_t finalSubmittedFrameSlot,

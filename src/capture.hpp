@@ -29,7 +29,7 @@ struct CommandLineOptions
     CommandLineOptions* options,
     std::string* error);
 
-// Hash the tightly packed, linear RGBA8 storage-image contents with 64-bit FNV-1a.
+// Hash the tightly packed, linear RGBA8 tonemapped output with 64-bit FNV-1a.
 // Width and height are fed first as four little-endian bytes each, so equal byte
 // strings at different extents remain distinct capture results.
 [[nodiscard]] bool hashCaptureImage(

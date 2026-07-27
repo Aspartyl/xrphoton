@@ -34,7 +34,7 @@ its evaluation has to be a shared function callable from raygen, so keep sky
 evaluation in one Slang function from the start.
 
 **Phase 2 — HDR target, BRDF materials + general multi-bounce loop in raygen.** The
-phase opens by moving radiance off the 8-bit image: raygen writes an
+completed opening slice moves radiance off the 8-bit image: raygen writes an
 `R16G16B16A16_SFLOAT` storage target, and a small tonemap compute pass
 (fixed-exposure Reinhard-style curve — one deliberate curve, tuned once) writes the
 existing 8-bit presentable image the blit already handles. Sharp specular highlights
@@ -309,12 +309,14 @@ pitch black.
 **Deterministic RNG: PCG-style hash seeded by (pixel, frameIndex).** Detailed in
 §3.6.
 
-**No accumulation buffer in this slice.** Single-sample-per-pixel output into the
-existing shared `R8G8B8A8_UNORM` storage image, saturated on write. Consequence
+**No accumulation buffer in this slice.** Single-sample-per-pixel output originally
+went directly into the shared `R8G8B8A8_UNORM` storage image, saturated on write. Consequence
 accepted: 1 spp of stochastic bounce produces visible per-frame noise shimmer.
 Sun/sky radiance constants are chosen so the lit yard stays inside the 8-bit range
-(fixed implicit exposure of 1.0). The current-frame HDR target and tonemap arrive at
-the head of phase 2, before rough/specular transport; temporal history, moments, and
+(fixed implicit exposure of 1.0). The phase-2 HDR/tonemap foundation is now live:
+raygen writes current-frame `R16G16B16A16_SFLOAT` radiance and fixed-exposure Reinhard
+compute tonemapping produces the shared LDR image. Rough/specular transport still
+follows; temporal history, moments, and
 reprojection remain phase 5.
 
 ### 3.2 Routing-ABI changes: `RayTypeCount` 1 → 2

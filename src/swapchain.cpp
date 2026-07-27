@@ -19,8 +19,10 @@ namespace
 constexpr VkImageUsageFlags RequiredSwapchainImageUsage =
     VK_IMAGE_USAGE_TRANSFER_DST_BIT
     | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-constexpr VkFormat StorageImageFormat = VK_FORMAT_R8G8B8A8_UNORM;
-constexpr VkImageUsageFlags RequiredStorageImageUsage =
+constexpr VkFormat HdrRadianceFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat LdrOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr VkImageUsageFlags RequiredHdrRadianceUsage = VK_IMAGE_USAGE_STORAGE_BIT;
+constexpr VkImageUsageFlags RequiredLdrOutputUsage =
     VK_IMAGE_USAGE_STORAGE_BIT
     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
@@ -34,20 +36,26 @@ struct SwapchainSupportDetails
     bool valid = false;
 };
 
-// The storage image must be usable as the ray tracing output and as the source of the
-// present blit.
-bool storageImageFormatFeaturesSupported(VkPhysicalDevice physicalDevice, VkFormat storageFormat)
+bool imageFormatFeaturesSupported(
+    VkPhysicalDevice physicalDevice,
+    VkFormat format,
+    VkFormatFeatureFlags requiredFeatures)
 {
     VkFormatProperties properties{};
-    vkGetPhysicalDeviceFormatProperties(physicalDevice, storageFormat, &properties);
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
 
-    constexpr VkFormatFeatureFlags RequiredStorageImageFormatFeatures =
+    return (properties.optimalTilingFeatures & requiredFeatures) == requiredFeatures;
+}
+
+bool renderTargetFormatsSupported(VkPhysicalDevice physicalDevice)
+{
+    constexpr VkFormatFeatureFlags HdrFeatures = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    constexpr VkFormatFeatureFlags LdrFeatures =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
         | VK_FORMAT_FEATURE_BLIT_SRC_BIT
         | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
-
-    return (properties.optimalTilingFeatures & RequiredStorageImageFormatFeatures)
-        == RequiredStorageImageFormatFeatures;
+    return imageFormatFeaturesSupported(physicalDevice, HdrRadianceFormat, HdrFeatures)
+        && imageFormatFeaturesSupported(physicalDevice, LdrOutputFormat, LdrFeatures);
 }
 
 // The present blit relies on the destination format to encode the storage image's
@@ -69,7 +77,7 @@ bool isBlitCompatibleSwapchainFormat(
     VkFormat swapchainFormat,
     VkFormat storageFormat)
 {
-    if (storageFormat != StorageImageFormat
+    if (storageFormat != LdrOutputFormat
         || !isSupportedSrgbSwapchainFormat(swapchainFormat)) {
         return false;
     }
@@ -93,7 +101,7 @@ bool isSupportedSwapchainSurfaceFormat(
         && isBlitCompatibleSwapchainFormat(
             physicalDevice,
             surfaceFormat.format,
-            StorageImageFormat);
+            LdrOutputFormat);
 }
 
 // Gather surface capabilities, formats, and present modes. Returns with valid == false
@@ -462,22 +470,20 @@ VkResult createRenderFinishedSemaphores(
     return VK_SUCCESS;
 }
 
-VkResult createStorageImage(
-    VkPhysicalDevice physicalDevice,
+VkResult createRenderTargetImage(
     VkDevice device,
     VkExtent2D extent,
-    VkFormat swapchainFormat,
-    Swapchain* swap)
+    VkFormat format,
+    VkImageUsageFlags usage,
+    VmaAllocator allocator,
+    VkImage* image,
+    VmaAllocation* allocation,
+    VkImageView* imageView)
 {
-    if (!storageImageFormatFeaturesSupported(physicalDevice, StorageImageFormat)
-        || !isBlitCompatibleSwapchainFormat(physicalDevice, swapchainFormat, StorageImageFormat)) {
-        return VK_ERROR_FEATURE_NOT_PRESENT;
-    }
-
     VkImageCreateInfo imageCreateInfo{};
     imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageCreateInfo.format = StorageImageFormat;
+    imageCreateInfo.format = format;
     imageCreateInfo.extent.width = extent.width;
     imageCreateInfo.extent.height = extent.height;
     imageCreateInfo.extent.depth = 1;
@@ -485,7 +491,7 @@ VkResult createStorageImage(
     imageCreateInfo.arrayLayers = 1;
     imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageCreateInfo.usage = RequiredStorageImageUsage;
+    imageCreateInfo.usage = usage;
     imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -494,11 +500,11 @@ VkResult createStorageImage(
     allocationCreateInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
     VkResult result = vmaCreateImage(
-        swap->allocator,
+        allocator,
         &imageCreateInfo,
         &allocationCreateInfo,
-        &swap->storageImage,
-        &swap->storageImageAllocation,
+        image,
+        allocation,
         nullptr);
 
     if (result != VK_SUCCESS) {
@@ -507,9 +513,9 @@ VkResult createStorageImage(
 
     VkImageViewCreateInfo viewCreateInfo{};
     viewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewCreateInfo.image = swap->storageImage;
+    viewCreateInfo.image = *image;
     viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewCreateInfo.format = StorageImageFormat;
+    viewCreateInfo.format = format;
     viewCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     viewCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
     viewCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -520,25 +526,25 @@ VkResult createStorageImage(
     viewCreateInfo.subresourceRange.baseArrayLayer = 0;
     viewCreateInfo.subresourceRange.layerCount = 1;
 
-    return vkCreateImageView(device, &viewCreateInfo, nullptr, &swap->storageImageView);
+    return vkCreateImageView(device, &viewCreateInfo, nullptr, imageView);
 }
 
-// Destroy the resize-bound trace output image. Null-guarded so partial creation and
-// repeated recreate cleanup use the same path.
-void destroyStorageImage(VkDevice device, Swapchain* swap)
+void destroyRenderTargetImage(
+    VkDevice device,
+    VmaAllocator allocator,
+    VkImage* image,
+    VmaAllocation* allocation,
+    VkImageView* imageView)
 {
-    if (swap->storageImageView != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, swap->storageImageView, nullptr);
-        swap->storageImageView = VK_NULL_HANDLE;
+    if (*imageView != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, *imageView, nullptr);
+        *imageView = VK_NULL_HANDLE;
     }
 
-    if (swap->storageImage != VK_NULL_HANDLE || swap->storageImageAllocation != nullptr) {
-        vmaDestroyImage(
-            swap->allocator,
-            swap->storageImage,
-            swap->storageImageAllocation);
-        swap->storageImage = VK_NULL_HANDLE;
-        swap->storageImageAllocation = nullptr;
+    if (*image != VK_NULL_HANDLE || *allocation != nullptr) {
+        vmaDestroyImage(allocator, *image, *allocation);
+        *image = VK_NULL_HANDLE;
+        *allocation = nullptr;
     }
 }
 
@@ -549,7 +555,18 @@ void destroySwapchainResources(Swapchain* swap)
 {
     VkDevice device = swap->device;
 
-    destroyStorageImage(device, swap);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
+        &swap->ldrOutputImage,
+        &swap->ldrOutputImageAllocation,
+        &swap->ldrOutputImageView);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
+        &swap->hdrRadianceImage,
+        &swap->hdrRadianceImageAllocation,
+        &swap->hdrRadianceImageView);
 
     destroyRenderFinishedSemaphores(device, &swap->renderFinishedSemaphores);
 
@@ -600,7 +617,7 @@ bool hasRequiredSwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR s
         || support.presentModes.empty()
         || (support.capabilities.supportedUsageFlags & RequiredSwapchainImageUsage)
             != RequiredSwapchainImageUsage
-        || !storageImageFormatFeaturesSupported(physicalDevice, StorageImageFormat)) {
+        || !renderTargetFormatsSupported(physicalDevice)) {
         return false;
     }
 
@@ -658,12 +675,36 @@ VkResult createSwapchainResources(
         return result;
     }
 
-    return createStorageImage(
-        physicalDevice,
+    if (!renderTargetFormatsSupported(physicalDevice)
+        || !isBlitCompatibleSwapchainFormat(
+            physicalDevice,
+            swap->imageFormat,
+            LdrOutputFormat)) {
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+
+    result = createRenderTargetImage(
         device,
         swap->extent,
-        swap->imageFormat,
-        swap);
+        HdrRadianceFormat,
+        RequiredHdrRadianceUsage,
+        swap->allocator,
+        &swap->hdrRadianceImage,
+        &swap->hdrRadianceImageAllocation,
+        &swap->hdrRadianceImageView);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    return createRenderTargetImage(
+        device,
+        swap->extent,
+        LdrOutputFormat,
+        RequiredLdrOutputUsage,
+        swap->allocator,
+        &swap->ldrOutputImage,
+        &swap->ldrOutputImageAllocation,
+        &swap->ldrOutputImageView);
 }
 
 VkResult recreateSwapchain(
@@ -723,15 +764,19 @@ Swapchain::~Swapchain()
     // Capture what existed up front so the post-teardown log lines reflect the resources
     // that were actually present (destroySwapchainResources clears the containers).
 
-    const bool hadStorageImage = storageImage != VK_NULL_HANDLE;
+    const bool hadHdrRadianceImage = hdrRadianceImage != VK_NULL_HANDLE;
+    const bool hadLdrOutputImage = ldrOutputImage != VK_NULL_HANDLE;
     const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
     const bool hadImageViews = !imageViews.empty();
     const bool hadSwapchain = swapchain != VK_NULL_HANDLE;
 
     destroySwapchainResources(this);
 
-    if (hadStorageImage) {
-        std::cout << "Destroyed Vulkan storage image.\n";
+    if (hadHdrRadianceImage) {
+        std::cout << "Destroyed Vulkan HDR radiance image.\n";
+    }
+    if (hadLdrOutputImage) {
+        std::cout << "Destroyed Vulkan LDR output image.\n";
     }
     if (hadRenderFinishedSemaphores) {
         std::cout << "Destroyed Vulkan render-finished semaphores.\n";

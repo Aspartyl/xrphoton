@@ -179,7 +179,7 @@ void writeRtDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,
     VkAccelerationStructureKHR tlas,
-    VkImageView storageImageView)
+    VkImageView hdrRadianceImageView)
 {
     // Acceleration structures have no VkDescriptorImageInfo/BufferInfo form; the
     // handle rides in an extension struct chained through pNext, and the write's
@@ -190,11 +190,11 @@ void writeRtDescriptorSet(
     tlasWrite.pAccelerationStructures = &tlas;
 
     // GENERAL is the layout the raygen shader's image write requires; the frame path
-    // transitions the storage image there before tracing, so the descriptor's declared
+    // transitions the HDR image there before tracing, so the descriptor's declared
     // layout and the image's actual layout agree at trace time.
-    VkDescriptorImageInfo storageImageInfo{};
-    storageImageInfo.imageView = storageImageView;
-    storageImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo hdrRadianceImageInfo{};
+    hdrRadianceImageInfo.imageView = hdrRadianceImageView;
+    hdrRadianceImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkWriteDescriptorSet writes[2]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -208,7 +208,7 @@ void writeRtDescriptorSet(
     writes[1].dstBinding = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo = &storageImageInfo;
+    writes[1].pImageInfo = &hdrRadianceImageInfo;
 
     vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 }

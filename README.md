@@ -83,9 +83,10 @@ the running yard visibly reveals the miss background through those samples.
 That said, the whole ray tracing stack is already behind it: every frame traces
 a ray per pixel through one BLAS per mesh and a real multi-instance TLAS with
 `vkCmdTraceRaysKHR` from a
-perspective camera fed to the shader via push constants, writes a storage image
-and blits it to the swapchain, with two frames in flight and proper resize
-handling. The six-stage/seven-group pipeline carries opaque and alpha-tested hit
+perspective camera fed to the shader via push constants, writes linear radiance to
+an `R16G16B16A16_SFLOAT` image, compute-tonemaps it with fixed-exposure Reinhard into
+an `R8G8B8A8_UNORM` image, and blits that LDR result to the swapchain, with two frames
+in flight and proper resize handling. The six-stage/seven-group pipeline carries opaque and alpha-tested hit
 records for both radiance and shadow rays, marks only opaque BLAS ranges opaque,
 and lets each alpha-tested any-hit variant compare sampled texture alpha against
 the material cutoff. The shared C++/Slang routing ABI fixes `RadianceRayType = 0`,
@@ -170,7 +171,7 @@ cmake --build --preset release
 ```
 
 For a deterministic image check, render a positive number of successful frames and
-write the final storage image as an sRGB PPM:
+write the final tonemapped LDR image as an sRGB PPM:
 
 ```sh
 ./build/debug/xrPhoton --capture 8 capture.ppm
