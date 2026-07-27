@@ -216,6 +216,42 @@ This is also when the physics-interpolation trigger fires
 deterministic RNG (slice), separable albedo/normal (slice), HDR radiance (phase 2),
 motion-vector inputs (this phase).
 
+### 2.1 SoC-driven material targets and boundaries
+
+A read-only audit of the local Shadow of Chernobyl corpus confirms that the roadmap
+must preserve legacy **shader-class semantics**, not infer a modern material solely
+from a texture name. The OGF files carry identifiers such as `models\mirror`,
+`models\window`, `models\selflight`, and `models\xdistort`; the shipped R2 shader
+sources show that those classes selected materially different reflection, blending,
+emission, and distortion paths. Counts below are embedded shader references, not
+unique assets (one OGF may contain several surfaces):
+
+| Corpus family | Audited evidence | Roadmap owner / acceptance asset |
+|---|---|---|
+| Opaque reflective | 8 `models\mirror` references across five assets, including `meshes/weapons/binoculars/wpn_binoculars.ogf`; `shaders/r2/model_env_lq.ps` blends a cubemap reflection using base alpha | Phase 2 GGX first proves controlled low/high-roughness Blender spheres, then a real mirror-class legacy asset once its source profile is supported |
+| Glass and blended windows | 553 `models\window`, 108 `models\xwindows`, 24 `models\transparent`, 4 `models\xglass*`, and 9 `models\antigas_glass` references across bottles, doors, vehicles, optics, and masks | A dedicated thin-transmission/refraction milestone after the opaque phase-2 BRDF; these classes must never be silently reduced to alpha cutoff |
+| Emissive surfaces | 74 `models\selflight`, 38 `models\selflightl`, and 36 `models\lightplanes` references | Phase 4; `meshes/physics/light/new_light/light_galogen_1_glass.ogf` is the first real-SoC target because it combines self-light and light-plane surfaces |
+| Water | 185 water DDS files plus animated pool/normal/DuDv `.seq` sets; `shaders/r2/water.ps` combines two animated normal samples, environment reflection, and a Fresnel term | Dedicated water material after basic transmission: animated normals, reflection, transmission, and absorption; it is not an opaque-GGX preset |
+| Distortion and anomalies | `models\xdistort*` and `models\xanomaly` families occur throughout artifacts and anomaly meshes | Post-transmission distortion work; `meshes/physics/anomaly/artefact_cristall.ogf` is the eventual stress test because it combines water, color distortion, and transparency |
+| Cutouts and fur shells | 34 `models\model_aref` and 7 `models\model_fur` references, plus 104 vegetation DDS files | Alpha cutoff remains the landed cutout path; fur/shell behavior is a separate material feature and must not inherit ordinary opaque defaults |
+| Surface detail | 1,198 `_bump` / `_bump#` DDS companions, including extensive weapon, actor, and metal sets | Normal mapping and a real mip chain are required before claiming broad SoC material fidelity; phase 2's scalar GGX test is deliberately narrower |
+| Atmosphere and effects | Weather records select sky cubemaps, clouds, fog, rain, sun, and thunderbolts; the corpus also contains particle blend/distortion shaders and fire/smoke textures | Follow core surface transport and temporal stability; keep environment, particles, and participating media out of the glass/opaque material ABI |
+
+The import rule is therefore explicit: every accepted legacy shader class maps to a
+named xrPhoton material category and tested parameters; an unknown class remains a
+loud conversion failure. Opaque GGX, alpha cutout, thin transmission, water,
+emission, fur, and screen-space-style distortion are distinct categories even when
+they reference the same base texture. No phase may make an asset "load" by quietly
+turning a transmissive or emissive surface into diffuse Lambert.
+
+This audit also fixes the visual progression. The controlled Blender spheres isolate
+GGX math; the binocular/mirror-class asset checks legacy reflective translation; the
+halogen lamp checks HDR emission and light sampling; and the crystal artifact is the
+late combined-material test. The corpus additionally contains 184 actor, 70 monster,
+and 126 weapon OGF files, so representative material acceptance on those assets waits
+for their required skinning/source-profile work rather than coupling that work to
+the BRDF implementation.
+
 ## 3. The immediate slice, in full
 
 Scope: one engine-supplied directional sun; Lambertian direct lighting from the
