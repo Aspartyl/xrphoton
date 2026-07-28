@@ -195,7 +195,7 @@ void acquireRegistration()
             JPH::Factory::sInstance = nullptr;
             throw;
         }
-        factory.release();
+        JPH::Factory::sInstance = factory.release();
     }
     ++activeWorldCount;
 }

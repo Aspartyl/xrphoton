@@ -5,7 +5,6 @@
 #include "texture_loader.hpp"
 
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>

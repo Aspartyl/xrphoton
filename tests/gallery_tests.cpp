@@ -1,26 +1,33 @@
 #include "gallery.hpp"
+
+#ifndef XRPHOTON_GALLERY_TEST_EXPECTATION
+#define XRPHOTON_GALLERY_TEST_EXPECTATION 0
+#endif
+
+#if XRPHOTON_GALLERY_TEST_EXPECTATION == 3
 #include "ogfx.hpp"
+#endif
 
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#if XRPHOTON_GALLERY_TEST_EXPECTATION == 3
 #include <filesystem>
 #include <fstream>
+#endif
 #include <iostream>
 #include <string>
 #include <string_view>
+#if XRPHOTON_GALLERY_TEST_EXPECTATION == 3
 #include <utility>
+#endif
 #include <vector>
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat3x3.hpp>
 #include <glm/matrix.hpp>
-
-#ifndef XRPHOTON_GALLERY_TEST_EXPECTATION
-#define XRPHOTON_GALLERY_TEST_EXPECTATION 0
-#endif
 
 namespace
 {

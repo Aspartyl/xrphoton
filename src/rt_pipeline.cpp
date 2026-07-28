@@ -2,6 +2,7 @@
 
 #include "gpu_scene.hpp"
 #include "lighting.hpp"
+#include "ray_types.hpp"
 #include "scene.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"

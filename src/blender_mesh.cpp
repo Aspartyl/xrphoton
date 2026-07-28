@@ -4,7 +4,6 @@
 #include <array>
 #include <bit>
 #include <cmath>
-#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <limits>

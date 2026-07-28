@@ -15,7 +15,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import bpy
+# Blender injects this module into its bundled Python runtime; it is intentionally
+# unavailable to the system interpreter used by Pylance.
+import bpy  # pyright: ignore[reportMissingImports]
 
 
 STREAM_MAGIC = b"XRBM"

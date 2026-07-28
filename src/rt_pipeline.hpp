@@ -2,7 +2,6 @@
 
 #include <vulkan/vulkan.h>
 
-#include "ray_types.hpp"
 #include "vma_fwd.hpp"
 
 namespace xrphoton
