@@ -16,6 +16,12 @@ fixed-exposure Reinhard tonemapping into an 8-bit linear image, which is blitted
 the sRGB swapchain. The present path has two frames in flight, resize handling, and
 the required descriptor rewrites;
 the frame path lives in `renderer.{hpp,cpp}`, while `main.cpp` remains orchestration.
+Path-tracing phase P0 split the shader implementation into imported records,
+sampling, BSDF, and lighting modules while retaining one linked SPIR-V module. Slang
+depfiles now make imported-source edits rebuild that header. On timestamp-capable trace
+queues, a per-frame GPU query pair measures only `vkCmdTraceRaysKHR`; capture reports a
+diagnostic median for short runs and the comparable median after the fixed 32-warm-up +
+256-measured protocol. Interactive rendering does not require timestamp support.
 The repository-owned crate is now a live Jolt body: it spawns above the yard,
 falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
 transform into `SceneData`; the renderer remains physics-agnostic, writing one
@@ -176,7 +182,7 @@ the renderer layering.)
 
 | Unit | Owns / provides | Lifetime |
 |------|-----------------|----------|
-| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
+| [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync, plus optional trace timestamp pools), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
 | [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU render records plus backend-neutral `ScenePhysicsBody` / `ScenePhysicsCollider` recipes | Plain value state loaded from OGFx and owned by `main()`; instance transforms are mutable physics output |
@@ -189,6 +195,7 @@ the renderer layering.)
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing (including body mesh and collider ranges), bounded instance insertion, and complete whole-scene render/physics validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned radiance/shadow indices, `RayTypeCount`, and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; fixed at radiance 0, shadow 1, count 2 |
+| [shaders/raytrace.slang](shaders/raytrace.slang), [records.slang](shaders/records.slang), [sampling.slang](shaders/sampling.slang), [bsdf.slang](shaders/bsdf.slang), and [lighting.slang](shaders/lighting.slang) | Six RT entry points and the iterative path loop, with imported ABI records, RNG/sampling/MIS helpers, dielectric BSDF, and analytic-light evaluation | Build-time sources compiled and embedded as one SPIR-V module; Slang depfile tracks every import |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; requires the generated crate dynamic, includes configured recipe-bearing barrel/tail placements, and retires when level/scene data has a real owner |
 | [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, the invisible `CharacterVirtual`, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
 | [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency; never configured by the graphics-free `ogfx-core` build |
@@ -197,11 +204,11 @@ the renderer layering.)
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free `DirectionalSun`, 96-byte `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain frame state composed by `main()`; shared ABI/test authority, not a GPU resource owner |
-| [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) | Vulkan-free command-line parsing plus checked raw RGBA8 hashing and linear-to-sRGB PPM publication | One-shot capture policy used by `main()` after renderer readback; owns no GPU state |
+| [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) | Vulkan-free command-line parsing, checked raw RGBA8 hashing, linear-to-sRGB PPM publication, and fixed-protocol trace-timing median policy | One-shot capture policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/tonemap.hpp](src/tonemap.hpp) / [src/tonemap_pipeline.hpp](src/tonemap_pipeline.hpp) / [.cpp](src/tonemap_pipeline.cpp) | Fixed exposure/dispatch ABI plus `TonemapPipeline`, its two-image descriptor set, compute pipeline, and resize rewrite | Program lifetime pipeline over resize-bound HDR/LDR images |
-| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
+| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, trace-only timestamp readback, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
 
 ### Header dependency rule
@@ -290,7 +297,8 @@ Seven RAII owners — split by resource lifetime:
 - **`VulkanContext`** (program lifetime, created once) owns: the GLFW init flag, the
   window, the instance, the debug messenger, the surface, the device, the one
   `VmaAllocator`, the command pool, and the `frames` array. Each `FrameResources`
-  slot owns one command buffer, one image-available semaphore, and one in-flight fence.
+  slot owns one command buffer, one image-available semaphore, one in-flight fence,
+  and, when its trace queue supports timestamps, one two-entry timestamp query pool.
 - **`Swapchain`** (recreated on resize) owns: the swapchain, its images, its image
   views, the format/extent, the **per-image** render-finished semaphores, and two
   render targets: float **HDR radiance** plus 8-bit **LDR output**. Both are sized to
@@ -416,7 +424,8 @@ returns `1` on failure (RAII handles the unwind):
    render-finished semaphores, and the storage output image (created last, so it is
    torn down first).
 9. **Command pool + frame resources** (trace family): one primary command buffer,
-   image-available semaphore, and in-flight fence per frame slot.
+   image-available semaphore, and in-flight fence per frame slot, plus a two-entry
+   timestamp query pool per slot when that family advertises nonzero timestamp bits.
 10. **CPU scene.** `loadGalleryScene` loads the required generated yard assets and
     probes plus every configured optional exhibit, including the mixed tail;
     transactionally merges and rebases their render/physics arrays; applies every
@@ -463,7 +472,7 @@ returns `1` on failure (RAII handles the unwind):
 the first one that passes every category:
 
 ```
-queueFamilies.isComplete()           // a compute+graphics (trace) and a present family
+queueFamilies.isComplete()           // a compute+graphics trace and present family
   && apiVersion >= 1.3                // the core API baseline
   && requiredExtensions.isComplete()  // the RT stack + swapchain
   && hasRequiredSwapchainSupport      // format, present mode, usages, + storage/blit support
@@ -573,7 +582,8 @@ and recreation succeeds, so a surface-fixed or min/max-clamped extent cannot cau
 comparison loop. `main()` owns a `currentFrame` cursor and rotates it after every
 `drawFrame(renderer, currentFrame, raygenPush)` call; a resize-dirty iteration skips the
 draw and leaves the cursor unchanged. Each slot has its own command buffer,
-image-available semaphore, in-flight fence, and mapped TLAS-instance input.
+image-available semaphore, in-flight fence, mapped TLAS-instance input, and an optional
+trace timestamp query pool.
 `drawFrame` in [src/renderer.cpp](src/renderer.cpp) reaches everything through the
 `Renderer` view (the raygen payload rides as a parameter, not a `Renderer` member — it
 is per-frame data, not a program-lifetime handle):
@@ -604,7 +614,8 @@ semaphore was not consumed by a queue submission.
 trace into HDR, tonemap into LDR, then blit LDR into the acquired
 swapchain image:
 
-1. `recordTlasRebuild` records a pre-build memory barrier from
+1. When present, reset this slot's retired two-entry timestamp query pool, then
+   `recordTlasRebuild` records a pre-build memory barrier from
    `RAY_TRACING_SHADER | ACCELERATION_STRUCTURE_BUILD` to
    `ACCELERATION_STRUCTURE_BUILD`, with prior acceleration-structure writes made
    available to build reads/writes. It then performs a full in-place TLAS `BUILD`
@@ -624,7 +635,8 @@ swapchain image:
    push the frame's `RaygenPushConstants` (`vkCmdPushConstants`, raygen-only —
    recorded into this slot's own command buffer after its fence wait, which is
    what makes the frame payload race-free across frames in flight by construction),
-   then `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
+   when timing is supported, write timestamps immediately around
+   `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
    extent — one path of up to eight surface vertices per pixel. The immediately preceding rebuild's post-build
    barrier makes the fresh TLAS visible to this traversal.
 4. Keep HDR in `GENERAL` while making ray-tracing shader writes visible to compute
@@ -656,6 +668,23 @@ semaphores using a private fence. The returned `StorageImageReadback` owns only
 tightly packed linear RGBA8 bytes. `capture.cpp` hashes those raw bytes with the
 extent and writes an sRGB PPM; it owns no Vulkan state.
 
+For each captured frame, `readTraceTimestampMilliseconds` waits for the trace query
+results and converts the valid-bit-wrapped tick delta with the device timestamp
+period. Capture retains at most the first 288 values: fewer values produce a
+`diagnostic` median, while 288 or more discard the first 32 and report the next 256 as
+`comparable`. A trace queue without timestamp support remains valid for interactive
+rendering, but capture fails early with a specific diagnostic because it cannot honor
+this reporting contract. Timing reads do not participate in image hashing or
+publication.
+
+The recorded P0 yard baseline (2026-07-28) is **0.412 ms** at 1920×1080 on an NVIDIA
+GeForce RTX 5070 Ti, driver 595.71.05, using the validation-enabled debug build with
+MangoHud disabled. The monolithic control and split shader both produced frame-7 hash
+`0x9725f7b1e5652acb` and byte-identical PPMs under those conditions.
+Because capture reads each query pair with `WAIT_BIT` before submitting its next frame,
+this is a serialized-capture trace duration for like-for-like phase comparisons, not
+interactive two-frames-in-flight throughput or a total frame-time budget.
+
 ## Synchronization model
 
 The frame model has two rotating frame slots:
@@ -666,6 +695,7 @@ The frame model has two rotating frame slots:
 | `renderFinishedSemaphores[i]` | one **per swapchain image** | `Swapchain` | Signaled by the submit; the present waits on it. |
 | `frames[i].inFlightFence` | one **per frame in flight** | `VulkanContext` | Signaled when that slot's submit completes; the next reuse of the slot waits on it. Created **already signaled** so the first wait for each slot does not deadlock. |
 | `frames[i].commandBuffer` | one **per frame in flight** | `VulkanContext` | Reset and rerecorded only after the matching in-flight fence proves the slot's previous submission has retired. |
+| `frames[i].traceTimestampQueryPool` | one **per frame in flight when supported** | `VulkanContext` | Two queries reset after slot retirement and written immediately before/after the RT dispatch; capture reads them with availability waiting. Null on trace families without timestamp support. |
 | `instanceSlots[i]` | one **per frame in flight** | `AccelerationStructure` | Persistently mapped, host-coherent TLAS build input. The CPU rewrites only the slot whose matching fence has completed, so an in-flight build never races a host write. |
 
 Synchronization details worth preserving:
@@ -1019,8 +1049,13 @@ program-lifetime except for one resize obligation described below.
 
 Decisions and contracts worth preserving:
 
-- **Shaders are Slang, embedded at build time.** All six stages live in one
-  [shaders/raytrace.slang](shaders/raytrace.slang) module: `rayGenMain`
+- **Shaders are modular Slang, embedded at build time.**
+  [shaders/raytrace.slang](shaders/raytrace.slang) owns all six entry points, bound
+  resources, hit-data helpers, and the path loop. It imports
+  [records.slang](shaders/records.slang) for shared ABI/payload structs,
+  [sampling.slang](shaders/sampling.slang) for PCG/directional/MIS helpers,
+  [bsdf.slang](shaders/bsdf.slang) for surface orientation and dielectric lobes, and
+  [lighting.slang](shaders/lighting.slang) for analytic light evaluation. `rayGenMain`
   (perspective rays from the frame constants, an eight-vertex iterative throughput
   loop, direct Lambert+GGX sun lighting with a hard visibility trace at each hit,
   sampled diffuse/GGX indirect transport with Russian roulette, and the HDR
@@ -1036,15 +1071,18 @@ Decisions and contracts worth preserving:
   alpha cutouts without fetching normals or gradients. Radiance rays use
   `RAY_FLAG_NONE`; shadow rays accept the first hit and skip closest-hit. In both
   cases per-geometry BLAS flags and SBT selection, not `RAY_FLAG_FORCE_OPAQUE`,
-  decide whether any-hit runs. CMake compiles the module with `slangc
-  -target spirv -fvk-use-entrypoint-name -source-embed-style u32` into a
+  decide whether any-hit runs. CMake compiles the linked program with `slangc
+  -target spirv -fvk-use-entrypoint-name -source-embed-style u32 -depfile` into a
   self-contained C header (`raytrace_spv.h`, includes prepended by the build) that
   `rt_pipeline.cpp` `#include`s — no runtime shader file paths, keeping the
-  single-executable ethos. slangc is located via `find_program` (it is not a
-  FindVulkan component).
-- **One module, six stages.** Slang compiles every `[shader(...)]` entry point
-  into a single SPIR-V module, so the pipeline creates one `VkShaderModule` and
-  selects stages by `pName`. The module is parked in the owner during creation (the
+  single-executable ethos. The generated depfile is connected through CMake's
+  `DEPFILE` property, so every imported `.slang` edit invalidates the embedded
+  header. The ray-type macros remain command-line definitions on the linked program
+  and therefore reach imports through normal Slang preprocessing. `slangc` is located
+  via `find_program` (it is not a FindVulkan component).
+- **One linked SPIR-V module, six stages.** Slang links every `[shader(...)]` entry
+  point and imported source module into a single SPIR-V module, so the pipeline creates
+  one `VkShaderModule` and selects stages by `pName`. The module is parked in the owner during creation (the
   scratch-buffer pattern: a failure bare-returns and the destructor cleans up) and
   destroyed as soon as the pipeline exists.
 - **Groups in SBT order.** Group 0 is raygen; groups 1–2 are the radiance and
@@ -1342,8 +1380,10 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **HDR, general dielectric materials, and multi-bounce
-   transport landed** — raygen owns an eight-vertex loop, direct Lambert+GGX sun
+4. **Lighting + path tracing.** **Phase P0 plus HDR, general dielectric materials, and
+   multi-bounce transport landed** — the shader is split into depfile-tracked imported
+   modules and trace-only GPU timing establishes the fixed 32+256 cost protocol.
+   Raygen owns an eight-vertex loop, direct Lambert+GGX sun
    evaluation at every hit, hard alpha-aware shadow rays, a procedural sky,
    diffuse/GGX VNDF mixture sampling, and Russian roulette. OGFx material v2 carries
    roughness/F0 while v1 maps to deliberate defaults. The renderer still needs
@@ -1375,9 +1415,6 @@ final shape exists:
 - **UI/compositing surface usage.** Once that path is defined, reconsider the currently
   unused swapchain image views and `COLOR_ATTACHMENT` usage and capability gate
   together.
-- **Slang import dependencies.** When shaders begin importing other source files, make
-  Slang emit a dependency file and connect it to CMake's custom command. Depending
-  directly on `raytrace.slang` is sufficient while it has no imports.
 
 As roadmap work lands, update the [Status](#status) section, add a subsystem section,
 and revise the ownership/synchronization sections if the new code changes those

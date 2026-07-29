@@ -168,6 +168,47 @@ bool hashCaptureImage(
     return true;
 }
 
+bool summarizeCaptureTraceTimings(
+    std::span<const double> milliseconds,
+    CaptureTraceTimingSummary* summary)
+{
+    if (summary == nullptr || milliseconds.empty()) {
+        return false;
+    }
+
+    const bool comparable = milliseconds.size() >= CaptureTraceTimingCapacity;
+    const std::span<const double> measured = comparable
+        ? milliseconds.subspan(
+              CaptureBenchmarkWarmupFrameCount,
+              CaptureBenchmarkMeasuredFrameCount)
+        : milliseconds;
+
+    for (const double value : measured) {
+        if (!std::isfinite(value) || value < 0.0) {
+            return false;
+        }
+    }
+
+    try {
+        std::vector<double> ordered(measured.begin(), measured.end());
+        std::sort(ordered.begin(), ordered.end());
+        const std::size_t midpoint = ordered.size() / 2;
+        const double median = ordered.size() % 2 == 0
+            ? (ordered[midpoint - 1] + ordered[midpoint]) * 0.5
+            : ordered[midpoint];
+
+        *summary = {
+            .medianMilliseconds = median,
+            .sampleCount = static_cast<std::uint32_t>(ordered.size()),
+            .comparable = comparable,
+        };
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+
+    return true;
+}
+
 bool writeCapturePpm(
     const std::string& outputPath,
     std::uint32_t width,

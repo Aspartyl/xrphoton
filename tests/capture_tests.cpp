@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -148,6 +149,51 @@ void testHash()
         "capture hashing rejects invalid extents, sizes, and outputs");
 }
 
+void testTraceTimingSummary()
+{
+    xrphoton::CaptureTraceTimingSummary summary{
+        .medianMilliseconds = 17.0,
+        .sampleCount = 19,
+        .comparable = true,
+    };
+    const std::vector<double> diagnostic{4.0, 1.0, 3.0, 2.0};
+    expect(
+        xrphoton::summarizeCaptureTraceTimings(diagnostic, &summary)
+            && summary.medianMilliseconds == 2.5
+            && summary.sampleCount == diagnostic.size()
+            && !summary.comparable,
+        "short capture timings produce a diagnostic median");
+
+    std::vector<double> benchmark(xrphoton::CaptureTraceTimingCapacity, 1000.0);
+    for (std::uint32_t index = 0;
+         index < xrphoton::CaptureBenchmarkMeasuredFrameCount;
+         ++index) {
+        benchmark[xrphoton::CaptureBenchmarkWarmupFrameCount + index] = index;
+    }
+    expect(
+        xrphoton::summarizeCaptureTraceTimings(benchmark, &summary)
+            && summary.medianMilliseconds == 127.5
+            && summary.sampleCount
+                == xrphoton::CaptureBenchmarkMeasuredFrameCount
+            && summary.comparable,
+        "fixed capture timings discard warm-up frames and report 256-sample median");
+
+    const xrphoton::CaptureTraceTimingSummary unchanged = summary;
+    const std::vector<double> negative{1.0, -1.0};
+    const std::vector<double> nonFinite{
+        std::numeric_limits<double>::quiet_NaN(),
+    };
+    expect(
+        !xrphoton::summarizeCaptureTraceTimings({}, &summary)
+            && !xrphoton::summarizeCaptureTraceTimings(negative, &summary)
+            && !xrphoton::summarizeCaptureTraceTimings(nonFinite, &summary)
+            && !xrphoton::summarizeCaptureTraceTimings(diagnostic, nullptr)
+            && summary.medianMilliseconds == unchanged.medianMilliseconds
+            && summary.sampleCount == unchanged.sampleCount
+            && summary.comparable == unchanged.comparable,
+        "trace timing summary rejects invalid input without changing its output");
+}
+
 void testPpm(
     const std::filesystem::path& outputPath,
     const std::filesystem::path& unwritablePath)
@@ -215,6 +261,7 @@ int main(int argumentCount, char** arguments)
 
     testCommandLine();
     testHash();
+    testTraceTimingSummary();
     testPpm(arguments[1], arguments[2]);
 
     if (failures != 0) {

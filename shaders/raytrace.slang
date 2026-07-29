@@ -1,6 +1,9 @@
-// All six ray tracing stages live in this one module — Slang compiles every
-// [shader(...)] entry point into a single SPIR-V module, so the pipeline creates
-// one VkShaderModule and selects stages by entry-point name.
+// All six ray tracing stages compile into one SPIR-V module. Imported source
+// modules keep records, sampling, BSDFs, and lighting independently maintainable.
+import records;
+import sampling;
+import bsdf;
+import lighting;
 
 #if XRPHOTON_RAY_TYPE_COUNT != 2
 #error "The shader module defines exactly radiance and shadow ray types"
@@ -17,29 +20,6 @@ static const uint ShadowRayType = XRPHOTON_SHADOW_RAY_TYPE;
 static const float SceneTMax = 100.0;
 static const float ShadowTMax = 1.0e30;
 static const float SurfaceRayOffset = 1.0e-3;
-static const float InversePi = 0.31830988618379067154;
-static const float TwoPi = 6.28318530717958647692;
-
-uint pcgHash(uint value)
-{
-    uint state = value * 747796405u + 2891336453u;
-    uint word =
-        ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-float rngNextFloat(inout uint state)
-{
-    state = pcgHash(state);
-    return float(state >> 8u) * (1.0 / 16777216.0);
-}
-
-float3 skyRadiance(float3 direction)
-{
-    static const float3 HorizonRadiance = float3(0.32, 0.38, 0.46);
-    static const float3 ZenithRadiance = float3(0.055, 0.12, 0.28);
-    return lerp(HorizonRadiance, ZenithRadiance, saturate(direction.y));
-}
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
 // swapchain-sized HDR radiance image at 1. The [format] attribute stamps the SPIR-V
@@ -52,31 +32,6 @@ uniform RaytracingAccelerationStructure topLevelAS;
 [format("rgba16f")]
 uniform RWTexture2D<float4> hdrRadianceImage;
 
-// All-scalar or explicitly aligned records mirror scene.hpp/gpu_scene.hpp exactly.
-struct VertexAttributes
-{
-    float nx, ny, nz;
-    float u, v;
-};
-
-struct GeometryRecord
-{
-    uint64_t indexAddress;
-    uint64_t positionAddress;
-    uint64_t attributeAddress;
-    uint materialIndex;
-    uint pad0;
-};
-
-struct MaterialRecord
-{
-    float4 baseColorFactor;
-    uint baseColorTexture;
-    float alphaCutoff;
-    float perceptualRoughness;
-    float dielectricF0;
-};
-
 [[vk::binding(2, 0)]]
 StructuredBuffer<GeometryRecord> geometryRecords;
 
@@ -88,60 +43,8 @@ StructuredBuffer<MaterialRecord> materials;
 [[vk::binding(4, 0)]]
 Sampler2D sceneTextures[1024];
 
-struct CameraPushConstants
-{
-    float3 origin;
-    float3 forward;
-    float3 right;
-    float3 up;
-};
-
-struct RaygenPushConstants
-{
-    CameraPushConstants camera;
-    float3 sunDirection;
-    float pad0;
-    float3 sunRadiance;
-    uint frameIndex;
-};
-
 [[vk::push_constant]]
 ConstantBuffer<RaygenPushConstants> frameConstants;
-
-struct SurfaceHit
-{
-    float hitT;
-    uint materialIndex;
-    float3 albedo;
-    float3 shadingNormal;
-    float3 geometricNormal;
-    // Full neighboring primary-ray directions provide explicit screen-space
-    // derivatives in hit shaders, where implicit fragment derivatives do not
-    // exist. SampleGrad uses the resulting UV footprint for real anisotropy.
-    float3 rayDirectionX;
-    float3 rayDirectionY;
-};
-
-struct ShadowPayload
-{
-    float visibility;
-};
-
-struct HitMaterialCoordinates
-{
-    float2 uv;
-    uint materialIndex;
-};
-
-struct HitAttributes
-{
-    float3 worldShadingNormal;
-    float3 worldGeometricNormal;
-    float2 uv;
-    float2 uvDx;
-    float2 uvDy;
-    uint materialIndex;
-};
 
 HitMaterialCoordinates fetchHitMaterialCoordinates(
     BuiltInTriangleIntersectionAttributes attribs)
@@ -292,233 +195,6 @@ HitAttributes fetchHitAttributes(
     }
     result.materialIndex = geometry.materialIndex;
     return result;
-}
-
-struct OrientedSurfaceNormals
-{
-    float3 shading;
-    float3 geometric;
-};
-
-OrientedSurfaceNormals orientSurfaceNormals(
-    float3 shadingNormal,
-    float3 geometricNormal,
-    float3 wo)
-{
-    OrientedSurfaceNormals result;
-    result.geometric = dot(geometricNormal, wo) < 0.0
-        ? -geometricNormal
-        : geometricNormal;
-    result.shading = dot(shadingNormal, wo) < 0.0
-        ? -shadingNormal
-        : shadingNormal;
-    if (dot(result.shading, result.geometric) <= 0.0)
-        result.shading = result.geometric;
-    return result;
-}
-
-struct OrthonormalBasis
-{
-    float3 tangent;
-    float3 bitangent;
-};
-
-OrthonormalBasis makeOrthonormalBasis(float3 normal)
-{
-    // Duff's sign-stable revision of Frisvad's orthonormal basis avoids the
-    // near-pole cancellation of a cross-product basis without adding a branch on
-    // an arbitrary helper axis.
-    float sign = normal.z >= 0.0 ? 1.0 : -1.0;
-    float a = -1.0 / (sign + normal.z);
-    float b = normal.x * normal.y * a;
-    OrthonormalBasis result;
-    result.tangent = float3(
-        1.0 + sign * normal.x * normal.x * a,
-        sign * b,
-        -sign * normal.x);
-    result.bitangent = float3(
-        b,
-        sign + normal.y * normal.y * a,
-        -normal.y);
-    return result;
-}
-
-float3 cosineSampleHemisphere(float3 normal, float2 sample)
-{
-    float radius = sqrt(sample.x);
-    float angle = TwoPi * sample.y;
-    float3 localDirection = float3(
-        radius * cos(angle),
-        radius * sin(angle),
-        sqrt(max(0.0, 1.0 - sample.x)));
-    OrthonormalBasis basis = makeOrthonormalBasis(normal);
-    return normalize(
-        basis.tangent * localDirection.x
-        + basis.bitangent * localDirection.y
-        + normal * localDirection.z);
-}
-
-float fresnelSchlick(float cosine, float f0)
-{
-    float oneMinusCosine = 1.0 - saturate(cosine);
-    float factor = oneMinusCosine * oneMinusCosine;
-    factor *= factor * oneMinusCosine;
-    return f0 + (1.0 - f0) * factor;
-}
-
-float ggxDistribution(float normalDotHalf, float alpha)
-{
-    float alphaSquared = alpha * alpha;
-    float denominator = normalDotHalf * normalDotHalf * (alphaSquared - 1.0) + 1.0;
-    // At the minimum alpha, the exact peak denominator is below one float ULP from
-    // one and can cancel to zero. alphaSquared is its analytic lower bound.
-    denominator = max(denominator, alphaSquared);
-    return alphaSquared * InversePi / (denominator * denominator);
-}
-
-float ggxSmithG1(float normalDotDirection, float alpha)
-{
-    if (normalDotDirection <= 0.0)
-        return 0.0;
-    float alphaSquared = alpha * alpha;
-    float cosineSquared = normalDotDirection * normalDotDirection;
-    return 2.0 * normalDotDirection
-        / (normalDotDirection
-            + sqrt(alphaSquared + (1.0 - alphaSquared) * cosineSquared));
-}
-
-float3 evaluateDielectricBrdf(
-    float3 albedo,
-    float perceptualRoughness,
-    float dielectricF0,
-    float3 normal,
-    float3 wo,
-    float3 wi)
-{
-    float normalDotOut = dot(normal, wo);
-    float normalDotIn = dot(normal, wi);
-    if (normalDotOut <= 0.0 || normalDotIn <= 0.0)
-        return float3(0.0);
-
-    float3 halfVectorSum = wo + wi;
-    float halfLengthSquared = dot(halfVectorSum, halfVectorSum);
-    if (halfLengthSquared <= 1.0e-12)
-        return float3(0.0);
-    float3 halfVector = halfVectorSum * rsqrt(halfLengthSquared);
-    float normalDotHalf = saturate(dot(normal, halfVector));
-    float outDotHalf = saturate(dot(wo, halfVector));
-    float alpha = max(perceptualRoughness * perceptualRoughness, 1.0e-4);
-
-    float fresnel = fresnelSchlick(outDotHalf, dielectricF0);
-    float distribution = ggxDistribution(normalDotHalf, alpha);
-    float masking = ggxSmithG1(normalDotOut, alpha)
-        * ggxSmithG1(normalDotIn, alpha);
-    float3 specular = float3(
-        fresnel * distribution * masking
-            / max(4.0 * normalDotOut * normalDotIn, 1.0e-8));
-
-    // Diffuse light crosses the dielectric boundary on entry and exit. Applying
-    // Schlick at both sides prevents the diffuse and specular lobes from simply
-    // adding energy at grazing angles.
-    float diffuseTransmission =
-        (1.0 - fresnelSchlick(normalDotIn, dielectricF0))
-        * (1.0 - fresnelSchlick(normalDotOut, dielectricF0));
-    float3 diffuse = albedo * InversePi * diffuseTransmission;
-    return diffuse + specular;
-}
-
-float2 brdfLobeProbabilities(float3 albedo, float dielectricF0)
-{
-    float averageFresnel = dielectricF0 + (1.0 - dielectricF0) / 21.0;
-    float albedoLuminance = dot(albedo, float3(0.2126, 0.7152, 0.0722));
-    float diffuseEnergy = max(0.0, albedoLuminance * (1.0 - averageFresnel));
-    float specularEnergy = max(0.0, averageFresnel);
-    float totalEnergy = diffuseEnergy + specularEnergy;
-    if (totalEnergy <= 0.0)
-        return float2(0.0);
-    return float2(diffuseEnergy, specularEnergy) / totalEnergy;
-}
-
-float3 sampleGgxVisibleNormal(
-    float3 normal,
-    float3 wo,
-    float alpha,
-    float2 sample)
-{
-    OrthonormalBasis basis = makeOrthonormalBasis(normal);
-    float3 localView = float3(
-        dot(wo, basis.tangent),
-        dot(wo, basis.bitangent),
-        dot(wo, normal));
-    float3 stretchedView = normalize(float3(
-        alpha * localView.x,
-        alpha * localView.y,
-        localView.z));
-
-    float projectedLengthSquared = stretchedView.x * stretchedView.x
-        + stretchedView.y * stretchedView.y;
-    float3 tangent1 = projectedLengthSquared > 0.0
-        ? float3(-stretchedView.y, stretchedView.x, 0.0)
-            * rsqrt(projectedLengthSquared)
-        : float3(1.0, 0.0, 0.0);
-    float3 tangent2 = cross(stretchedView, tangent1);
-
-    float radius = sqrt(sample.x);
-    float angle = TwoPi * sample.y;
-    float diskX = radius * cos(angle);
-    float diskY = radius * sin(angle);
-    float interpolation = 0.5 * (1.0 + stretchedView.z);
-    diskY = (1.0 - interpolation) * sqrt(max(0.0, 1.0 - diskX * diskX))
-        + interpolation * diskY;
-
-    float3 stretchedNormal = diskX * tangent1
-        + diskY * tangent2
-        + sqrt(max(0.0, 1.0 - diskX * diskX - diskY * diskY)) * stretchedView;
-    float3 localHalf = normalize(float3(
-        alpha * stretchedNormal.x,
-        alpha * stretchedNormal.y,
-        max(0.0, stretchedNormal.z)));
-    return normalize(
-        basis.tangent * localHalf.x
-        + basis.bitangent * localHalf.y
-        + normal * localHalf.z);
-}
-
-float ggxReflectionPdf(
-    float3 normal,
-    float3 wo,
-    float3 wi,
-    float alpha)
-{
-    float normalDotOut = dot(normal, wo);
-    float3 halfVectorSum = wo + wi;
-    float halfLengthSquared = dot(halfVectorSum, halfVectorSum);
-    if (normalDotOut <= 0.0 || halfLengthSquared <= 1.0e-12)
-        return 0.0;
-    float3 halfVector = halfVectorSum * rsqrt(halfLengthSquared);
-    if (dot(wo, halfVector) <= 0.0)
-        return 0.0;
-    return ggxDistribution(saturate(dot(normal, halfVector)), alpha)
-        * ggxSmithG1(normalDotOut, alpha)
-        / max(4.0 * normalDotOut, 1.0e-8);
-}
-
-float dielectricBrdfPdf(
-    float3 albedo,
-    float perceptualRoughness,
-    float dielectricF0,
-    float3 normal,
-    float3 wo,
-    float3 wi)
-{
-    float normalDotIn = dot(normal, wi);
-    if (normalDotIn <= 0.0)
-        return 0.0;
-    float2 probabilities = brdfLobeProbabilities(albedo, dielectricF0);
-    float diffusePdf = normalDotIn * InversePi;
-    float alpha = max(perceptualRoughness * perceptualRoughness, 1.0e-4);
-    float specularPdf = ggxReflectionPdf(normal, wo, wi, alpha);
-    return probabilities.x * diffusePdf + probabilities.y * specularPdf;
 }
 
 [shader("raygeneration")]

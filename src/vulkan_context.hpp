@@ -16,12 +16,14 @@ namespace xrphoton
 constexpr const char* ValidationLayerName = "VK_LAYER_KHRONOS_validation";
 constexpr uint32_t RequiredApiVersion = VK_API_VERSION_1_3;
 constexpr uint32_t MaxFramesInFlight = 2;
+constexpr uint32_t TraceTimestampQueryCount = 2;
 
 struct FrameResources
 {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
     VkFence inFlightFence = VK_NULL_HANDLE;
+    VkQueryPool traceTimestampQueryPool = VK_NULL_HANDLE;
 };
 
 // Owns every program-lifetime Vulkan/GLFW handle. Its destructor tears them down
@@ -53,6 +55,7 @@ struct QueueFamilyIndices
 {
     uint32_t traceFamily = 0;
     bool hasTraceFamily = false;
+    uint32_t traceTimestampValidBits = 0;
     uint32_t presentFamily = 0;
     bool hasPresentFamily = false;
 
@@ -161,11 +164,13 @@ VkResult allocateCommandBuffers(
     VkCommandPool commandPool,
     std::array<FrameResources, MaxFramesInFlight>* frames);
 
-// Create each frame slot's image-available semaphore and in-flight fence. Fences are
-// created already signaled so the first wait for every slot returns immediately. On
-// failure, handles created so far are left in *frames for VulkanContext to destroy.
+// Create each frame slot's image-available semaphore and in-flight fence, plus a
+// two-query trace timestamp pool when enableTraceTimestamps is true. Fences are created
+// already signaled so the first wait for every slot returns immediately. On failure,
+// handles created so far are left in *frames for VulkanContext to destroy.
 VkResult createFrameSyncObjects(
     VkDevice device,
+    bool enableTraceTimestamps,
     std::array<FrameResources, MaxFramesInFlight>* frames);
 
 // Create a buffer and its VMA allocation. Zero allocation flags select device-local

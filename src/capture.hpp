@@ -1,11 +1,17 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
 
 namespace xrphoton
 {
+constexpr std::uint32_t CaptureBenchmarkWarmupFrameCount = 32;
+constexpr std::uint32_t CaptureBenchmarkMeasuredFrameCount = 256;
+constexpr std::size_t CaptureTraceTimingCapacity =
+    CaptureBenchmarkWarmupFrameCount + CaptureBenchmarkMeasuredFrameCount;
+
 enum class CommandLineMode
 {
     Interactive,
@@ -17,6 +23,13 @@ struct CommandLineOptions
     CommandLineMode mode = CommandLineMode::Interactive;
     std::uint32_t captureFrameCount = 0;
     std::string captureOutputPath;
+};
+
+struct CaptureTraceTimingSummary
+{
+    double medianMilliseconds = 0.0;
+    std::uint32_t sampleCount = 0;
+    bool comparable = false;
 };
 
 // Accept either no arguments (interactive mode) or exactly:
@@ -37,6 +50,14 @@ struct CommandLineOptions
     std::uint32_t height,
     std::span<const std::uint8_t> linearRgba8,
     std::uint64_t* hash);
+
+// Summarize trace-only GPU timings. The fixed comparable protocol discards 32 warm-up
+// values and takes the median of the next 256; shorter captures report the median of
+// every available value and are explicitly diagnostic. Non-finite/negative samples,
+// an empty input, or an invalid output pointer are rejected.
+[[nodiscard]] bool summarizeCaptureTraceTimings(
+    std::span<const double> milliseconds,
+    CaptureTraceTimingSummary* summary);
 
 // Publish a binary P6 PPM. RGB is converted from linear UNORM to sRGB for visual
 // parity with presentation; alpha is intentionally omitted. All size and stream

@@ -261,6 +261,15 @@ int main(int argumentCount, char** arguments)
 
     VkPhysicalDeviceProperties physicalDeviceProperties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+    const bool traceTimestampsSupported =
+        queueFamilies.traceTimestampValidBits != 0
+        && physicalDeviceProperties.limits.timestampPeriod > 0.0f;
+
+    if (captureMode && !traceTimestampsSupported) {
+        std::cerr << "Capture requires timestamp support on the selected Vulkan "
+                     "trace queue.\n";
+        return 1;
+    }
 
     std::cout << "Selected Vulkan physical device: "
               << physicalDeviceProperties.deviceName << '\n';
@@ -369,6 +378,7 @@ int main(int argumentCount, char** arguments)
 
     const VkResult syncObjectsResult = createFrameSyncObjects(
         ctx.device,
+        traceTimestampsSupported,
         &ctx.frames);
 
     if (syncObjectsResult != VK_SUCCESS) {
@@ -377,7 +387,11 @@ int main(int argumentCount, char** arguments)
         return 1;
     }
 
-    std::cout << "Created Vulkan frame sync objects.\n";
+    std::cout << "Created Vulkan frame sync objects";
+    if (traceTimestampsSupported) {
+        std::cout << " and trace timing objects";
+    }
+    std::cout << ".\n";
 
     GalleryLoadResult loadedGallery = loadGalleryScene();
     if (!loadedGallery) {
@@ -531,6 +545,8 @@ int main(int argumentCount, char** arguments)
         .allocator = ctx.allocator,
         .traceQueue = traceQueue,
         .presentQueue = presentQueue,
+        .traceTimestampPeriod = physicalDeviceProperties.limits.timestampPeriod,
+        .traceTimestampValidBits = queueFamilies.traceTimestampValidBits,
         .frames = ctx.frames.data(),
         .accel = &accelerationStructure,
         .scene = &sceneData,
@@ -580,6 +596,8 @@ int main(int argumentCount, char** arguments)
         std::uint32_t successfulFrameCount = 0;
         std::uint32_t lastSubmittedSlot = 0;
         std::uint32_t lastRenderedFrameIndex = 0;
+        std::array<double, CaptureTraceTimingCapacity> traceTimings{};
+        std::size_t traceTimingCount = 0;
 
         while (successfulFrameCount < commandLine.captureFrameCount) {
             glfwPollEvents();
@@ -647,11 +665,34 @@ int main(int argumentCount, char** arguments)
                 return 1;
             }
 
+            if (traceTimingCount < traceTimings.size()) {
+                double traceMilliseconds = 0.0;
+                const VkResult timingResult = readTraceTimestampMilliseconds(
+                    renderer,
+                    submittedSlot,
+                    &traceMilliseconds);
+                if (timingResult != VK_SUCCESS) {
+                    std::cerr << "Failed to read Vulkan trace timestamps: "
+                              << formatVkResult(timingResult) << ".\n";
+                    return 1;
+                }
+                traceTimings[traceTimingCount] = traceMilliseconds;
+                ++traceTimingCount;
+            }
+
             lastSubmittedSlot = submittedSlot;
             lastRenderedFrameIndex = submittedFrameIndex;
             ++successfulFrameCount;
             ++frameCounter;
             currentFrame = (currentFrame + 1) % MaxFramesInFlight;
+        }
+
+        CaptureTraceTimingSummary timingSummary;
+        if (!summarizeCaptureTraceTimings(
+                std::span(traceTimings.data(), traceTimingCount),
+                &timingSummary)) {
+            std::cerr << "Failed to summarize Vulkan trace timestamps.\n";
+            return 1;
         }
 
         StorageImageReadback readback;
@@ -695,7 +736,13 @@ int main(int argumentCount, char** arguments)
                   << " hash=0x"
                   << std::hex << std::nouppercase
                   << std::setw(16) << std::setfill('0') << hash
-                  << std::dec << std::setfill(' ') << '\n';
+                  << std::dec << std::setfill(' ')
+                  << " traceMedianMs=" << std::fixed << std::setprecision(3)
+                  << timingSummary.medianMilliseconds
+                  << " traceSamples=" << timingSummary.sampleCount
+                  << " traceTiming="
+                  << (timingSummary.comparable ? "comparable" : "diagnostic")
+                  << std::defaultfloat << std::setprecision(6) << '\n';
         return 0;
     }
 

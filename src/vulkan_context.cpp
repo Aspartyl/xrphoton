@@ -278,6 +278,8 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceK
         if (isTraceCapable(index) && canPresent(index)) {
             indices.traceFamily = index;
             indices.hasTraceFamily = true;
+            indices.traceTimestampValidBits =
+                queueFamilies[index].timestampValidBits;
             indices.presentFamily = index;
             indices.hasPresentFamily = true;
             return indices;
@@ -290,6 +292,8 @@ QueueFamilyIndices findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceK
         if (!indices.hasTraceFamily && isTraceCapable(index)) {
             indices.traceFamily = index;
             indices.hasTraceFamily = true;
+            indices.traceTimestampValidBits =
+                queueFamilies[index].timestampValidBits;
         }
 
         if (!indices.hasPresentFamily && canPresent(index)) {
@@ -810,6 +814,7 @@ VkResult allocateCommandBuffers(
 
 VkResult createFrameSyncObjects(
     VkDevice device,
+    bool enableTraceTimestamps,
     std::array<FrameResources, MaxFramesInFlight>* frames)
 {
     VkSemaphoreCreateInfo semaphoreCreateInfo{};
@@ -820,6 +825,11 @@ VkResult createFrameSyncObjects(
     VkFenceCreateInfo fenceCreateInfo{};
     fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    VkQueryPoolCreateInfo queryPoolCreateInfo{};
+    queryPoolCreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    queryPoolCreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    queryPoolCreateInfo.queryCount = TraceTimestampQueryCount;
 
     for (FrameResources& frame : *frames) {
         VkResult result = vkCreateSemaphore(
@@ -836,6 +846,18 @@ VkResult createFrameSyncObjects(
 
         if (result != VK_SUCCESS) {
             return result;
+        }
+
+        if (enableTraceTimestamps) {
+            result = vkCreateQueryPool(
+                device,
+                &queryPoolCreateInfo,
+                nullptr,
+                &frame.traceTimestampQueryPool);
+
+            if (result != VK_SUCCESS) {
+                return result;
+            }
         }
     }
 
@@ -1041,10 +1063,19 @@ VulkanContext::~VulkanContext()
         (void)vkDeviceWaitIdle(device);
     }
 
-    // Each slot's sync objects go together (fence, then semaphore — reverse of their
-    // per-slot creation order); there is no cross-slot ordering requirement.
+    // Each slot's frame objects go together (query pool, fence, then semaphore —
+    // reverse of their per-slot creation order); there is no cross-slot ordering
+    // requirement.
     if (device != VK_NULL_HANDLE) {
         for (const FrameResources& frame : frames) {
+            if (frame.traceTimestampQueryPool != VK_NULL_HANDLE) {
+                vkDestroyQueryPool(
+                    device,
+                    frame.traceTimestampQueryPool,
+                    nullptr);
+                std::cout << "Destroyed Vulkan trace timestamp query pool.\n";
+            }
+
             if (frame.inFlightFence != VK_NULL_HANDLE) {
                 vkDestroyFence(device, frame.inFlightFence, nullptr);
                 std::cout << "Destroyed Vulkan in-flight fence.\n";

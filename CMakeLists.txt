@@ -658,12 +658,14 @@ find_program(XRPHOTON_SLANGC slangc REQUIRED
 # direct SPIR-V emission targets 1.5; ray tracing needs at least 1.4.
 set(SHADER_HEADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(SHADER_HEADER ${SHADER_HEADER_DIR}/raytrace_spv.h)
+set(SHADER_DEPFILE ${SHADER_HEADER_DIR}/raytrace_spv.d)
 set(TONEMAP_SHADER_HEADER ${SHADER_HEADER_DIR}/tonemap_spv.h)
 add_custom_command(
     OUTPUT ${SHADER_HEADER}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
     COMMAND ${XRPHOTON_SLANGC}
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytrace.slang
+            -I ${CMAKE_CURRENT_SOURCE_DIR}/shaders
             -DXRPHOTON_RADIANCE_RAY_TYPE=${XRPHOTON_RADIANCE_RAY_TYPE}
             -DXRPHOTON_SHADOW_RAY_TYPE=${XRPHOTON_SHADOW_RAY_TYPE}
             -DXRPHOTON_RAY_TYPE_COUNT=${XRPHOTON_RAY_TYPE_COUNT}
@@ -671,6 +673,7 @@ add_custom_command(
             -fvk-use-entrypoint-name
             -source-embed-style u32
             -source-embed-name raytrace_spv
+            -depfile ${SHADER_DEPFILE}
             -o ${SHADER_HEADER}
     # slangc's embed output uses uint32_t/size_t without including their headers;
     # prepend the includes so the generated header is self-contained. The C
@@ -679,6 +682,7 @@ add_custom_command(
     COMMAND sed -i -e "1i #include <stddef.h>" -e "1i #include <stdint.h>"
             ${SHADER_HEADER}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytrace.slang
+    DEPFILE ${SHADER_DEPFILE}
     COMMENT "Compiling raytrace.slang to SPIR-V header"
     VERBATIM
 )

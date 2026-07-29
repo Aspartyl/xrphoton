@@ -58,6 +58,14 @@ function(run_capture label output_path)
     set(final_extent "${CMAKE_MATCH_1}")
     set(hash "${CMAKE_MATCH_2}")
 
+    string(REGEX MATCH
+        "traceMedianMs=([0-9]+[.][0-9]+) traceSamples=8 traceTiming=diagnostic"
+        timing_summary
+        "${stdout}")
+    if(timing_summary STREQUAL "")
+        message(FATAL_ERROR "${label}: missing diagnostic trace timing summary")
+    endif()
+
     if(NOT start_extent STREQUAL final_extent)
         message(FATAL_ERROR
             "${label}: extent changed from ${start_extent} to ${final_extent}")

@@ -31,6 +31,8 @@ struct Renderer
     VmaAllocator allocator = nullptr;
     VkQueue traceQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
+    float traceTimestampPeriod = 0.0f;
+    std::uint32_t traceTimestampValidBits = 0;
     const FrameResources* frames = nullptr;
     AccelerationStructure* accel = nullptr;
     const SceneData* scene = nullptr;
@@ -66,6 +68,14 @@ VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
     const RaygenPushConstants& pushConstants);
+
+// Wait for and read the two GPU timestamps surrounding the most recently submitted
+// trace dispatch in frameSlot. The timestamp-period conversion and valid-bit wrap are
+// handled here; on failure *milliseconds is unchanged.
+VkResult readTraceTimestampMilliseconds(
+    const Renderer& renderer,
+    std::uint32_t frameSlot,
+    double* milliseconds);
 
 // Copy the tonemapped LDR image produced by the latest submitted frame into host memory.
 // Rendering must have stopped immediately after finalSubmittedFrameSlot's successful

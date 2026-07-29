@@ -21,6 +21,9 @@ namespace xrphoton
 {
 namespace
 {
+constexpr uint32_t TraceTimestampBeginQuery = 0;
+constexpr uint32_t TraceTimestampEndQuery = 1;
+
 class TemporaryBuffer
 {
 public:
@@ -156,6 +159,7 @@ void recordExecutionBarrier(
 //   7. transition the acquired image to PRESENT_SRC_KHR.
 VkResult recordTraceCommandBuffer(
     VkCommandBuffer commandBuffer,
+    VkQueryPool traceTimestampQueryPool,
     const RayTracingFunctions& functions,
     const RtPipeline& rt,
     const TonemapPipeline& tonemap,
@@ -175,6 +179,14 @@ VkResult recordTraceCommandBuffer(
 
     if (result != VK_SUCCESS) {
         return result;
+    }
+
+    if (traceTimestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(
+            commandBuffer,
+            traceTimestampQueryPool,
+            0,
+            TraceTimestampQueryCount);
     }
 
     // writeTlasInstances already validated and populated this frame slot after its
@@ -226,6 +238,14 @@ VkResult recordTraceCommandBuffer(
     // recordTlasRebuild's in-frame post-build barrier made the fresh TLAS visible to
     // this traversal. The dispatch dimensions were gated against the device limits
     // when the swapchain (re)appeared.
+    if (traceTimestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdWriteTimestamp(
+            commandBuffer,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            traceTimestampQueryPool,
+            TraceTimestampBeginQuery);
+    }
+
     functions.cmdTraceRays(
         commandBuffer,
         &rt.raygenRegion,
@@ -235,6 +255,14 @@ VkResult recordTraceCommandBuffer(
         extent.width,
         extent.height,
         1);
+
+    if (traceTimestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdWriteTimestamp(
+            commandBuffer,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            traceTimestampQueryPool,
+            TraceTimestampEndQuery);
+    }
 
     // Preserve HDR radiance in GENERAL while making raygen writes visible to the
     // tonemap compute shader's storage-image reads.
@@ -490,6 +518,7 @@ VkResult drawFrame(
 
     result = recordTraceCommandBuffer(
         frame.commandBuffer,
+        frame.traceTimestampQueryPool,
         *renderer.functions,
         *renderer.rtPipeline,
         *renderer.tonemapPipeline,
@@ -568,6 +597,51 @@ VkResult drawFrame(
     // Frame succeeded; surface a SUBOPTIMAL acquire (if any) so the caller can still
     // decide to recreate the swapchain.
     return acquireResult;
+}
+
+VkResult readTraceTimestampMilliseconds(
+    const Renderer& renderer,
+    std::uint32_t frameSlot,
+    double* milliseconds)
+{
+    if (milliseconds == nullptr
+        || frameSlot >= MaxFramesInFlight
+        || renderer.device == VK_NULL_HANDLE
+        || renderer.frames == nullptr
+        || renderer.frames[frameSlot].traceTimestampQueryPool == VK_NULL_HANDLE
+        || renderer.traceTimestampPeriod <= 0.0f
+        || renderer.traceTimestampValidBits == 0
+        || renderer.traceTimestampValidBits > 64) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    uint64_t timestamps[TraceTimestampQueryCount]{};
+    const VkResult result = vkGetQueryPoolResults(
+        renderer.device,
+        renderer.frames[frameSlot].traceTimestampQueryPool,
+        0,
+        TraceTimestampQueryCount,
+        sizeof(timestamps),
+        timestamps,
+        sizeof(timestamps[0]),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    const uint64_t validMask = renderer.traceTimestampValidBits == 64
+        ? std::numeric_limits<uint64_t>::max()
+        : (uint64_t{1} << renderer.traceTimestampValidBits) - 1;
+    const uint64_t elapsedTicks =
+        (timestamps[TraceTimestampEndQuery]
+            - timestamps[TraceTimestampBeginQuery])
+        & validMask;
+    const double elapsedMilliseconds = static_cast<double>(elapsedTicks)
+        * static_cast<double>(renderer.traceTimestampPeriod)
+        / 1'000'000.0;
+
+    *milliseconds = elapsedMilliseconds;
+    return VK_SUCCESS;
 }
 
 VkResult readbackStorageImage(
