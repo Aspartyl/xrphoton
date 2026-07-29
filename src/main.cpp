@@ -2,6 +2,7 @@
 #include "camera.hpp"
 #include "capture.hpp"
 #include "gallery.hpp"
+#include "gpu_lighting.hpp"
 #include "gpu_scene.hpp"
 #include "lighting.hpp"
 #include "physics.hpp"
@@ -9,6 +10,7 @@
 #include "renderer.hpp"
 #include "rt_pipeline.hpp"
 #include "scene.hpp"
+#include "scene_lighting.hpp"
 #include "swapchain.hpp"
 #include "tonemap_pipeline.hpp"
 #include "vulkan_context.hpp"
@@ -19,6 +21,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -400,6 +403,19 @@ int main(int argumentCount, char** arguments)
     }
 
     SceneData sceneData = std::move(loadedGallery.scene);
+    if (sceneData.instances.size() > std::numeric_limits<std::uint32_t>::max()) {
+        std::cerr << "Scene instance count exceeds the FrameLighting ABI.\n";
+        return 1;
+    }
+    SceneLighting sceneLighting = DefaultSceneLighting;
+    FrameLighting frameLighting;
+    if (!makeFrameLighting(
+            sceneLighting,
+            static_cast<std::uint32_t>(sceneData.instances.size()),
+            &frameLighting)) {
+        std::cerr << "Failed to pack scene lighting.\n";
+        return 1;
+    }
 
     // Declared after the borrowed scene so reverse destruction tears physics down
     // first. Physics owns dynamic transform writes but no Vulkan state.
@@ -447,6 +463,22 @@ int main(int argumentCount, char** arguments)
     std::cout << "Created Vulkan GPU scene (meshes: " << sceneData.meshes.size()
               << ", geometries: " << sceneData.geometries.size()
               << ", materials: " << sceneData.materials.size() << ").\n";
+
+    // Declared before the ray tracing pipeline so binding 5 never outlives the
+    // buffer it references. Each frame slot is written only after its fence wait.
+    GpuLighting gpuLighting;
+    const VkResult gpuLightingResult = createGpuLighting(
+        &gpuLighting,
+        physicalDevice,
+        ctx.device,
+        ctx.allocator,
+        MaxFramesInFlight);
+    if (gpuLightingResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan GPU lighting: "
+                  << formatVkResult(gpuLightingResult) << ".\n";
+        return 1;
+    }
+    std::cout << "Created Vulkan frame-lighting buffer.\n";
 
     // Declared after ctx so it destructs before the device it borrows; its destructor
     // waits for device idle itself, so ordering relative to swap is immaterial. The
@@ -522,6 +554,7 @@ int main(int argumentCount, char** arguments)
     std::cout << "Built Vulkan shader binding table.\n";
 
     writeSceneDescriptorSet(ctx.device, rtPipeline.descriptorSet, gpuScene);
+    writeLightingDescriptorSet(ctx.device, rtPipeline.descriptorSet, gpuLighting);
     std::cout << "Wrote Vulkan scene descriptor bindings.\n";
 
     TonemapPipeline tonemapPipeline;
@@ -548,6 +581,7 @@ int main(int argumentCount, char** arguments)
         .traceTimestampPeriod = physicalDeviceProperties.limits.timestampPeriod,
         .traceTimestampValidBits = queueFamilies.traceTimestampValidBits,
         .frames = ctx.frames.data(),
+        .gpuLighting = &gpuLighting,
         .accel = &accelerationStructure,
         .scene = &sceneData,
         .functions = &rayTracingFunctions,
@@ -579,8 +613,6 @@ int main(int argumentCount, char** arguments)
     double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
     uint32_t frameCounter = 0;
-    DirectionalSun sun = DefaultSun;
-
     if (captureMode) {
         if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
             std::cerr << "Failed to disable the player character for capture.\n";
@@ -646,8 +678,8 @@ int main(int argumentCount, char** arguments)
                 submittedSlot,
                 makeRaygenPushConstants(
                     makeCameraPushConstants(captureCamera, aspect),
-                    sun,
-                    submittedFrameIndex));
+                    submittedFrameIndex),
+                frameLighting);
 
             if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
                 || frameResult == VK_SUBOPTIMAL_KHR) {
@@ -849,8 +881,8 @@ int main(int argumentCount, char** arguments)
                 currentFrame,
                 makeRaygenPushConstants(
                     makeCameraPushConstants(renderCamera, aspect),
-                    sun,
-                    frameCounter));
+                    frameCounter),
+                frameLighting);
             currentFrame = (currentFrame + 1) % MaxFramesInFlight;
             ++frameCounter;
         }

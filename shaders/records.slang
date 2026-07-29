@@ -37,10 +37,38 @@ struct CameraPushConstants
 struct RaygenPushConstants
 {
     CameraPushConstants camera;
-    float3 sunDirection;
-    float pad0;
-    float3 sunRadiance;
     uint frameIndex;
+    float cameraJitterX;
+    float cameraJitterY;
+    uint reserved0;
+};
+
+// Exact 192-byte std140 record mirrored by scene_lighting.hpp. The explicit scalar
+// in every float3 lane pins offsets across the C++ and Slang ABIs.
+struct FrameLighting
+{
+    float3 sunDirection;
+    float sunCosineHalfAngle;
+    float3 sunIrradiance;
+    float sunSolidAngle;
+    float3 skyZenith;
+    float pSky;
+    float3 skyHorizon;
+    float pEmitters;
+    uint lightCount;
+    uint instanceCount;
+    float totalLightPower;
+    uint flags;
+    float4 skyPerezA;
+    float4 skyPerezB;
+    float4 skyPerezC;
+    float4 skyPerezD;
+    float4 skyPerezE;
+    float4 nightZenith;
+    float daylightBlend;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
 };
 
 struct SurfaceHit

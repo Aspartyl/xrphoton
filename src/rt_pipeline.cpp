@@ -1,9 +1,11 @@
 #include "rt_pipeline.hpp"
 
 #include "gpu_scene.hpp"
+#include "gpu_lighting.hpp"
 #include "lighting.hpp"
 #include "ray_types.hpp"
 #include "scene.hpp"
+#include "scene_lighting.hpp"
 #include "vulkan_context.hpp"
 #include "vk_mem_alloc.h"
 
@@ -103,7 +105,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // ~RtPipeline even when a later step here fails and the caller bare-returns.
     rt->device = device;
 
-    VkDescriptorSetLayoutBinding bindings[5]{};
+    VkDescriptorSetLayoutBinding bindings[6]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[0].descriptorCount = 1;
@@ -126,10 +128,17 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[4].descriptorCount = MaxSceneTextures;
     bindings[4].stageFlags = hitStageFlags;
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR
+        | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    // Bindings 6-8 are intentionally reserved for P2 light records, alias data,
+    // and emissive-instance data; they do not enter this layout until consumed.
 
     VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCreateInfo.bindingCount = 5;
+    layoutCreateInfo.bindingCount = 6;
     layoutCreateInfo.pBindings = bindings;
 
     VkResult result = vkCreateDescriptorSetLayout(
@@ -145,7 +154,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // Sized for exactly the one set. No FREE_DESCRIPTOR_SET_BIT: the set is only ever
     // released with the pool, and the resize-time rewrite goes through
     // vkUpdateDescriptorSets, which does not need it.
-    VkDescriptorPoolSize poolSizes[4]{};
+    VkDescriptorPoolSize poolSizes[5]{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -154,11 +163,13 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     poolSizes[2].descriptorCount = 2;
     poolSizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[3].descriptorCount = MaxSceneTextures;
+    poolSizes[4].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    poolSizes[4].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo poolCreateInfo{};
     poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolCreateInfo.maxSets = 1;
-    poolCreateInfo.poolSizeCount = 4;
+    poolCreateInfo.poolSizeCount = 5;
     poolCreateInfo.pPoolSizes = poolSizes;
 
     result = vkCreateDescriptorPool(device, &poolCreateInfo, nullptr, &rt->descriptorPool);
@@ -253,6 +264,26 @@ void writeSceneDescriptorSet(
     writes[2].pImageInfo = textureInfos.data();
 
     vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+}
+
+void writeLightingDescriptorSet(
+    VkDevice device,
+    VkDescriptorSet descriptorSet,
+    const GpuLighting& gpuLighting)
+{
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = gpuLighting.frameBuffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(FrameLighting);
+
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptorSet;
+    write.dstBinding = 5;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    write.pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 }
 
 VkResult createRtPipeline(

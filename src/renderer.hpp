@@ -11,6 +11,8 @@ namespace xrphoton
 {
 struct AccelerationStructure;
 struct FrameResources;
+struct FrameLighting;
+struct GpuLighting;
 struct RaygenPushConstants;
 struct RayTracingFunctions;
 struct RtPipeline;
@@ -34,6 +36,7 @@ struct Renderer
     float traceTimestampPeriod = 0.0f;
     std::uint32_t traceTimestampValidBits = 0;
     const FrameResources* frames = nullptr;
+    GpuLighting* gpuLighting = nullptr;
     AccelerationStructure* accel = nullptr;
     const SceneData* scene = nullptr;
     const RayTracingFunctions* functions = nullptr;
@@ -67,7 +70,8 @@ bool prepareRtForSwapchain(const Renderer& renderer);
 VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
-    const RaygenPushConstants& pushConstants);
+    const RaygenPushConstants& pushConstants,
+    const FrameLighting& frameLighting);
 
 // Wait for and read the two GPU timestamps surrounding the most recently submitted
 // trace dispatch in frameSlot. The timestamp-period conversion and valid-bit wrap are

@@ -6,45 +6,36 @@
 #include <cstdint>
 #include <type_traits>
 
-#include <glm/vec3.hpp>
-
 namespace xrphoton
 {
-// Per-dispatch state consumed by raygen. CameraPushConstants remains the stable
-// 64-byte prefix; the explicit scalar after each vec3 pins the complete payload to
-// the same 16-byte member boundaries used by the shader.
+// View-only per-dispatch state consumed by raygen. Lighting is published through
+// FrameLighting, so neither source can silently diverge from the other.
 struct RaygenPushConstants
 {
     CameraPushConstants camera;
-    glm::vec3 sunDirection; float pad0 = 0.0f;
-    glm::vec3 sunRadiance;  std::uint32_t frameIndex = 0;
+    std::uint32_t frameIndex = 0;
+    float cameraJitterX = 0.0f;
+    float cameraJitterY = 0.0f;
+    std::uint32_t reserved0 = 0;
 };
 static_assert(std::is_standard_layout_v<RaygenPushConstants>,
     "offsetof requires the CPU mirror to remain standard-layout");
-static_assert(sizeof(RaygenPushConstants) == 96,
+static_assert(sizeof(RaygenPushConstants) == 80,
     "raygen push constants must stay within the 128-byte Vulkan minimum");
 static_assert(offsetof(RaygenPushConstants, camera) == 0
-    && offsetof(RaygenPushConstants, sunDirection) == 64
-    && offsetof(RaygenPushConstants, sunRadiance) == 80
-    && offsetof(RaygenPushConstants, frameIndex) == 92,
+    && offsetof(RaygenPushConstants, frameIndex) == 64
+    && offsetof(RaygenPushConstants, cameraJitterX) == 68
+    && offsetof(RaygenPushConstants, cameraJitterY) == 72
+    && offsetof(RaygenPushConstants, reserved0) == 76,
     "field offsets are the shader ABI, not just the total size");
 
-// Engine-neutral directional-light input. Direction points from a surface toward
-// the sun; makeRaygenPushConstants owns normalization at the GPU boundary.
-struct DirectionalSun
-{
-    glm::vec3 direction{};
-    glm::vec3 radiance{};
-};
-
-extern const DirectionalSun DefaultSun;
-
-// Preserve the already-built camera payload byte-for-byte, normalize a finite
-// nondegenerate sun direction, and attach the per-frame sampling index.
+// Preserve the camera prefix byte-for-byte and attach temporal view state. Phase 1
+// passes zero jitter; the pinned fields reserve the later temporal-camera ABI.
 [[nodiscard]] RaygenPushConstants makeRaygenPushConstants(
     const CameraPushConstants& camera,
-    const DirectionalSun& sun,
-    std::uint32_t frameIndex);
+    std::uint32_t frameIndex,
+    float cameraJitterX = 0.0f,
+    float cameraJitterY = 0.0f);
 
 // Small stateless PCG permutation used as the CPU reference for the matching Slang
 // RNG. Unsigned overflow is intentional and defined.

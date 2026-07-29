@@ -344,6 +344,36 @@ if(BUILD_TESTING)
     )
 endif()
 
+# Scene-lighting policy is engine-neutral and remains testable in the offline preset.
+# GLM is a header-only math dependency, not a graphics SDK dependency.
+find_package(glm REQUIRED)
+if(TARGET glm::glm)
+    set(XRPHOTON_GLM_TARGET glm::glm)
+elseif(TARGET glm)
+    set(XRPHOTON_GLM_TARGET glm)
+else()
+    message(FATAL_ERROR "The GLM package did not export a supported CMake target")
+endif()
+
+# The runtime umbrella starts with its engine-neutral lighting authority so the
+# graphics-free preset exercises the same library object as the renderer build.
+# Engine-enabled configuration appends the remaining runtime adapters below.
+add_library(xrPhotonOgfxRuntime STATIC
+    src/scene_lighting.cpp
+)
+target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonOgfxRuntime PUBLIC xrPhotonOgfx ${XRPHOTON_GLM_TARGET})
+
+if(BUILD_TESTING)
+    add_executable(xrPhotonSceneLightingTests
+        tests/scene_lighting_tests.cpp
+    )
+    target_compile_options(xrPhotonSceneLightingTests PRIVATE -Wall -Wextra)
+    target_link_libraries(xrPhotonSceneLightingTests PRIVATE xrPhotonOgfxRuntime)
+    add_test(NAME scene_lighting COMMAND xrPhotonSceneLightingTests)
+endif()
+
 option(XRPHOTON_BUILD_ENGINE "Build the Vulkan renderer executable" ON)
 if(NOT XRPHOTON_BUILD_ENGINE)
     # Offline compiler work must remain buildable on machines with no graphics SDK.
@@ -484,29 +514,15 @@ option(XRPHOTON_ENABLE_VALIDATION "Request the Vulkan validation layer and debug
 
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
-find_package(glm REQUIRED)
-
-# Current GLM packages export glm::glm; older distro packages used glm. Resolve
-# that packaging variance here so the rest of the build has one dependency name.
-if(TARGET glm::glm)
-    set(XRPHOTON_GLM_TARGET glm::glm)
-elseif(TARGET glm)
-    set(XRPHOTON_GLM_TARGET glm)
-else()
-    message(FATAL_ERROR "The GLM package did not export a supported CMake target")
-endif()
 
 # Runtime adaptation stays Vulkan-free but maps the dependency-free decoded model
 # into SceneData, whose instance type uses GLM. Keeping this as a second layer lets
 # the byte decoder and malformed-file tests remain available in ogfx-core builds.
-add_library(xrPhotonOgfxRuntime STATIC
+target_sources(xrPhotonOgfxRuntime PRIVATE
     src/ogfx_loader.cpp
     src/scene_assembly.cpp
     src/texture_loader.cpp
 )
-target_include_directories(xrPhotonOgfxRuntime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_options(xrPhotonOgfxRuntime PRIVATE -Wall -Wextra)
-target_link_libraries(xrPhotonOgfxRuntime PUBLIC xrPhotonOgfx ${XRPHOTON_GLM_TARGET})
 # These values are also passed to slangc below. Together they are a routing ABI rather
 # than tunables: the semantic indices, SBT records, and shader variants change as one.
 set(XRPHOTON_RADIANCE_RAY_TYPE 0)
@@ -716,6 +732,7 @@ add_executable(xrPhoton
     src/vulkan_context.cpp
     src/swapchain.cpp
     src/acceleration_structure.cpp
+    src/gpu_lighting.cpp
     src/gpu_scene.cpp
     src/camera.cpp
     src/lighting.cpp

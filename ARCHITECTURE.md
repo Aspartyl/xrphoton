@@ -22,6 +22,12 @@ depfiles now make imported-source edits rebuild that header. On timestamp-capabl
 queues, a per-frame GPU query pair measures only `vkCmdTraceRaysKHR`; capture reports a
 diagnostic median for short runs and the comparable median after the fixed 32-warm-up +
 256-measured protocol. Interactive rendering does not require timestamp support.
+Phase P1 moves all analytic light state into one Vulkan-free `SceneLighting` authority
+and publishes its exact 192-byte `FrameLighting` record through a fence-protected
+dynamic uniform-buffer slot. Raygen now samples sky lighting explicitly at every
+surface, traces an infinite alpha-aware visibility ray, and combines that estimator
+with sky hits from the ordinary BSDF path using the power heuristic. The delta sun is
+still evaluated separately at every vertex and never enters the non-delta selector.
 The repository-owned crate is now a live Jolt body: it spawns above the yard,
 falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
 transform into `SceneData`; the renderer remains physics-agnostic, writing one
@@ -203,12 +209,14 @@ the renderer layering.)
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` / `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
-| [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free `DirectionalSun`, 96-byte `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain frame state composed by `main()`; shared ABI/test authority, not a GPU resource owner |
+| [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free 80-byte view-only `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain per-dispatch state composed by `main()`; lighting does not ride this path |
+| [src/scene_lighting.hpp](src/scene_lighting.hpp) / [.cpp](src/scene_lighting.cpp) and [src/frame_lighting_layout.hpp](src/frame_lighting_layout.hpp) | Vulkan-free mutable sun/sky authority, exact 192-byte `FrameLighting` ABI and flags, selector packing, CPU sky evaluation/sample/PDF/MIS references, and checked dynamic-slot arithmetic | Plain scene state plus immutable per-frame publications; available to the `ogfx-core` headless suite |
+| [src/gpu_lighting.hpp](src/gpu_lighting.hpp) / [.cpp](src/gpu_lighting.cpp) | `GpuLighting` RAII owner for the persistently mapped, host-coherent dynamic uniform buffer and checked per-slot publication | Program lifetime — one aligned subrange per frame in flight, rewritten only after its fence wait |
 | [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) | Vulkan-free command-line parsing, checked raw RGBA8 hashing, linear-to-sRGB PPM publication, and fixed-protocol trace-timing median policy | One-shot capture policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
-| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (descriptor set layout/pool/set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, `writeRtDescriptorSet`, `writeSceneDescriptorSet` | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
+| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (six-binding descriptor set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, and the render/scene/lighting descriptor writers | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/tonemap.hpp](src/tonemap.hpp) / [src/tonemap_pipeline.hpp](src/tonemap_pipeline.hpp) / [.cpp](src/tonemap_pipeline.cpp) | Fixed exposure/dispatch ABI plus `TonemapPipeline`, its two-image descriptor set, compute pipeline, and resize rewrite | Program lifetime pipeline over resize-bound HDR/LDR images |
-| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene and acceleration-structure owner), `drawFrame` with its post-fence per-slot instance write, trace-only timestamp readback, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
+| [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene plus GPU-lighting and acceleration-structure owners), `drawFrame` with its post-fence lighting/instance slot writes, trace-only timestamp readback, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
 
 ### Header dependency rule
@@ -218,8 +226,8 @@ Includes are kept acyclic by a deliberate rule:
 - `swapchain.hpp` only **forward-declares** `QueueFamilyIndices`.
 - `acceleration_structure.hpp` and `rt_pipeline.hpp` only **forward-declare**
   the scene/RT types they borrow; `gpu_scene.hpp` forward-declares `SceneData`.
-- `renderer.hpp` only **forward-declares** `AccelerationStructure`,
-  `RaygenPushConstants`, `FrameResources`, `RayTracingFunctions`, `RtPipeline`,
+- `renderer.hpp` only **forward-declares** `AccelerationStructure`, `FrameLighting`,
+  `GpuLighting`, `RaygenPushConstants`, `FrameResources`, `RayTracingFunctions`, `RtPipeline`,
   `SceneData`, and `Swapchain`; it
   never mentions `VulkanContext` — the renderer borrows specific handles, not the
   context, so the unit is decoupled from bring-up entirely.
@@ -441,26 +449,33 @@ returns `1` on failure (RAII handles the unwind):
 12. **GPU scene.** `createGpuScene` gates both shader-record buffers against
     `maxStorageBufferRange`, then uploads its five geometry/record buffers and all
     sampled scene images through the borrowed frame-0 slot.
-13. **Acceleration structures.** `buildAccelerationStructures` — see
+13. **GPU lighting.** `SceneLighting` validates and packs the default analytic sun
+    and sky into `FrameLighting`; `createGpuLighting` queries
+    `minUniformBufferOffsetAlignment`, checks the complete allocation and 32-bit
+    dynamic-offset arithmetic, and creates one mapped uniform-buffer subrange per
+    frame slot.
+14. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). It takes the frame-slot
     count, builds the stable fields of the TLAS instance template, allocates one
     mapped instance input per slot plus persistent TLAS rebuild scratch, and performs
     the initial BLAS/TLAS build. It borrows `frames[0]`'s command buffer and in-flight
     fence from step 9 and returns them in the state the first `drawFrame` expects;
     the other frame slots remain signaled and untouched.
-14. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
-    `buildShaderBindingTable` → `writeSceneDescriptorSet` — see
+15. **Ray tracing pipeline.** `createRtDescriptorSet` → `createRtPipeline` →
+    `buildShaderBindingTable` → `writeSceneDescriptorSet` →
+    `writeLightingDescriptorSet` — see
     [Ray tracing pipeline](#ray-tracing-pipeline).
-15. **Tonemap pipeline.** Create its descriptor machinery and embedded compute
+16. **Tonemap pipeline.** Create its descriptor machinery and embedded compute
     pipeline; image bindings are supplied by the shared prepare step below.
-16. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
+17. **Renderer view.** The `Renderer` bundle is populated — last, once every handle
     and object it borrows exists, including `ctx.frames.data()`, the acceleration
-    structures, and the CPU scene — then the initial
+    structures, GPU lighting, and the CPU scene — then the initial
     `prepareRtForSwapchain` (descriptor write + dispatch-limit gate) runs against it.
-17. **Render loop.** Update the camera, call `stepPhysics` (also on resize-dirty
-    iterations), compose the camera/sun/frame-index raygen payload, then call
-    `drawFrame(renderer, currentFrame, raygenPush)`;
-    `drawFrame` writes that slot's complete TLAS instance array and records an
+18. **Render loop.** Update the camera, call `stepPhysics` (also on resize-dirty
+    iterations), compose the camera/frame-index view payload, then call
+    `drawFrame(renderer, currentFrame, raygenPush, frameLighting)`;
+    `drawFrame` writes that slot's `FrameLighting` and complete TLAS instance array,
+    then records an
     in-place TLAS rebuild before tracing. Rotate `currentFrame` modulo
     `MaxFramesInFlight`; recreate when GLFW reports a framebuffer resize or
     acquire/present returns out-of-date/suboptimal, followed by
@@ -572,18 +587,18 @@ simulation advances at clamped real time rather than presentation count. A physi
 failure is loud and exits the loop.
 
 `main()` then derives the camera prefix from the selected camera and current
-`swap.extent` aspect ratio, and composes it with the directional sun and successful
-frame index into `RaygenPushConstants` (the extent is read fresh every iteration, so
+`swap.extent` aspect ratio, and composes it with the successful frame index and the
+Phase-P1 zero jitter into `RaygenPushConstants` (the extent is read fresh every iteration, so
 a recreate needs no camera-specific handling). A GLFW framebuffer-size callback sets a resize-dirty flag;
 a dirty iteration goes straight to recreation because some Wayland compositor/driver
 pairs continue scaling an old swapchain without returning `OUT_OF_DATE` or
 `SUBOPTIMAL`. The flag is cleared only after the legal Vulkan extent has been selected
 and recreation succeeds, so a surface-fixed or min/max-clamped extent cannot cause a
 comparison loop. `main()` owns a `currentFrame` cursor and rotates it after every
-`drawFrame(renderer, currentFrame, raygenPush)` call; a resize-dirty iteration skips the
+`drawFrame(renderer, currentFrame, raygenPush, frameLighting)` call; a resize-dirty iteration skips the
 draw and leaves the cursor unchanged. Each slot has its own command buffer,
-image-available semaphore, in-flight fence, mapped TLAS-instance input, and an optional
-trace timestamp query pool.
+image-available semaphore, in-flight fence, mapped TLAS-instance input, aligned
+dynamic `FrameLighting` subrange, and an optional trace timestamp query pool.
 `drawFrame` in [src/renderer.cpp](src/renderer.cpp) reaches everything through the
 `Renderer` view (the raygen payload rides as a parameter, not a `Renderer` member — it
 is per-frame data, not a program-lifetime handle):
@@ -591,8 +606,9 @@ is per-frame data, not a program-lifetime handle):
 ```
 frame = frames[frameIndex]
 vkWaitForFences(frame.inFlightFence)   // block until this slot's prior submit retired
+writeFrameLightingSlot(frameIndex)     // rewrite this slot; compute dynamic offset
 writeTlasInstances(frameIndex)         // validate transforms; rewrite only this slot
-  └─ failure             -> return before acquiring a swapchain image
+  └─ either failure      -> return before acquiring a swapchain image
 vkAcquireNextImageKHR                  // -> imageIndex, signals frame.imageAvailableSemaphore
   ├─ OUT_OF_DATE        -> return (caller recreates the swapchain)
   └─ bounds-check imageIndex against the per-image vectors
@@ -631,8 +647,9 @@ swapchain image:
    what the descriptor set declared. The source stage chains from the previous
    frame's trailing HDR barrier without involving the acquire wait's
    `TRANSFER` stage.
-3. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`,
-   push the frame's `RaygenPushConstants` (`vkCmdPushConstants`, raygen-only —
+3. Bind the pipeline and descriptor set at `PIPELINE_BIND_POINT_RAY_TRACING_KHR`
+   with this slot's checked dynamic-lighting offset, then push the frame's
+   `RaygenPushConstants` (`vkCmdPushConstants`, raygen-only —
    recorded into this slot's own command buffer after its fence wait, which is
    what makes the frame payload race-free across frames in flight by construction),
    when timing is supported, write timestamps immediately around
@@ -681,6 +698,11 @@ The recorded P0 yard baseline (2026-07-28) is **0.412 ms** at 1920×1080 on an N
 GeForce RTX 5070 Ti, driver 595.71.05, using the validation-enabled debug build with
 MangoHud disabled. The monolithic control and split shader both produced frame-7 hash
 `0x9725f7b1e5652acb` and byte-identical PPMs under those conditions.
+Under the same fixed 32+256 protocol, P1 records **0.582 ms** and final-frame hash
+`0x5726093472c82064`: sky NEE plus MIS costs **0.170 ms** over P0, within the
+phase's 1 ms trace budget. Short overlay-free plain and synchronization-validation
+captures agree on frame-7 hash `0xd6550332dd29cf6c`; GPU-assisted instrumentation is
+also validation-clean but is not a performance or cross-mode hash reference.
 Because capture reads each query pair with `WAIT_BIT` before submitting its next frame,
 this is a serialized-capture trace duration for like-for-like phase comparisons, not
 interactive two-frames-in-flight throughput or a total frame-time budget.
@@ -697,6 +719,7 @@ The frame model has two rotating frame slots:
 | `frames[i].commandBuffer` | one **per frame in flight** | `VulkanContext` | Reset and rerecorded only after the matching in-flight fence proves the slot's previous submission has retired. |
 | `frames[i].traceTimestampQueryPool` | one **per frame in flight when supported** | `VulkanContext` | Two queries reset after slot retirement and written immediately before/after the RT dispatch; capture reads them with availability waiting. Null on trace families without timestamp support. |
 | `instanceSlots[i]` | one **per frame in flight** | `AccelerationStructure` | Persistently mapped, host-coherent TLAS build input. The CPU rewrites only the slot whose matching fence has completed, so an in-flight build never races a host write. |
+| `GpuLighting.frameLayout` subrange `i` | one **per frame in flight** | `GpuLighting` | Persistently mapped, host-coherent dynamic uniform data. The CPU rewrites only the retired slot and binds `i × stride` as a checked 32-bit dynamic offset. |
 
 Synchronization details worth preserving:
 
@@ -722,9 +745,10 @@ Synchronization details worth preserving:
 - **Fence before semaphore reuse.** `drawFrame` waits the frame slot's fence before
   acquiring with that slot's image-available semaphore again, proving any prior
   submission that consumed the semaphore has retired before the semaphore is reused.
-  That same wait precedes `writeTlasInstances`, proving the prior build has stopped
-  reading this slot's mapped buffer; the fallible validation/write remains before
-  acquire so failure cannot strand an acquired image.
+  That same wait precedes `writeFrameLightingSlot` and `writeTlasInstances`, proving
+  raygen and the prior build have stopped reading both mapped slot ranges. Both
+  host-coherent fallible writes remain before acquire, so failure cannot strand an
+  acquired image and neither allocation needs an explicit flush.
 - **Terminal capture readback.** Capture queues no later draw after its selected
   frame. Waiting that slot's fence makes the shared LDR image safe to copy and
   makes reusing the slot command buffer legal. The copy submit has no acquire/present
@@ -1058,16 +1082,19 @@ Decisions and contracts worth preserving:
   [lighting.slang](shaders/lighting.slang) for analytic light evaluation. `rayGenMain`
   (perspective rays from the frame constants, an eight-vertex iterative throughput
   loop, direct Lambert+GGX sun lighting with a hard visibility trace at each hit,
-  sampled diffuse/GGX indirect transport with Russian roulette, and the HDR
+  one cosine-sampled sky visibility ray with power-heuristic MIS against BSDF sky
+  hits, evaluation of the black-lower-hemisphere/horizon-to-zenith environment on a
+  miss, sampled diffuse/GGX indirect transport with Russian roulette, and the HDR
   storage-image write at binding 1,
   `[format("rgba16f")]` because the device's
-  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns a
-  procedural horizon-to-zenith sky plus a miss flag), `closestHitMain` (indexed BDA fetch of
+  `shaderStorageImageWriteWithoutFormat` is not enabled), `missMain` (returns only a
+  miss marker),
+  `closestHitMain` (indexed BDA fetch of
   sampled albedo and un-oriented shading/geometric normals), and `anyHitMain`
   (the same indexed UV/material fetch followed by sampled-alpha × material-alpha
   comparison against `alphaCutoff`, calling `IgnoreHit` below the cutoff). The
   shadow route initializes visibility to occluded, lets `shadowMissMain` mark an
-  unobstructed sun, and uses the lean `shadowAnyHitMain` to pass through the same
+  unobstructed sun or sky direction, and uses the lean `shadowAnyHitMain` to pass through the same
   alpha cutouts without fetching normals or gradients. Radiance rays use
   `RAY_FLAG_NONE`; shadow rays accept the first hit and skip closest-hit. In both
   cases per-geometry BLAS flags and SBT selection, not `RAY_FLAG_FORCE_OPAQUE`,
@@ -1134,11 +1161,28 @@ Decisions and contracts worth preserving:
   and samples normalized-energy diffuse/specular lobes with cosine or GGX VNDF
   sampling. The matching mixture PDF drives throughput; paths reach at most eight
   vertices and use `[0.05, 0.95]` throughput-based Russian roulette after vertex 3.
+  At every surface raygen also draws one non-delta selector sample. P1's sole branch
+  cosine-samples the sky about the shading normal, traces an infinite alpha-aware
+  visibility ray, and weights the result against the dielectric mixture PDF with the
+  exponent-2 power heuristic. A later BSDF ray that misses evaluates the sky in
+  raygen—not the miss stage—and receives the complementary weight against the saved
+  sky density. The sun stays a separately evaluated delta estimator and is never in
+  this selector.
   Secondary directions use a sign-stable Duff basis, are rejected rather than
   resampled when they fall below the geometric normal, and launch from the
   geometric-normal offset. The matching
   C++/Slang PCG permutation seeds each pixel from its coordinates and frame index;
   capture mode therefore reproduces a selected noisy frame without accumulation.
+- **One lighting authority and pinned ABI.** `SceneLighting` owns the mutable analytic
+  sun and sky without Vulkan state, validates finite nonnegative coefficients,
+  normalizes a powered sun, derives selector probabilities, and transactionally packs
+  `FrameLighting`. The `alignas(16)` record is exactly 192 bytes: sun lanes at 0/16,
+  sky lanes at 32/48, counts/power/flags at 64, five Perez `float4`s at 80–144,
+  `nightZenith` at 160, then daylight blend and reserved words at 176–188. P1 sets
+  Perez/glass/estimator flags to zero, `pSky` to one only for a powered enabled sky,
+  and `pEmitters` to zero; sun power cannot change those probabilities. `GpuLighting`
+  rounds this size to `minUniformBufferOffsetAlignment` with checked `VkDeviceSize`
+  allocation math and rejects any dynamic offset that cannot fit `uint32_t`.
 - **Descriptor set:** binding 0 TLAS and binding 1 HDR storage image are raygen-only;
   binding 2 is the geometry storage buffer visible to hit stages, while binding 3's
   material records are visible to hit stages and raygen for BRDF scalar lookup. Binding
@@ -1146,13 +1190,17 @@ Decisions and contracts worth preserving:
   any-hit. Startup writes every slot: real scene images first, then the
   white fallback view in every unused slot, all sharing one sampler. The shader uses
   `NonUniformResourceIndex`; no partially-bound, variable-count, or runtime-array
-  feature is enabled. The pool holds exactly the one
+  feature is enabled. Binding 5 is `UNIFORM_BUFFER_DYNAMIC`, visible to raygen and
+  closest-hit, with descriptor offset zero and range exactly `sizeof(FrameLighting)`;
+  each trace supplies `frameSlot × alignedStride`. Bindings 6–8 are reserved for the
+  later light-record/alias/emissive-instance buffers and are not live layout entries.
+  The pool holds exactly the one
   set, without `FREE_DESCRIPTOR_SET_BIT` (the set is only released with the pool).
   The TLAS write chains `VkWriteDescriptorSetAccelerationStructureKHR` via `pNext`;
   the image write declares `IMAGE_LAYOUT_GENERAL`, which the frame's first barrier
   makes true before every trace.
 - **Pipeline layout: the one set layout plus a raygen-only push-constant range**
-  (`sizeof(RaygenPushConstants)`, 96 bytes at offset 0). The frame path's
+  (`sizeof(RaygenPushConstants)`, 80 bytes at offset 0). The frame path's
   `vkCmdPushConstants` uses the identical stage flags — the
   `vkCmdPushConstants` VUIDs require every pushed byte+stage to fall inside a
   declared range and the push to cover every stage of any range it overlaps.
@@ -1199,14 +1247,12 @@ character is suspended for the entire time the free view is active.
 
 Decisions and contracts worth preserving:
 
-- **Push constants over per-frame uniform buffers, deliberately.** The payload
-  is 64 bytes — half the spec-guaranteed 128-byte `maxPushConstantsSize` — it is
+- **Camera view state stays in push constants.** The payload is 80 bytes — below
+  the spec-guaranteed 128-byte `maxPushConstantsSize` — it is
   recorded into each frame slot's own command buffer after that slot's fence
   wait, so frames in flight cannot race on it *by construction*, and no
-  descriptor layout change was needed (only the push range on the pipeline
-  layout). Per-`FrameResources`-slot uniform buffers are the designated
-  promotion path when a payload outgrows the push range — expected at scene
-  time, not camera time.
+  per-slot memory publication is necessary. Scene lighting is deliberately separate:
+  its larger 192-byte record uses `GpuLighting`'s dynamic uniform-buffer slots.
 - **Origin + pre-scaled ray basis, not inverse view/projection matrices.**
   `CameraPushConstants` carries the camera origin plus three basis vectors:
   `forward` unit-length, `right`/`up` pre-scaled on the CPU by
@@ -1224,10 +1270,10 @@ Decisions and contracts worth preserving:
   normalizing a zero vector is the classic NaN that permanently poisons the
   position. The GLM column-major to Vulkan row-major 3x4 conversion has one
   owner in `acceleration_structure.cpp`.
-- **Frame-constant ABI.** The 96-byte raygen block begins with the stable camera
+- **Frame-constant ABI.** The 80-byte raygen block begins with the stable camera
   prefix: four `float3` fields at 16-byte offsets (0/16/32/48). The CPU structs pin
-  that prefix plus sun direction at 64, sun radiance at 80, and frame index at 92
-  with explicit pads and `static_assert`s on `sizeof` and every `offsetof`.
+  that prefix plus frame index at 64, camera jitter at 68/72, and one zero reserved
+  word at 76 with `static_assert`s on `sizeof` and every `offsetof`. P1 jitter is zero.
   Raygen hashes the frame index with the launch pixel to decorrelate its diffuse
   sample between interactive frames while keeping fixed-index captures repeatable.
   `float3` rounds up to 16-byte alignment under every relevant GPU layout rule, so
@@ -1380,15 +1426,17 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **Phase P0 plus HDR, general dielectric materials, and
-   multi-bounce transport landed** — the shader is split into depfile-tracked imported
-   modules and trace-only GPU timing establishes the fixed 32+256 cost protocol.
-   Raygen owns an eight-vertex loop, direct Lambert+GGX sun
-   evaluation at every hit, hard alpha-aware shadow rays, a procedural sky,
-   diffuse/GGX VNDF mixture sampling, and Russian roulette. OGFx material v2 carries
+4. **Lighting + path tracing.** **Phases P0 and P1 plus HDR, general dielectric
+   materials, and multi-bounce transport landed** — the shader is split into
+   depfile-tracked imported modules and trace-only GPU timing establishes the fixed
+   32+256 cost protocol. `SceneLighting`/`GpuLighting` provide one per-frame light
+   authority and an aligned dynamic uniform slot. Raygen owns an eight-vertex loop,
+   direct Lambert+GGX delta-sun evaluation at every hit, hard alpha-aware shadow rays,
+   sky NEE with power-heuristic MIS against BSDF misses, diffuse/GGX VNDF mixture
+   sampling, and Russian roulette. OGFx material v2 carries
    roughness/F0 while v1 maps to deliberate defaults. The renderer still needs
    metallic/transmissive material classes, emissive geometry, and a time-varying
-   sun/sky model. Many-light sampling
+   sun/sky model. P2 still adds emissive records and many-light selection. Many-light sampling
    is a first-class requirement, not a stress case — a campsite ringed by
    anomalies at night is the ordinary frame — so NEE lands with light-selection
    sampling from the start and a ReSTIR-class upgrade as the tracked follow-up.

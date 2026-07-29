@@ -195,8 +195,9 @@ package is required. Jolt is MIT-licensed, with its verbatim license at
 thread-pool exception-safety fix is recorded in
 [`third_party/jolt/XRPHOTON_PATCHES.md`](third_party/jolt/XRPHOTON_PATCHES.md).
 
-The offline OGFx writer, decoder, and their tests can be configured without
-Vulkan, GLFW, GLM, Slang, or a GPU SDK:
+The offline OGFx writer, decoder, scene-lighting policy, and their tests require only
+the C++ toolchain plus header-only GLM; they configure without Vulkan, GLFW, Slang,
+Jolt, or a GPU SDK:
 
 ```sh
 cmake --preset ogfx-core

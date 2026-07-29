@@ -7,6 +7,7 @@
 namespace xrphoton
 {
 struct RayTracingFunctions;
+struct GpuLighting;
 struct GpuScene;
 struct SceneData;
 
@@ -60,8 +61,8 @@ struct RtPipeline
 };
 
 // Create the descriptor set layout (binding 0 the TLAS, binding 1 the HDR radiance image,
-// bindings 2–3 the geometry/material records, and binding 4 the fixed scene-texture
-// array), a pool sized for exactly one set,
+// bindings 2–3 the geometry/material records, binding 4 the fixed scene-texture
+// array, and binding 5 the dynamic FrameLighting uniform), a pool sized for one set,
 // and allocate that set.
 // Adopts device into *rt first, so on failure *rt holds whatever was created so far
 // and ~RtPipeline cleans it up; the caller can bare-return.
@@ -84,6 +85,13 @@ void writeSceneDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,
     const GpuScene& gpuScene);
+
+// Write binding 5 once at startup with base offset zero and an exact one-record
+// range. Each trace selects its retired frame slot through a dynamic offset.
+void writeLightingDescriptorSet(
+    VkDevice device,
+    VkDescriptorSet descriptorSet,
+    const GpuLighting& gpuLighting);
 
 // Create the pipeline layout (the one descriptor set plus raygen frame constants)
 // and the ray tracing pipeline: six stages sharing the embedded shader module and

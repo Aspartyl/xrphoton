@@ -17,8 +17,9 @@ import lighting;
 
 static const uint RadianceRayType = XRPHOTON_RADIANCE_RAY_TYPE;
 static const uint ShadowRayType = XRPHOTON_SHADOW_RAY_TYPE;
-static const float SceneTMax = 100.0;
-static const float ShadowTMax = 1.0e30;
+// Radiance rays that may reach the environment and infinite visibility rays must
+// share one horizon or their MIS techniques estimate different integrals.
+static const float InfiniteRayTMax = 1.0e30;
 static const float SurfaceRayOffset = 1.0e-3;
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
@@ -42,6 +43,11 @@ StructuredBuffer<MaterialRecord> materials;
 // repeat the opaque-white fallback, so no partially-bound descriptor feature is used.
 [[vk::binding(4, 0)]]
 Sampler2D sceneTextures[1024];
+
+// Bindings 6-8 are reserved for P2 light records, alias tables, and emissive
+// instance data. Binding 5 alone is live in Phase 1.
+[[vk::binding(5, 0)]]
+ConstantBuffer<FrameLighting> frameLighting;
 
 [[vk::push_constant]]
 ConstantBuffer<RaygenPushConstants> frameConstants;
@@ -204,7 +210,11 @@ void rayGenMain()
     // unit length, while right/up already include FOV and aspect scaling.
     uint2 pixel = DispatchRaysIndex().xy;
     float2 dimensions = float2(DispatchRaysDimensions().xy);
-    float2 ndc = (float2(pixel) + 0.5) / dimensions * 2.0 - 1.0;
+    float2 cameraJitter = float2(
+        frameConstants.cameraJitterX,
+        frameConstants.cameraJitterY);
+    float2 ndc = (float2(pixel) + 0.5 + cameraJitter)
+        / dimensions * 2.0 - 1.0;
     float2 ndcStep = 2.0 / dimensions;
 
     // Launch IDs count rows downward from the top of the image, so ndc.y is still
@@ -217,9 +227,9 @@ void rayGenMain()
         + ndc.x * frameConstants.camera.right
         - ndc.y * frameConstants.camera.up);
     // tMin keeps self-intersection conventions even though nothing here can
-    // self-intersect; SceneTMax comfortably covers the unit-scale scene.
+    // self-intersect. The infinite horizon matches sky visibility rays.
     ray.TMin = 0.001;
-    ray.TMax = SceneTMax;
+    ray.TMax = InfiniteRayTMax;
 
     float3 rayDirectionX = normalize(
         frameConstants.camera.forward
@@ -233,6 +243,8 @@ void rayGenMain()
     static const uint MaxPathVertices = 8;
     float3 radiance = float3(0.0);
     float3 throughput = float3(1.0);
+    float previousBsdfPdf = 0.0;
+    float previousSkyPdf = 0.0;
     uint rngState = pcgHash(
         pixel.x + pcgHash(pixel.y + pcgHash(frameConstants.frameIndex)));
     for (uint pathVertex = 0; pathVertex < MaxPathVertices; ++pathVertex)
@@ -260,7 +272,12 @@ void rayGenMain()
 
         if (hit.hitT < 0.0)
         {
-            radiance += throughput * hit.albedo;
+            float missWeight = pathVertex == 0
+                ? 1.0
+                : powerHeuristic(previousBsdfPdf, previousSkyPdf);
+            radiance += throughput
+                * skyRadiance(frameLighting, ray.Direction)
+                * missWeight;
             break;
         }
 
@@ -271,9 +288,14 @@ void rayGenMain()
             -ray.Direction);
         MaterialRecord material = materials[hit.materialIndex];
         float3 wo = -ray.Direction;
-        float shadingCosine = dot(normals.shading, frameConstants.sunDirection);
-        float geometricCosine = dot(normals.geometric, frameConstants.sunDirection);
-        if (shadingCosine > 0.0 && geometricCosine > 0.0)
+        float shadingCosine = dot(normals.shading, frameLighting.sunDirection);
+        float geometricCosine = dot(normals.geometric, frameLighting.sunDirection);
+        float maximumSunIrradiance = max(
+            frameLighting.sunIrradiance.x,
+            max(frameLighting.sunIrradiance.y, frameLighting.sunIrradiance.z));
+        if (maximumSunIrradiance > 0.0
+            && shadingCosine > 0.0
+            && geometricCosine > 0.0)
         {
             ShadowPayload shadow;
             shadow.visibility = 0.0;
@@ -281,9 +303,9 @@ void rayGenMain()
             RayDesc shadowRay;
             shadowRay.Origin = worldPosition
                 + normals.geometric * SurfaceRayOffset;
-            shadowRay.Direction = frameConstants.sunDirection;
+            shadowRay.Direction = frameLighting.sunDirection;
             shadowRay.TMin = 0.0;
-            shadowRay.TMax = ShadowTMax;
+            shadowRay.TMax = InfiniteRayTMax;
 
             TraceRay(
                 topLevelAS,
@@ -302,12 +324,76 @@ void rayGenMain()
                 material.dielectricF0,
                 normals.shading,
                 wo,
-                frameConstants.sunDirection);
+                frameLighting.sunDirection);
             radiance += throughput
                 * sunBrdf
-                * frameConstants.sunRadiance
+                * frameLighting.sunIrradiance
                 * shadingCosine
                 * shadow.visibility;
+        }
+
+        // Draw exactly one non-delta light selector at this path vertex. In Phase 1
+        // sky is the only selectable branch; the sun remains a separately evaluated
+        // delta light and therefore cannot perturb the selector probabilities.
+        float selectableProbability = frameLighting.pSky + frameLighting.pEmitters;
+        if (selectableProbability > 0.0)
+        {
+            float selectorSample = rngNextFloat(rngState);
+            if (selectorSample < frameLighting.pSky)
+            {
+                SkySample lightSample = sampleSky(
+                    frameLighting,
+                    normals.shading,
+                    float2(rngNextFloat(rngState), rngNextFloat(rngState)));
+                float lightGeometricCosine = dot(
+                    normals.geometric,
+                    lightSample.direction);
+                float lightPdf = frameLighting.pSky * lightSample.pdf;
+                if (lightGeometricCosine > 0.0 && lightPdf > 0.0)
+                {
+                    ShadowPayload shadow;
+                    shadow.visibility = 0.0;
+
+                    RayDesc shadowRay;
+                    shadowRay.Origin = worldPosition
+                        + normals.geometric * SurfaceRayOffset;
+                    shadowRay.Direction = lightSample.direction;
+                    shadowRay.TMin = 0.0;
+                    shadowRay.TMax = InfiniteRayTMax;
+
+                    TraceRay(
+                        topLevelAS,
+                        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+                            | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                        0xFF,
+                        ShadowRayType,
+                        XRPHOTON_RAY_TYPE_COUNT,
+                        ShadowRayType,
+                        shadowRay,
+                        shadow);
+
+                    float lightBsdfPdf = dielectricBrdfPdf(
+                        hit.albedo,
+                        material.perceptualRoughness,
+                        material.dielectricF0,
+                        normals.shading,
+                        wo,
+                        lightSample.direction);
+                    float3 lightBrdf = evaluateDielectricBrdf(
+                        hit.albedo,
+                        material.perceptualRoughness,
+                        material.dielectricF0,
+                        normals.shading,
+                        wo,
+                        lightSample.direction);
+                    radiance += throughput
+                        * lightBrdf
+                        * lightSample.radiance
+                        * dot(normals.shading, lightSample.direction)
+                        * shadow.visibility
+                        * (powerHeuristic(lightPdf, lightBsdfPdf) / lightPdf);
+                }
+            }
         }
 
         if (pathVertex + 1 >= MaxPathVertices)
@@ -366,6 +452,9 @@ void rayGenMain()
             wo,
             bounceDirection);
         throughput *= bounceBrdf * (bounceCosine / bouncePdf);
+        previousBsdfPdf = bouncePdf;
+        previousSkyPdf = frameLighting.pSky
+            * skyPdf(normals.shading, bounceDirection);
 
         float maximumThroughput = max(throughput.x, max(throughput.y, throughput.z));
         if (maximumThroughput <= 0.0)
@@ -381,7 +470,7 @@ void rayGenMain()
         ray.Origin = worldPosition + normals.geometric * SurfaceRayOffset;
         ray.Direction = bounceDirection;
         ray.TMin = 0.001;
-        ray.TMax = SceneTMax;
+        ray.TMax = InfiniteRayTMax;
         // Mip 0 is the only resident mip today. Matching neighboring directions
         // makes the secondary footprint explicitly zero until ray differentials
         // are promoted alongside a real mip chain.
@@ -396,7 +485,6 @@ void rayGenMain()
 void missMain(inout SurfaceHit payload)
 {
     payload.hitT = -1.0;
-    payload.albedo = skyRadiance(WorldRayDirection());
 }
 
 [shader("closesthit")]

@@ -32,13 +32,14 @@ bool nearly(float left, float right, float tolerance = 1.0e-6f)
 void testPayloadLayout()
 {
     expect(
-        sizeof(xrphoton::RaygenPushConstants) == 96,
-        "raygen payload has the pinned 96-byte size");
+        sizeof(xrphoton::RaygenPushConstants) == 80,
+        "raygen payload has the pinned 80-byte size");
     expect(
         offsetof(xrphoton::RaygenPushConstants, camera) == 0
-            && offsetof(xrphoton::RaygenPushConstants, sunDirection) == 64
-            && offsetof(xrphoton::RaygenPushConstants, sunRadiance) == 80
-            && offsetof(xrphoton::RaygenPushConstants, frameIndex) == 92,
+            && offsetof(xrphoton::RaygenPushConstants, frameIndex) == 64
+            && offsetof(xrphoton::RaygenPushConstants, cameraJitterX) == 68
+            && offsetof(xrphoton::RaygenPushConstants, cameraJitterY) == 72
+            && offsetof(xrphoton::RaygenPushConstants, reserved0) == 76,
         "raygen payload fields have the pinned shader offsets");
 }
 
@@ -54,93 +55,28 @@ void testPushConstantConstruction()
     camera.up = {13.0f, 14.0f, 15.0f};
     camera.pad3 = 16.0f;
 
-    const xrphoton::DirectionalSun sun{
-        .direction = {3.0f, 4.0f, 0.0f},
-        .radiance = {1.25f, 2.5f, 3.75f},
-    };
     constexpr std::uint32_t FrameIndex = 0x89abcdefu;
     const xrphoton::RaygenPushConstants result =
-        xrphoton::makeRaygenPushConstants(camera, sun, FrameIndex);
+        xrphoton::makeRaygenPushConstants(camera, FrameIndex, 0.25f, -0.125f);
 
     expect(
         std::memcmp(&result.camera, &camera, sizeof(camera)) == 0,
         "camera payload is copied byte-for-byte");
     expect(
-        nearly(result.sunDirection.x, 0.6f)
-            && nearly(result.sunDirection.y, 0.8f)
-            && nearly(result.sunDirection.z, 0.0f)
-            && nearly(glm::length(result.sunDirection), 1.0f),
-        "sun direction is normalized");
-    expect(
-        result.pad0 == 0.0f,
-        "raygen payload padding is initialized");
-    expect(
-        result.sunRadiance == sun.radiance,
-        "sun radiance is copied without hidden policy");
-    expect(
-        result.frameIndex == FrameIndex,
-        "frame index is passed through");
+        result.frameIndex == FrameIndex
+            && nearly(result.cameraJitterX, 0.25f)
+            && nearly(result.cameraJitterY, -0.125f)
+            && result.reserved0 == 0,
+        "temporal view fields are copied and the reserved word is zero");
 
-    const xrphoton::DirectionalSun degenerateSun{
-        .direction = {},
-        .radiance = {0.25f, 0.5f, 0.75f},
-    };
-    const xrphoton::RaygenPushConstants degenerate =
-        xrphoton::makeRaygenPushConstants(camera, degenerateSun, 17u);
+    const xrphoton::RaygenPushConstants phaseOne =
+        xrphoton::makeRaygenPushConstants(camera, 17u);
     expect(
-        degenerate.sunDirection == glm::vec3{},
-        "zero-length sun direction is guarded");
-    expect(
-        degenerate.sunRadiance == degenerateSun.radiance
-            && degenerate.frameIndex == 17u,
-        "degenerate direction does not disturb other frame fields");
-
-    const xrphoton::DirectionalSun tinySun{
-        .direction = {1.0e-7f, 0.0f, 0.0f},
-        .radiance = {1.0f, 1.0f, 1.0f},
-    };
-    expect(
-        xrphoton::makeRaygenPushConstants(camera, tinySun, 0u).sunDirection
-            == glm::vec3{},
-        "near-zero sun direction is guarded");
-
-    const float quietNaN = std::numeric_limits<float>::quiet_NaN();
-    const xrphoton::DirectionalSun nonfiniteSun{
-        .direction = {quietNaN, 1.0f, 0.0f},
-        .radiance = {1.0f, 1.0f, 1.0f},
-    };
-    expect(
-        xrphoton::makeRaygenPushConstants(camera, nonfiniteSun, 0u).sunDirection
-            == glm::vec3{},
-        "non-finite sun direction cannot poison the push payload");
-
-    const float maximum = std::numeric_limits<float>::max();
-    const xrphoton::DirectionalSun overflowSun{
-        .direction = {maximum, maximum, maximum},
-        .radiance = {1.0f, 1.0f, 1.0f},
-    };
-    expect(
-        xrphoton::makeRaygenPushConstants(camera, overflowSun, 0u).sunDirection
-            == glm::vec3{},
-        "overflowed sun length cannot poison the push payload");
-}
-
-void testDefaultSun()
-{
-    const xrphoton::RaygenPushConstants result =
-        xrphoton::makeRaygenPushConstants(
-            xrphoton::CameraPushConstants{},
-            xrphoton::DefaultSun,
-            0u);
-    expect(
-        nearly(glm::length(result.sunDirection), 1.0f)
-            && result.sunDirection.y > 0.0f,
-        "default sun is a valid above-horizon direction");
-    expect(
-        result.sunRadiance.x > 0.0f
-            && result.sunRadiance.y > 0.0f
-            && result.sunRadiance.z > 0.0f,
-        "default sun has positive radiance");
+        phaseOne.frameIndex == 17u
+            && phaseOne.cameraJitterX == 0.0f
+            && phaseOne.cameraJitterY == 0.0f
+            && phaseOne.reserved0 == 0,
+        "Phase 1 defaults camera jitter and the reserved word to zero");
 }
 
 void testPcgHash()
@@ -208,7 +144,6 @@ int main()
 {
     testPayloadLayout();
     testPushConstantConstruction();
-    testDefaultSun();
     testPcgHash();
     testRngSequence();
 

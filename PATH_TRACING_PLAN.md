@@ -14,26 +14,26 @@ presented as exact refractive transport.
 ## 1. Where the renderer actually is
 
 The frame already traces a real path: `rayGenMain` runs an eight-vertex loop
-(`shaders/raytrace.slang:557-714`) with direct sun evaluation and an alpha-aware
-shadow ray at every vertex (`shaders/raytrace.slang:598-635`), Lambert + GGX
-dielectric BRDF evaluation, VNDF lobe sampling with a matching mixture PDF, Russian
-roulette after vertex 3, a procedural gradient sky in the radiance miss
-(`shaders/raytrace.slang:37-42`), linear radiance in an `R16G16B16A16_SFLOAT` image,
-and a compute tonemap into the presented 8-bit image. Six stages and seven groups are
-wired (`src/rt_pipeline.cpp:27-35`), the routing ABI is fixed at radiance 0 / shadow 1
-/ `RayTypeCount = 2` (`src/ray_types.hpp`), descriptor bindings 0–4 are in use
-(`src/rt_pipeline.cpp:106-133`), and the raygen push-constant block is a pinned 96-byte
-record (`src/lighting.hpp:16-30`).
+with direct delta-sun evaluation and an alpha-aware shadow ray at every vertex,
+Lambert + GGX dielectric BRDF evaluation, VNDF lobe sampling with a matching mixture
+PDF, and Russian roulette after vertex 3. P1 added one cosine-sampled sky NEE branch
+per eligible vertex and power-heuristic MIS against later BSDF sky misses; raygen owns
+the procedural gradient evaluation while the miss stage returns only a marker. Linear
+radiance lands in an `R16G16B16A16_SFLOAT` image before compute tonemapping into the
+presented 8-bit image. Six stages and seven groups are wired, the routing ABI is fixed
+at radiance 0 / shadow 1 / `RayTypeCount = 2` (`src/ray_types.hpp`), descriptor
+bindings 0–5 are in use, and the pinned frame ABI is an 80-byte view push block plus a
+192-byte dynamic `FrameLighting` uniform record.
 
 What is missing is everything that makes the transport *converge* and everything that
 makes the material set *complete*:
 
 | Gap | Consequence today |
 |---|---|
-| No next-event estimation for anything but the delta sun | A lamp, a campfire, or an anomaly contributes only when a BSDF-sampled ray randomly lands on it — effectively never at 1 spp |
 | No emissive material channel at all | Emitting surfaces cannot be authored, so there is nothing to sample |
-| The sky is reachable only by BSDF sampling | Shadowed daylight regions — the ordinary STALKER interior — are pure noise |
-| No MIS | Any non-delta light added naively would fireflies-out on low-roughness surfaces |
+| No emitter records or importance distribution | A lamp, a campfire, or an anomaly cannot join the landed sky/emitter selector |
+| Dielectric is the only material class | Metals and transmissive glass cannot be represented honestly |
+| Sun and gradient sky are static | Time of day, a finite sun disc, penumbrae, and a night gradient are unavailable |
 | One material class (opaque dielectric) | `models\mirror`, `models\window`, `models\selflight` classes have no target category (`LIGHTING_PLAN.md` §2.1 audit: 553 window, 74 selflight, 8 mirror references) |
 | A static, hard-coded sun and gradient sky | No time of day, no night, no sun disc |
 | Pixel-center sampling only | No anti-aliasing, and no jitter for step 5's reprojection to consume |
@@ -139,14 +139,28 @@ benchmark protocol produces the recorded P0 median.
 
 ## 5. Phase P1 — One light authority, sky NEE, and MIS
 
+**Status: complete (2026-07-28).** `SceneLighting` now validates and packs the exact
+192-byte block, `GpuLighting` publishes two aligned dynamic-uniform slots after their
+fence waits, and the 80-byte push payload is view-only. Raygen performs one sky NEE
+sample per eligible surface and power-heuristic MIS against subsequent BSDF sky hits;
+the miss stage returns only its marker and the delta sun remains independent. The new
+graphics-free `scene_lighting` suite covers selectors, evaluation/sample/PDF round
+trips and normalization, MIS edge cases, both ABIs/flags, and alignment/overflow math.
+All 21 debug tests and all 7 `ogfx-core` tests pass; emitted SPIR-V validates and pins
+the planned member offsets. Plain, GPU-assisted, and synchronization validation are
+clean across both frame slots. Radiance and sky-visibility rays share the same infinite
+horizon, and the environment's undefined lower hemisphere is explicitly black. The
+overlay-free fixed 32+256 capture is 0.582 ms at 1920×1080 versus P0's 0.412 ms
+(+0.170 ms, below budget), with final-frame hash `0x5726093472c82064`.
+
 **Goal.** All light state moves to one owner; the sky stops being a BSDF-only lottery;
 MIS lands before any content depends on it.
 
 ### 5.1 Decisions
 
 **All light state lives in one per-frame lighting block; push constants keep only view
-state.** Today the sun rides in the push payload (`src/lighting.hpp:16-30`) while the
-sky is hard-coded in the shader. Once a sky model has coefficients and a light set has
+state.** Before P1 the sun rode in the push payload while the sky was hard-coded in
+the shader. Once a sky model has coefficients and a light set has
 selection weights, keeping the sun in push would split light state across two
 mechanisms — precisely the parallel-systems failure the project rejects.
 `RaygenPushConstants` therefore shrinks to the 64-byte camera prefix plus
@@ -155,7 +169,7 @@ mechanisms — precisely the parallel-systems failure the project rejects.
 80-byte block. P1 initializes both jitter scalars to zero; P5 gives them meaning. Every
 light value moves into a `FrameLighting` uniform block. The camera prefix and its
 `offsetof` asserts are preserved byte-for-byte. The
-current directional-light coefficient is renamed from `sunRadiance` to
+landed directional-light coefficient is renamed from `sunRadiance` to
 `sunIrradiance`: the landed delta estimator already treats it as incident irradiance,
 and P4 preserves that quantity when the source becomes a finite disc.
 
@@ -493,7 +507,7 @@ unsupported `alphaTested && Glass` combination.
 ## 8. Phase P4 — Time-varying sun and sky with a finite sun disc
 
 **Goal.** One model produces the sun direction, sun irradiance, sky radiance, and night
-— replacing the constant `DefaultSun` (`src/lighting.cpp:14-17`) and the fixed gradient.
+— replacing `DefaultSceneLighting`'s constant analytic values and the fixed gradient.
 
 **Decisions.**
 

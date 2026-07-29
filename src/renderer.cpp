@@ -1,8 +1,10 @@
 #include "renderer.hpp"
 
 #include "acceleration_structure.hpp"
+#include "gpu_lighting.hpp"
 #include "lighting.hpp"
 #include "rt_pipeline.hpp"
+#include "scene_lighting.hpp"
 #include "swapchain.hpp"
 #include "tonemap_pipeline.hpp"
 #include "vulkan_context.hpp"
@@ -165,6 +167,7 @@ VkResult recordTraceCommandBuffer(
     const TonemapPipeline& tonemap,
     const AccelerationStructure& accel,
     uint32_t frameSlot,
+    uint32_t lightingDynamicOffset,
     const RaygenPushConstants& pushConstants,
     VkImage hdrRadianceImage,
     VkImage ldrOutputImage,
@@ -224,8 +227,8 @@ VkResult recordTraceCommandBuffer(
         0,
         1,
         &rt.descriptorSet,
-        0,
-        nullptr);
+        1,
+        &lightingDynamicOffset);
 
     vkCmdPushConstants(
         commandBuffer,
@@ -452,7 +455,8 @@ bool prepareRtForSwapchain(const Renderer& renderer)
 VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
-    const RaygenPushConstants& pushConstants)
+    const RaygenPushConstants& pushConstants,
+    const FrameLighting& frameLighting)
 {
     const Swapchain& swap = *renderer.swap;
     const FrameResources& frame = renderer.frames[frameIndex];
@@ -472,9 +476,17 @@ VkResult drawFrame(
         return result;
     }
 
-    // The slot fence also retires every prior build that read this slot's mapped
-    // instance input. Keep this fallible write before image acquisition so a rejected
-    // runtime transform cannot strand an acquired image or consumed semaphore.
+    // The slot fence retires every prior read of this slot's mapped instance and
+    // lighting subranges. Keep both fallible writes before image acquisition so a
+    // rejected runtime publication cannot strand an image or consumed semaphore.
+    uint32_t lightingDynamicOffset = 0;
+    if (!writeFrameLightingSlot(
+            renderer.gpuLighting,
+            frameIndex,
+            frameLighting,
+            &lightingDynamicOffset)) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
     if (!writeTlasInstances(renderer.accel, *renderer.scene, frameIndex)) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
@@ -524,6 +536,7 @@ VkResult drawFrame(
         *renderer.tonemapPipeline,
         *renderer.accel,
         frameIndex,
+        lightingDynamicOffset,
         pushConstants,
         swap.hdrRadianceImage,
         swap.ldrOutputImage,
