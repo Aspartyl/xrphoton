@@ -125,6 +125,11 @@ bool sameMaterial(
             return false;
         }
     }
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        if (left.emission[channel] != right.emission[channel]) {
+            return false;
+        }
+    }
     return left.baseColorImage == right.baseColorImage
         && left.alphaCutoff == right.alphaCutoff
         && left.perceptualRoughness == right.perceptualRoughness
@@ -216,6 +221,9 @@ xrphoton::SceneData makeTriangleModel(
     material.baseColorFactor[2] = 0.5f;
     material.baseColorFactor[3] = 1.0f;
     material.alphaCutoff = 0.375f;
+    material.emission[0] = 2.0f;
+    material.emission[1] = 1.0f;
+    material.emission[2] = 0.25f;
     material.baseColorTexture = std::move(texture);
     model.materials.push_back(std::move(material));
     return model;
@@ -896,6 +904,21 @@ void testFinalValidation()
         "instance[0].meshIndex 1",
         "out-of-bounds instance mesh is rejected");
 
+    xrphoton::SceneData invalidEmission = valid;
+    invalidEmission.materials[0].emission[0] = -0.01f;
+    expectValidationRejected(
+        std::move(invalidEmission),
+        "material[0].emission[0]",
+        "negative assembled material emission is rejected");
+
+    xrphoton::SceneData nonfiniteEmission = valid;
+    nonfiniteEmission.materials[0].emission[2] =
+        std::numeric_limits<float>::infinity();
+    expectValidationRejected(
+        std::move(nonfiniteEmission),
+        "material[0].emission[2]",
+        "nonfinite assembled material emission is rejected");
+
     xrphoton::SceneData bodyWithoutColliders = valid;
     bodyWithoutColliders.physicsColliders.clear();
     expectValidationRejected(
@@ -1139,6 +1162,21 @@ void testModelPreconditionsAreTransactional()
         std::move(resolvedMaterial),
         "incoming material[0].baseColorImage",
         "resolved per-model image index precondition");
+
+    xrphoton::SceneData negativeEmission = makeTriangleModel();
+    negativeEmission.materials[0].emission[1] = -0.01f;
+    expectAppendRejectedUnchanged(
+        std::move(negativeEmission),
+        "incoming material[0].emission[1]",
+        "negative material emission precondition");
+
+    xrphoton::SceneData nonfiniteEmission = makeTriangleModel();
+    nonfiniteEmission.materials[0].emission[2] =
+        std::numeric_limits<float>::quiet_NaN();
+    expectAppendRejectedUnchanged(
+        std::move(nonfiniteEmission),
+        "incoming material[0].emission[2]",
+        "nonfinite material emission precondition");
 
     xrphoton::SceneData scene = makeTriangleModel(100.0f, "target\\with_image");
     scene.images.push_back({

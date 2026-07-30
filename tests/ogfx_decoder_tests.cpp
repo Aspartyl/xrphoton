@@ -548,6 +548,7 @@ bool modelsEqual(const Model& left, const Model& right)
             || left.materials[index].perceptualRoughness
                 != right.materials[index].perceptualRoughness
             || left.materials[index].dielectricF0 != right.materials[index].dielectricF0
+            || left.materials[index].emission != right.materials[index].emission
             || left.materials[index].baseColorTexture != right.materials[index].baseColorTexture) {
             return false;
         }
@@ -1101,7 +1102,7 @@ void testRequiredChunkRules()
         expectRejected(assembleFile(chunks), expectedChunkName(id), "flags");
 
         chunks = source;
-        chunkById(&chunks, id).version = id == ChunkId::Materials ? 3 : 2;
+        chunkById(&chunks, id).version = id == ChunkId::Materials ? 4 : 2;
         expectRejected(assembleFile(chunks), expectedChunkName(id), "version");
 
         chunks = source;
@@ -1167,14 +1168,46 @@ void testPayloadFramingAndScalars()
     expect(
         decodedMaterialV2
             && decodedMaterialV2.model.materials[0].perceptualRoughness == 0.25f
-            && decodedMaterialV2.model.materials[0].dielectricF0 == 0.08f,
-        "runtime decoder accepts and preserves material chunk v2");
+            && decodedMaterialV2.model.materials[0].dielectricF0 == 0.08f
+            && decodedMaterialV2.model.materials[0].emission == std::array<float, 3>{},
+        "runtime decoder accepts v2 and supplies zero emission");
 
     writeF32(&materialV2.payload, 40, std::numeric_limits<float>::quiet_NaN());
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "perceptualRoughness");
     writeF32(&materialV2.payload, 40, 0.25f);
     writeF32(&materialV2.payload, 44, 1.01f);
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "dielectricF0");
+
+    chunks = splitChunks(canonical);
+    RawChunk& materialV3 = chunkById(&chunks, ChunkId::Materials);
+    materialV3.version = xrphoton::ogfx::MaterialChunkVersion3;
+    materialV3.payload.resize(
+        xrphoton::ogfx::MaterialHeaderSize
+        + xrphoton::ogfx::MaterialRecordSizeV3);
+    writeF32(&materialV3.payload, 40, 0.25f);
+    writeF32(&materialV3.payload, 44, 0.08f);
+    writeF32(&materialV3.payload, 48, 3.0f);
+    writeF32(&materialV3.payload, 52, 1.5f);
+    writeF32(&materialV3.payload, 56, 0.25f);
+    const DecodeResult decodedMaterialV3 = xrphoton::ogfx::decodeModel(
+        assembleFile(chunks),
+        "material-v3.ogfx");
+    expect(
+        decodedMaterialV3
+            && decodedMaterialV3.model.materials[0].perceptualRoughness == 0.25f
+            && decodedMaterialV3.model.materials[0].dielectricF0 == 0.08f
+            && decodedMaterialV3.model.materials[0].emission
+                == std::array<float, 3>{3.0f, 1.5f, 0.25f},
+        "runtime decoder accepts and preserves material chunk v3");
+
+    writeF32(&materialV3.payload, 52, -0.01f);
+    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "emission[1]");
+    writeF32(&materialV3.payload, 52, 1.5f);
+    writeF32(&materialV3.payload, 56, std::numeric_limits<float>::quiet_NaN());
+    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "emission[2]");
+    writeF32(&materialV3.payload, 56, 0.25f);
+    writeU32(&materialV3.payload, 60, 1);
+    expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "reserved0");
 
     chunks = splitChunks(canonical);
     writeU32(&chunkById(&chunks, ChunkId::Model).payload, 0, 1);
@@ -1351,7 +1384,7 @@ void setMaterialArena(
     std::uint32_t textureOffset = xrphoton::ogfx::NoTextureReference)
 {
     materials->payload.resize(xrphoton::ogfx::MaterialHeaderSize
-        + xrphoton::ogfx::MaterialRecordSize);
+        + xrphoton::ogfx::materialRecordSizeForVersion(materials->version));
     writeU32(&materials->payload, 4, static_cast<std::uint32_t>(arena.size()));
     writeU32(&materials->payload, 36, textureOffset);
     materials->payload.insert(materials->payload.end(), arena.begin(), arena.end());
@@ -1372,7 +1405,7 @@ void setOverBudgetSharedTextureArena(RawChunk* materials)
     materials->payload.assign(
         xrphoton::ogfx::MaterialHeaderSize
             + static_cast<std::size_t>(materialCount)
-                * xrphoton::ogfx::MaterialRecordSize,
+                * xrphoton::ogfx::materialRecordSizeForVersion(materials->version),
         0);
     writeU32(&materials->payload, 0, materialCount);
     writeU32(&materials->payload, 4, static_cast<std::uint32_t>(arena.size()));

@@ -175,6 +175,11 @@ OgfxLoadResult decodeOgfxScene(
             sceneMaterial.alphaCutoff = material.alphaCutoff;
             sceneMaterial.perceptualRoughness = material.perceptualRoughness;
             sceneMaterial.dielectricF0 = material.dielectricF0;
+            for (std::size_t component = 0;
+                 component < material.emission.size();
+                 ++component) {
+                sceneMaterial.emission[component] = material.emission[component];
+            }
             // Resolution is scene-global, so the model adapter preserves the logical
             // OGFx identity while leaving the eventual image index at fallback slot 0.
             sceneMaterial.baseColorTexture = material.baseColorTexture;

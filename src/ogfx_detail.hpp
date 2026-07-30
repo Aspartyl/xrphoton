@@ -145,6 +145,7 @@ struct CanonicalModelCounts
     std::uint32_t geometryCount = 0;
     std::uint32_t meshCount = 0;
     std::uint32_t materialCount = 0;
+    std::uint32_t materialRecordSize = MaterialRecordSizeV1V2;
     std::uint32_t materialStringBytes = 0;
     std::uint32_t positionCount = 0;
     std::uint32_t attributeCount = 0;
@@ -156,12 +157,16 @@ struct CanonicalModelCounts
 };
 
 // The canonical writer and bounded source adapters share this one size formula.
-// Every count and the selected rigid-collider stride are u32, so their products
-// and sum fit u64 within the published caps.
+// Every count and the selected material/rigid-collider strides are u32, so their
+// products and sum fit u64 within the published caps.
 inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
 {
     if (counts.physicsColliderRecordSize != PhysicsColliderRecordSize
         && counts.physicsColliderRecordSize != PhysicsColliderRecordSizeV2) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    if (counts.materialRecordSize != MaterialRecordSizeV1V2
+        && counts.materialRecordSize != MaterialRecordSizeV3) {
         return std::numeric_limits<std::uint64_t>::max();
     }
     auto addChunk = [](std::uint64_t payloadBytes, std::uint64_t* fileBytes) {
@@ -177,7 +182,7 @@ inline std::uint64_t canonicalModelFileBytes(const CanonicalModelCounts& counts)
     const std::uint64_t meshBytes =
         static_cast<std::uint64_t>(counts.meshCount) * MeshRecordSize;
     const std::uint64_t materialBytes = MaterialHeaderSize
-        + static_cast<std::uint64_t>(counts.materialCount) * MaterialRecordSize
+        + static_cast<std::uint64_t>(counts.materialCount) * counts.materialRecordSize
         + counts.materialStringBytes;
     const std::uint64_t positionBytes =
         static_cast<std::uint64_t>(counts.positionCount) * PositionRecordSize;

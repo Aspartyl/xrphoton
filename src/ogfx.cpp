@@ -259,8 +259,25 @@ SerializeResult prepareModel(
                 "a finite f32 in [0, 1]",
                 std::to_string(material.dielectricF0));
         }
-        if (material.perceptualRoughness != DefaultPerceptualRoughness
-            || material.dielectricF0 != DefaultDielectricF0) {
+        bool hasEmission = false;
+        for (std::size_t component = 0; component < material.emission.size(); ++component) {
+            if (!std::isfinite(material.emission[component])
+                || material.emission[component] < 0.0f) {
+                return failure(
+                    diagnosticName,
+                    ChunkId::Materials,
+                    indexedField("materials", index, "emission")
+                        + '[' + std::to_string(component) + ']',
+                    "a finite nonnegative f32",
+                    std::to_string(material.emission[component]));
+            }
+            hasEmission = hasEmission || material.emission[component] > 0.0f;
+        }
+        if (hasEmission) {
+            prepared->materialChunkVersion = MaterialChunkVersion3;
+        } else if (prepared->materialChunkVersion < MaterialChunkVersion2
+            && (material.perceptualRoughness != DefaultPerceptualRoughness
+                || material.dielectricF0 != DefaultDielectricF0)) {
             prepared->materialChunkVersion = MaterialChunkVersion2;
         }
         if (material.baseColorTexture.empty()) {
@@ -870,8 +887,10 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         static_cast<std::uint64_t>(model.geometries.size()) * GeometryRecordSize;
     const std::uint64_t meshBytes =
         static_cast<std::uint64_t>(model.meshes.size()) * MeshRecordSize;
+    const std::uint32_t materialRecordSize =
+        materialRecordSizeForVersion(prepared.materialChunkVersion);
     const std::uint64_t materialRecordBytes =
-        static_cast<std::uint64_t>(model.materials.size()) * MaterialRecordSize;
+        static_cast<std::uint64_t>(model.materials.size()) * materialRecordSize;
     const std::uint64_t materialBytes = MaterialHeaderSize
         + materialRecordBytes
         + prepared.materialStringArena.size();
@@ -892,6 +911,7 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         .geometryCount = static_cast<std::uint32_t>(model.geometries.size()),
         .meshCount = static_cast<std::uint32_t>(model.meshes.size()),
         .materialCount = static_cast<std::uint32_t>(model.materials.size()),
+        .materialRecordSize = materialRecordSize,
         .materialStringBytes =
             static_cast<std::uint32_t>(prepared.materialStringArena.size()),
         .positionCount = static_cast<std::uint32_t>(model.positions.size()),
@@ -969,6 +989,12 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
         } else {
             appendF32(&result.bytes, material.perceptualRoughness);
             appendF32(&result.bytes, material.dielectricF0);
+        }
+        if (prepared.materialChunkVersion == MaterialChunkVersion3) {
+            for (float component : material.emission) {
+                appendF32(&result.bytes, component);
+            }
+            appendU32(&result.bytes, 0);
         }
     }
     result.bytes.insert(

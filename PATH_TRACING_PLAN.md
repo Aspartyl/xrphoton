@@ -277,6 +277,16 @@ this phase's layout comment and filled by P2.
 
 ## 6. Phase P2 — Emissive geometry, emitter NEE, and the night yard
 
+**P2a status: complete (2026-07-29).** `OGFX_MATERIALS` v3 now carries validated
+nonnegative emission RGB in a 48-byte record while v1/v2 retain their 32-byte stride
+and decode to zero emission. The canonical writer selects the lowest sufficient
+version, both decoder profiles and the runtime loader preserve emission, scene
+assembly rejects invalid values transactionally, and the CPU/Slang `MaterialRecord`
+ABI is 48 bytes with an offset-44 zero reservation. All 7 graphics-free and 21 debug
+tests pass; SPIR-V validation pins offsets 32/44 and `ArrayStride 48`. Because no
+shader consumes emission until P2c, the Phase-1 frame-7 hash remains
+`0xd6550332dd29cf6c`.
+
 **Goal.** Surfaces can emit; emitters are importance-sampled from a real distribution;
 a BSDF ray that lands on an emitter is MIS-weighted instead of double-counted.
 
@@ -636,7 +646,8 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
 2. **P1a** `SceneLighting` / `GpuLighting` / `FrameLighting` + push shrink; sun moves
    off push constants. Image unchanged in mean; hashes re-pinned.
 3. **P1b** sky sampling, sky PDF, MIS. First variance win.
-4. **P2a** `OGFX_MATERIALS` v3 + emission through the whole chain, GPU record 32 → 48.
+4. **P2a — complete.** `OGFX_MATERIALS` v3 + emission through the whole chain,
+   GPU record 32 → 48.
    No shading change yet (emission unreferenced).
 5. **P2b** light builder, records, CDF, emitter lookup, bindings 6–8.
 6. **P2c** emitter NEE + emitter MIS + the night yard preset + linear-HDR reference

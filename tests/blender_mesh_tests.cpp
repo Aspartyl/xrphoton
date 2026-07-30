@@ -299,6 +299,7 @@ bool modelsEqual(const Model& left, const Model& right)
             || a.alphaCutoff != b.alphaCutoff
             || a.perceptualRoughness != b.perceptualRoughness
             || a.dielectricF0 != b.dielectricF0
+            || a.emission != b.emission
             || a.baseColorTexture != b.baseColorTexture) {
             return false;
         }

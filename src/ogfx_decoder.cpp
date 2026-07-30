@@ -328,14 +328,16 @@ private:
                 const bool supportedMaterialVersion =
                     id == static_cast<std::uint32_t>(ChunkId::Materials)
                     && (version == MaterialChunkVersion1
-                        || version == MaterialChunkVersion2);
+                        || version == MaterialChunkVersion2
+                        || version == MaterialChunkVersion3);
                 if (version != ChunkVersion && !supportedMaterialVersion) {
                     return reject(
                         id,
                         "version",
                         id == static_cast<std::uint32_t>(ChunkId::Materials)
                             ? std::to_string(MaterialChunkVersion1) + " or "
-                                + std::to_string(MaterialChunkVersion2)
+                                + std::to_string(MaterialChunkVersion2) + " or "
+                                + std::to_string(MaterialChunkVersion3)
                             : std::to_string(ChunkVersion),
                         std::to_string(version));
                 }
@@ -665,8 +667,10 @@ private:
 
         // These on-disk counts are u32 and are widened before arithmetic, so the
         // complete material payload formula cannot overflow u64.
+        const std::uint32_t materialRecordSize =
+            materialRecordSizeForVersion(chunk.version);
         const std::uint64_t recordBytes =
-            static_cast<std::uint64_t>(materialCount) * MaterialRecordSize;
+            static_cast<std::uint64_t>(materialCount) * materialRecordSize;
         const std::uint64_t expectedBytes = MaterialHeaderSize
             + recordBytes
             + materialStringByteSize_;
@@ -682,7 +686,7 @@ private:
         textureReferenceOffsets_.reserve(materialCount);
         for (std::uint32_t index = 0; index < materialCount; ++index) {
             const std::size_t recordOffset = offset + MaterialHeaderSize
-                + static_cast<std::size_t>(index) * MaterialRecordSize;
+                + static_cast<std::size_t>(index) * materialRecordSize;
             Material material{};
             for (std::size_t component = 0;
                  component < material.baseColorFactor.size();
@@ -745,6 +749,32 @@ private:
                         indexedField("materials", index, "dielectricF0"),
                         "a finite f32 in [0, 1]",
                         std::to_string(material.dielectricF0));
+                }
+            }
+            if (chunk.version == MaterialChunkVersion3) {
+                for (std::size_t component = 0;
+                     component < material.emission.size();
+                     ++component) {
+                    material.emission[component] =
+                        readF32(bytes_, recordOffset + 32 + component * 4);
+                    if (!std::isfinite(material.emission[component])
+                        || material.emission[component] < 0.0f) {
+                        return reject(
+                            chunk.id,
+                            indexedField("materials", index, "emission")
+                                + '[' + std::to_string(component) + ']',
+                            "a finite nonnegative f32",
+                            std::to_string(material.emission[component]));
+                    }
+                }
+                const std::uint32_t recordReserved0 =
+                    readU32(bytes_, recordOffset + 44);
+                if (recordReserved0 != 0) {
+                    return reject(
+                        chunk.id,
+                        indexedField("materials", index, "reserved0"),
+                        "0",
+                        std::to_string(recordReserved0));
                 }
             }
 

@@ -436,11 +436,22 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
             return false;
         }
         for (std::size_t index = 0; index < model.materials.size(); ++index) {
-            if (model.materials[index].baseColorImage != 0) {
+            const SceneMaterial& material = model.materials[index];
+            if (material.baseColorImage != 0) {
                 return reject(
                     error,
                     "scene assembly: incoming material[" + std::to_string(index)
                         + "].baseColorImage must be 0 before scene resolution");
+            }
+            for (std::size_t component = 0; component < 3; ++component) {
+                if (!std::isfinite(material.emission[component])
+                    || material.emission[component] < 0.0f) {
+                    return reject(
+                        error,
+                        "scene assembly: incoming material[" + std::to_string(index)
+                            + "].emission[" + std::to_string(component)
+                            + "] must be finite and nonnegative");
+                }
             }
         }
 
@@ -594,6 +605,19 @@ bool validateAssembledScene(const SceneData& scene, std::string* error)
         }
         if (scene.instances.empty()) {
             return reject(error, "scene assembly: assembled scene must contain at least one instance");
+        }
+        for (std::size_t index = 0; index < scene.materials.size(); ++index) {
+            const SceneMaterial& material = scene.materials[index];
+            for (std::size_t component = 0; component < 3; ++component) {
+                if (!std::isfinite(material.emission[component])
+                    || material.emission[component] < 0.0f) {
+                    return reject(
+                        error,
+                        "scene assembly: material[" + std::to_string(index)
+                            + "].emission[" + std::to_string(component)
+                            + "] must be finite and nonnegative");
+                }
+            }
         }
         if (!validatePhysicsRecipes(scene, error)) {
             return false;

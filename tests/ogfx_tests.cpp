@@ -720,7 +720,7 @@ void testTextureStringArena()
     }
 }
 
-void testMaterialChunkVersion2()
+void testMaterialChunkVersions()
 {
     Model defaultModel = makeQuad();
     const SerializeResult version1 =
@@ -739,6 +739,12 @@ void testMaterialChunkVersion2()
         readU32(version1.bytes, version1Header + 32 + 40) == 0
             && readU32(version1.bytes, version1Header + 32 + 44) == 0,
         "material v1 keeps both reserved record words zero");
+    const xrphoton::ogfx::DecodeResult decodedVersion1 =
+        xrphoton::ogfx::decodeModelSchema(version1.bytes, "material-v1.ogfx");
+    expect(
+        decodedVersion1 && decodedVersion1.model.materials[0].emission
+            == std::array<float, 3>{},
+        "material v1 decodes to zero emission");
 
     Model explicitModel = makeQuad();
     explicitModel.materials[0].perceptualRoughness = 0.2f;
@@ -766,8 +772,9 @@ void testMaterialChunkVersion2()
     if (decoded) {
         expect(
             decoded.model.materials[0].perceptualRoughness == 0.2f
-                && decoded.model.materials[0].dielectricF0 == 0.08f,
-            "schema decoder preserves material v2 BRDF scalars");
+                && decoded.model.materials[0].dielectricF0 == 0.08f
+                && decoded.model.materials[0].emission == std::array<float, 3>{},
+            "schema decoder preserves material v2 BRDF scalars and supplies zero emission");
         const SerializeResult roundTrip =
             xrphoton::ogfx::serializeModel(decoded.model, "material-v2-roundtrip.ogfx");
         expect(
@@ -776,6 +783,68 @@ void testMaterialChunkVersion2()
     } else {
         std::cerr << decoded.error << '\n';
     }
+
+    Model emissiveModel = makeQuad();
+    emissiveModel.materials[0].emission = {4.0f, 2.0f, 0.5f};
+    emissiveModel.materials[0].baseColorTexture = "lights\\emitter";
+    const SerializeResult version3 =
+        xrphoton::ogfx::serializeModel(emissiveModel, "material-v3.ogfx");
+    expect(static_cast<bool>(version3), "positive emission serializes as material v3");
+    if (!version3) {
+        std::cerr << version3.error << '\n';
+        return;
+    }
+    const std::size_t version3Header = chunkHeaderOffset(version3.bytes, ChunkId::Materials);
+    const std::size_t version3Record = version3Header
+        + xrphoton::ogfx::ChunkHeaderSize
+        + xrphoton::ogfx::MaterialHeaderSize;
+    expect(
+        readU32(version3.bytes, version3Header + 8)
+            == xrphoton::ogfx::MaterialChunkVersion3,
+        "nonzero emission selects material chunk v3");
+    expect(
+        readU64(version3.bytes, version3Header + 16)
+            == xrphoton::ogfx::MaterialHeaderSize
+                + xrphoton::ogfx::MaterialRecordSizeV3
+                + 2 + emissiveModel.materials[0].baseColorTexture.size(),
+        "material v3 uses the 48-byte record stride before its string arena");
+    expect(
+        readF32(version3.bytes, version3Record + 32) == 4.0f
+            && readF32(version3.bytes, version3Record + 36) == 2.0f
+            && readF32(version3.bytes, version3Record + 40) == 0.5f
+            && readU32(version3.bytes, version3Record + 44) == 0,
+        "material v3 writes emission RGB and a zero reserved class word");
+
+    const xrphoton::ogfx::DecodeResult decodedVersion3 =
+        xrphoton::ogfx::decodeModelSchema(version3.bytes, "material-v3.ogfx");
+    expect(
+        decodedVersion3
+            && decodedVersion3.model.materials[0].emission
+                == std::array<float, 3>{4.0f, 2.0f, 0.5f}
+            && decodedVersion3.model.materials[0].baseColorTexture == "lights\\emitter",
+        "schema decoder preserves material v3 emission and its post-record string arena");
+    if (decodedVersion3) {
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            decodedVersion3.model,
+            "material-v3-roundtrip.ogfx");
+        expect(
+            roundTrip && roundTrip.bytes == version3.bytes,
+            "material v3 decode and reserialize is byte-canonical");
+    }
+
+    Model mixedModel = makeQuad();
+    mixedModel.materials[0].emission = {1.0f, 0.0f, 0.0f};
+    mixedModel.materials.push_back({});
+    mixedModel.materials[1].perceptualRoughness = 0.25f;
+    const SerializeResult mixedVersion =
+        xrphoton::ogfx::serializeModel(mixedModel, "material-v3-mixed.ogfx");
+    expect(
+        mixedVersion
+            && readU32(
+                mixedVersion.bytes,
+                chunkHeaderOffset(mixedVersion.bytes, ChunkId::Materials) + 8)
+                == xrphoton::ogfx::MaterialChunkVersion3,
+        "a later nonemissive custom BRDF material cannot downgrade v3 selection");
 }
 
 void testRigidPhysicsChunk()
@@ -1026,6 +1095,16 @@ void testValidation()
     }
     {
         Model model = makeQuad();
+        model.materials[0].emission[1] = -0.01f;
+        expectRejected(std::move(model), "emission[1]");
+    }
+    {
+        Model model = makeQuad();
+        model.materials[0].emission[2] = std::numeric_limits<float>::infinity();
+        expectRejected(std::move(model), "emission[2]");
+    }
+    {
+        Model model = makeQuad();
         model.geometries[0].firstVertex = 1;
         expectRejected(std::move(model), "firstVertex");
     }
@@ -1230,7 +1309,7 @@ int main()
     testSphereEnclosureRounding();
     testAsymmetricBoundsAndMaterialFraming();
     testTextureStringArena();
-    testMaterialChunkVersion2();
+    testMaterialChunkVersions();
     testRigidPhysicsChunk();
     testBoxPhysicsChunkVersion2();
     testValidation();

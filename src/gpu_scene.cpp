@@ -700,6 +700,11 @@ VkResult createGpuScene(
         destination.alphaCutoff = source.alphaCutoff;
         destination.perceptualRoughness = source.perceptualRoughness;
         destination.dielectricF0 = source.dielectricF0;
+        std::memcpy(
+            destination.emission,
+            source.emission,
+            sizeof(source.emission));
+        destination.reserved0 = 0;
     }
 
     return uploadDeviceLocalBuffer(

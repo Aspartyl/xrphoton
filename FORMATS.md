@@ -393,7 +393,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0001` | `OGFX_MODEL` | yes | `u32` model type, `u32` model flags, model bounds (AABB + bounding sphere — the OGF header heritage) |
 | `0x0010` | `OGFX_GEOMETRIES` | yes | fixed-width geometry-range records (below) |
 | `0x0011` | `OGFX_MESHES` | yes | `{u32 firstGeometry, u32 geometryCount}` records — the BLAS grouping |
-| `0x0012` | `OGFX_MATERIALS` | yes | v1/v2 material records: base color, alpha cutoff, logical texture reference, and in v2 perceptual roughness + dielectric F0 |
+| `0x0012` | `OGFX_MATERIALS` | yes | v1/v2/v3 material records: base color, alpha cutoff, logical texture reference, v2 BRDF scalars, and v3 emission |
 | `0x0020` | `OGFX_POSITIONS` | yes | tightly packed `f32×3` positions, 12-byte stride |
 | `0x0021` | `OGFX_ATTRIBUTES` | yes | 20-byte all-scalar attribute records: `nx, ny, nz, u, v` |
 | `0x0022` | `OGFX_INDICES` | yes | `u32` indices, geometry-local |
@@ -401,7 +401,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0040` | `OGFX_DESC` | optional | provenance (the `OGF_S_DESC` heritage: source asset, converting tool + version, stable source-provided timestamps) plus the complete-input hash the compiler used |
 
 Required chunks set the required flag and occur exactly once. Six use chunk version
-`1`; `OGFX_MATERIALS` accepts version `1` or `2`. The canonical writer emits them in
+`1`; `OGFX_MATERIALS` accepts version `1`, `2`, or `3`. The canonical writer emits them in
 ascending-id order for deterministic output; the loader is order-independent. There
 is no implicit record padding. The exact version-1 payloads are:
 
@@ -463,7 +463,7 @@ payload header — 16 bytes
  8  u32 reserved0          (zero)
 12  u32 reserved1          (zero)
 
-material record — materialCount records, 32-byte stride in both versions
+material record — materialCount records, 32-byte stride in v1/v2 and 48-byte stride in v3
  0  f32 baseColorR
  4  f32 baseColorG
  8  f32 baseColorB
@@ -471,20 +471,27 @@ material record — materialCount records, 32-byte stride in both versions
 16  f32 alphaCutoff
 20  u32 textureRefOffset   (from string-arena start; UINT32_MAX = none)
 24  v1: u32 reserved0      (zero)
-    v2: f32 perceptualRoughness (finite [0, 1])
+    v2/v3: f32 perceptualRoughness (finite [0, 1])
 28  v1: u32 reserved1      (zero)
-    v2: f32 dielectricF0   (finite [0, 1])
+    v2/v3: f32 dielectricF0   (finite [0, 1])
+32  v3: f32 emissionR      (finite, nonnegative)
+36  v3: f32 emissionG      (finite, nonnegative)
+40  v3: f32 emissionB      (finite, nonnegative)
+44  v3: u32 reserved0      (zero; material class in v4)
 
 string arena — stringByteSize bytes immediately after the records
 ```
 
-Its exact size is `16 + materialCount × 32 + stringByteSize`, computed with
-checked 64-bit arithmetic. The arena is a sequence of the length-prefixed
+Its exact size is `16 + materialCount × recordStride + stringByteSize`, where
+`recordStride` is 32 for v1/v2 and 48 for v3, computed with checked 64-bit arithmetic.
+The arena is a sequence of the length-prefixed
 UTF-8 strings defined above. Version 1 maps to runtime defaults
 `perceptualRoughness = 1.0` and `dielectricF0 = 0.04`; its words at offsets 24/28
-must remain zero. Version 2 gives those same words their scalar BRDF meanings. The
-writer emits v1 when every material has the defaults, preserving old canonical bytes,
-and selects v2 only when at least one material differs. A texture offset must point to
+must remain zero. Versions 2 and 3 give those same words their scalar BRDF meanings;
+versions 1 and 2 decode emission as zero. Version 3 adds emission RGB and requires its
+offset-44 reserved word to be zero. The writer emits v1 when every material has the
+defaults, preserving old canonical bytes, selects v2 only when at least one BRDF scalar
+differs, and selects v3 whenever any emission channel is positive. A texture offset must point to
 the `u16` prefix of a known entry; empty entries and offsets into the middle of entries are
 invalid because `UINT32_MAX` is the only no-texture representation. The
 canonical writer validates every nonempty logical reference as at most 4096

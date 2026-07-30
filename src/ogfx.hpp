@@ -34,9 +34,11 @@ inline constexpr std::uint32_t ModelRecordSize = 48;
 inline constexpr std::uint32_t GeometryRecordSize = 48;
 inline constexpr std::uint32_t MeshRecordSize = 8;
 inline constexpr std::uint32_t MaterialHeaderSize = 16;
-inline constexpr std::uint32_t MaterialRecordSize = 32;
+inline constexpr std::uint32_t MaterialRecordSizeV1V2 = 32;
+inline constexpr std::uint32_t MaterialRecordSizeV3 = 48;
 inline constexpr std::uint32_t MaterialChunkVersion1 = 1;
 inline constexpr std::uint32_t MaterialChunkVersion2 = 2;
+inline constexpr std::uint32_t MaterialChunkVersion3 = 3;
 inline constexpr float DefaultPerceptualRoughness = 1.0f;
 inline constexpr float DefaultDielectricF0 = 0.04f;
 inline constexpr std::uint32_t PositionRecordSize = 12;
@@ -51,6 +53,15 @@ inline constexpr std::uint32_t PhysicsColliderRecordSizeV2 = 80;
 // Both supported versions reserve the collider flag word. Source-specific flag
 // meanings must be mapped deliberately rather than copied through.
 inline constexpr std::uint32_t PhysicsColliderAllowedFlags = 0;
+
+[[nodiscard]] constexpr std::uint32_t materialRecordSizeForVersion(
+    std::uint32_t version)
+{
+    if (version == MaterialChunkVersion1 || version == MaterialChunkVersion2) {
+        return MaterialRecordSizeV1V2;
+    }
+    return version == MaterialChunkVersion3 ? MaterialRecordSizeV3 : 0;
+}
 
 enum class ChunkId : std::uint32_t
 {
@@ -105,6 +116,7 @@ struct Material
     float alphaCutoff = 0.5f;
     float perceptualRoughness = DefaultPerceptualRoughness;
     float dielectricF0 = DefaultDielectricF0;
+    std::array<float, 3> emission{};
 
     // OGFx stores logical texture references in its string arena. Both decoder
     // profiles preserve them so the runtime texture resolver can load the image.
