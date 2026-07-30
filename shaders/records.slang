@@ -100,6 +100,9 @@ struct SurfaceHit
     float3 albedo;
     float3 shadingNormal;
     float3 geometricNormal;
+    float3 emission;
+    float emitterArea;
+    float emitterPTriangle;
     // Full neighboring primary-ray directions provide explicit screen-space
     // derivatives in hit shaders, where implicit fragment derivatives do not
     // exist. SampleGrad uses the resulting UV footprint for real anisotropy.

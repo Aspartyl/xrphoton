@@ -71,6 +71,8 @@ int main(int argumentCount, char** arguments)
         return 1;
     }
     const bool captureMode = commandLine.mode == CommandLineMode::Capture;
+    const bool referenceMode = commandLine.mode == CommandLineMode::Reference;
+    const bool offlineMode = captureMode || referenceMode;
 
     std::cout << "xrPhoton booting...\n";
 
@@ -268,8 +270,8 @@ int main(int argumentCount, char** arguments)
         queueFamilies.traceTimestampValidBits != 0
         && physicalDeviceProperties.limits.timestampPeriod > 0.0f;
 
-    if (captureMode && !traceTimestampsSupported) {
-        std::cerr << "Capture requires timestamp support on the selected Vulkan "
+    if (offlineMode && !traceTimestampsSupported) {
+        std::cerr << "Capture/reference requires timestamp support on the selected Vulkan "
                      "trace queue.\n";
         return 1;
     }
@@ -396,7 +398,7 @@ int main(int argumentCount, char** arguments)
     }
     std::cout << ".\n";
 
-    GalleryLoadResult loadedGallery = loadGalleryScene();
+    GalleryLoadResult loadedGallery = loadGalleryScene(commandLine.scenePreset);
     if (!loadedGallery) {
         std::cerr << loadedGallery.error << '\n';
         return 1;
@@ -407,7 +409,7 @@ int main(int argumentCount, char** arguments)
         std::cerr << "Scene instance count exceeds the FrameLighting ABI.\n";
         return 1;
     }
-    SceneLighting sceneLighting = DefaultSceneLighting;
+    SceneLighting sceneLighting = makeSceneLightingPreset(commandLine.scenePreset);
     std::string sceneLightingError;
     if (!buildSceneLighting(
             sceneData,
@@ -425,6 +427,15 @@ int main(int argumentCount, char** arguments)
             &frameLighting)) {
         std::cerr << "Failed to pack scene lighting.\n";
         return 1;
+    }
+    if (referenceMode) {
+        frameLighting.flags =
+            (frameLighting.flags & ~FrameLightingEstimatorMask)
+            | estimatorFlags(commandLine.estimator);
+        if (!hasValidFrameLightingFlags(frameLighting.flags)) {
+            std::cerr << "Reference estimator produced invalid FrameLighting flags.\n";
+            return 1;
+        }
     }
 
     // Declared after the borrowed scene so reverse destruction tears physics down
@@ -628,6 +639,128 @@ int main(int argumentCount, char** arguments)
     double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
     uint32_t frameCounter = 0;
+    if (referenceMode) {
+        if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
+            std::cerr << "Failed to disable the player character for reference mode.\n";
+            return 1;
+        }
+
+        const VkExtent2D referenceExtent = swap.extent;
+        std::cout << "Reference start: extent="
+                  << referenceExtent.width << 'x' << referenceExtent.height
+                  << " requestedSamples=" << commandLine.referenceSampleCount
+                  << " scene=" << scenePresetName(commandLine.scenePreset)
+                  << " estimator=" << estimatorModeName(commandLine.estimator)
+                  << '\n';
+        ReferenceAccumulator accumulator;
+        std::array<double, CaptureTraceTimingCapacity> traceTimings{};
+        std::size_t traceTimingCount = 0;
+
+        for (std::uint32_t sampleIndex = 0;
+             sampleIndex < commandLine.referenceSampleCount;
+             ++sampleIndex) {
+            glfwPollEvents();
+            if (glfwWindowShouldClose(ctx.window)) {
+                std::cerr << "Reference incomplete: window closed after "
+                          << sampleIndex << " samples.\n";
+                return 1;
+            }
+            int framebufferWidth = 0;
+            int framebufferHeight = 0;
+            glfwGetFramebufferSize(
+                ctx.window,
+                &framebufferWidth,
+                &framebufferHeight);
+            if (framebufferResized
+                || framebufferWidth != static_cast<int>(referenceExtent.width)
+                || framebufferHeight != static_cast<int>(referenceExtent.height)) {
+                std::cerr << "Reference failed: fixed framebuffer extent changed.\n";
+                return 1;
+            }
+
+            const float aspect = static_cast<float>(referenceExtent.width)
+                / static_cast<float>(referenceExtent.height);
+            const std::uint32_t submittedSlot = currentFrame;
+            const VkResult frameResult = drawFrame(
+                renderer,
+                submittedSlot,
+                makeRaygenPushConstants(
+                    makeCameraPushConstants(captureCamera, aspect),
+                    frameCounter),
+                frameLighting);
+            if (frameResult != VK_SUCCESS) {
+                std::cerr << "Failed to draw Vulkan reference sample: "
+                          << formatVkResult(frameResult) << ".\n";
+                return 1;
+            }
+
+            if (traceTimingCount < traceTimings.size()) {
+                double traceMilliseconds = 0.0;
+                const VkResult timingResult = readTraceTimestampMilliseconds(
+                    renderer,
+                    submittedSlot,
+                    &traceMilliseconds);
+                if (timingResult != VK_SUCCESS) {
+                    std::cerr << "Failed to read reference trace timestamps: "
+                              << formatVkResult(timingResult) << ".\n";
+                    return 1;
+                }
+                traceTimings[traceTimingCount++] = traceMilliseconds;
+            }
+
+            HdrImageReadback readback;
+            const VkResult readbackResult = readbackHdrImage(
+                renderer,
+                submittedSlot,
+                &readback);
+            if (readbackResult != VK_SUCCESS) {
+                std::cerr << "Failed to read back Vulkan HDR reference image: "
+                          << formatVkResult(readbackResult) << ".\n";
+                return 1;
+            }
+            if (!accumulateReferenceImage(
+                    readback.width,
+                    readback.height,
+                    readback.rgba16,
+                    &accumulator)) {
+                std::cerr << "Failed to accumulate HDR reference sample.\n";
+                return 1;
+            }
+            ++frameCounter;
+            currentFrame = (currentFrame + 1) % MaxFramesInFlight;
+        }
+
+        CaptureTraceTimingSummary timingSummary;
+        std::array<ReferenceRegionSummary, ReferenceRegionCount> summaries{};
+        if (!summarizeCaptureTraceTimings(
+                std::span(traceTimings.data(), traceTimingCount),
+                &timingSummary)
+            || !summarizeReferenceRegions(accumulator, &summaries)) {
+            std::cerr << "Failed to summarize reference results.\n";
+            return 1;
+        }
+        for (std::size_t region = 0; region < summaries.size(); ++region) {
+            const ReferenceRegionSummary& summary = summaries[region];
+            std::cout << "Reference region=" << referenceRegionName(region)
+                      << " mean=" << summary.mean[0] << ',' << summary.mean[1]
+                      << ',' << summary.mean[2]
+                      << " standardError=" << summary.standardError[0] << ','
+                      << summary.standardError[1] << ','
+                      << summary.standardError[2] << '\n';
+        }
+        std::cout << "Reference complete: extent="
+                  << referenceExtent.width << 'x' << referenceExtent.height
+                  << " samples=" << accumulator.sampleCount
+                  << " scene=" << scenePresetName(commandLine.scenePreset)
+                  << " estimator=" << estimatorModeName(commandLine.estimator)
+                  << " traceMedianMs=" << std::fixed << std::setprecision(3)
+                  << timingSummary.medianMilliseconds
+                  << " traceSamples=" << timingSummary.sampleCount
+                  << " traceTiming="
+                  << (timingSummary.comparable ? "comparable" : "diagnostic")
+                  << std::defaultfloat << std::setprecision(6) << '\n';
+        return 0;
+    }
     if (captureMode) {
         if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
             std::cerr << "Failed to disable the player character for capture.\n";

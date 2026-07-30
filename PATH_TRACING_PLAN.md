@@ -299,6 +299,17 @@ first shader consumer, so P2b deliberately preserves the P1 image. All 7 graphic
 and 21 debug/release tests pass, SPIR-V validation is clean, and the matching
 validation-enabled frame-7 capture retains hash `0xd6550332dd29cf6c`.
 
+**P2c status: complete (2026-07-29).** Raygen now samples power-selected emitting
+triangles with finite one-sided visibility segments, closest-hit resolves BSDF-hit
+emission through the bounded instance/geometry lookup, and power-heuristic MIS combines
+the two techniques. The shared scene selector adds a 21-placement / 42-triangle night
+yard. Frozen-scene linear-HDR reference capture and its MIS, NEE-only, and BSDF-only
+controls pass the pinned 256-sample pairwise agreement gate in every region/channel.
+All 7 graphics-free and 21 debug/release tests pass; SPIR-V and validation-enabled yard
+and night captures are clean. At 1920×1080 on the RTX 5070 Ti, fixed 32+256 trace-only
+medians are 0.600 ms for the yard and 0.676 ms for the night preset; frame-index-7
+hashes are `0xa2418da72c12eb9d` and `0x859a09157a88be57`, respectively.
+
 **Goal.** Surfaces can emit; emitters are importance-sampled from a real distribution;
 a BSDF ray that lands on an emitter is MIS-weighted instead of double-counted.
 
@@ -662,7 +673,7 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
    GPU record 32 → 48.
    No shading change yet (emission unreferenced).
 5. **P2b — complete.** Light builder, records, CDF, emitter lookup, bindings 6–8.
-6. **P2c** emitter NEE + emitter MIS + the night yard preset + linear-HDR reference
+6. **P2c — complete.** Emitter NEE + emitter MIS + the night yard preset + linear-HDR reference
    capture and estimator controls.
 7. **P3a** `OGFX_MATERIALS` v4 class word + metal class + sphere acceptance.
 8. **P3b** glass class + two-sided direct sampling + unified any-hit routing + explicit

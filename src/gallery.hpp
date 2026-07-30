@@ -1,6 +1,7 @@
 #pragma once
 
 #include "scene.hpp"
+#include "scene_preset.hpp"
 
 #include <cstddef>
 #include <string>
@@ -36,5 +37,6 @@ struct GalleryLoadResult
 // Load every configured asset through the generic OGFx path, merge its model
 // records, and add the table-owned yard placements. The table is temporary scene
 // policy; callers receive ordinary SceneData plus the spawn and dynamic-body set.
-[[nodiscard]] GalleryLoadResult loadGalleryScene();
+[[nodiscard]] GalleryLoadResult loadGalleryScene(
+    ScenePreset preset = ScenePreset::Yard);
 }

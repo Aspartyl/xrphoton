@@ -1,5 +1,7 @@
 #pragma once
 
+#include "scene_preset.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -81,6 +83,7 @@ struct SceneLighting
 };
 
 extern const SceneLighting DefaultSceneLighting;
+[[nodiscard]] SceneLighting makeSceneLightingPreset(ScenePreset preset);
 
 // Preserve lighting's analytic configuration and transactionally rebuild all derived
 // emitter state. Dynamic and alpha-tested emitters are deliberately rejected because
@@ -105,8 +108,8 @@ constexpr std::uint32_t FrameLightingEstimatorShift = 2u;
 constexpr std::uint32_t FrameLightingEstimatorMask = 3u << FrameLightingEstimatorShift;
 constexpr std::uint32_t FrameLightingKnownFlags =
     FrameLightingPerezSkyBit | FrameLightingGlassBit | FrameLightingEstimatorMask;
-// Estimator modes are ABI reservations validated now and consumed by P2c's linear-HDR
-// reference path; P2b still publishes MIS mode zero and exposes no partial toggle.
+// Estimator modes drive P2c's linear-HDR reference path. Interactive and ordinary
+// capture retain MIS mode zero; only reference capture exposes the diagnostic modes.
 
 // Exact std140 CPU mirror for binding 5. The scalar after each vec3 fills its
 // 16-byte lane explicitly, so this is stable with ordinary (unaligned) GLM types.
@@ -164,6 +167,11 @@ static_assert(offsetof(FrameLighting, sunDirection) == 0
     return (flags & ~FrameLightingKnownFlags) == 0 && estimator != 3u;
 }
 
+[[nodiscard]] constexpr std::uint32_t estimatorFlags(EstimatorMode estimator)
+{
+    return static_cast<std::uint32_t>(estimator) << FrameLightingEstimatorShift;
+}
+
 // Validate and pack one immutable GPU publication. On failure output is unchanged.
 [[nodiscard]] bool makeFrameLighting(
     const SceneLighting& scene,
@@ -196,4 +204,11 @@ struct SkySample
     const float denominator = firstSquared + secondSquared;
     return firstSquared / (denominator > 1.0e-20f ? denominator : 1.0e-20f);
 }
+
+[[nodiscard]] float emitterSolidAnglePdf(
+    float pEmitters,
+    float pTriangle,
+    float area,
+    float distanceSquared,
+    float lightCosine);
 }

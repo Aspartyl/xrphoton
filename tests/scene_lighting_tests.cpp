@@ -532,6 +532,27 @@ void testMisWeights()
         "two absent techniques produce zero weight");
 }
 
+void testEmitterPdfAndEstimatorFlags()
+{
+    expect(
+        nearly(xrphoton::emitterSolidAnglePdf(0.5f, 0.25f, 2.0f, 8.0f, 0.5f), 1.0f),
+        "emitter area density converts to the expected solid-angle PDF");
+    expect(
+        xrphoton::emitterSolidAnglePdf(0.0f, 0.25f, 2.0f, 8.0f, 0.5f) == 0.0f
+            && xrphoton::emitterSolidAnglePdf(0.5f, 0.25f, 0.0f, 8.0f, 0.5f)
+                == 0.0f
+            && xrphoton::emitterSolidAnglePdf(0.5f, 0.25f, 2.0f, 8.0f, 0.0f)
+                == 0.0f,
+        "absent selection, area, or facing produces no competing emitter PDF");
+    expect(
+        xrphoton::estimatorFlags(xrphoton::EstimatorMode::Mis) == 0
+            && xrphoton::estimatorFlags(xrphoton::EstimatorMode::Nee)
+                == (1u << xrphoton::FrameLightingEstimatorShift)
+            && xrphoton::estimatorFlags(xrphoton::EstimatorMode::Bsdf)
+                == (2u << xrphoton::FrameLightingEstimatorShift),
+        "reference estimator names map exactly onto the FrameLighting flag ABI");
+}
+
 void testDynamicBufferMath()
 {
     xrphoton::FrameLightingBufferLayout layout;
@@ -585,6 +606,7 @@ int main()
     testSelectorPacking();
     testSkyEvaluationSamplingAndPdf();
     testMisWeights();
+    testEmitterPdfAndEstimatorFlags();
     testDynamicBufferMath();
 
     if (failureCount != 0) {

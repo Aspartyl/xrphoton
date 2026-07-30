@@ -54,6 +54,15 @@ struct StorageImageReadback
     std::vector<std::uint8_t> rgba8;
 };
 
+// CPU-owned untouched HDR output. Each pixel is four raw IEEE-754 binary16 words in
+// row-major R16G16B16A16_SFLOAT channel order.
+struct HdrImageReadback
+{
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint16_t> rgba16;
+};
+
 // Rewrite the RT and tonemap descriptors to the current HDR/LDR views and gate both
 // trace and compute dispatch dimensions against device limits. Resize idles the device,
 // so rewriting these program-lifetime descriptor sets is race-free.
@@ -92,4 +101,12 @@ VkResult readbackStorageImage(
     const Renderer& renderer,
     std::uint32_t finalSubmittedFrameSlot,
     StorageImageReadback* output);
+
+// Read the untouched HDR image after one successful reference frame. Unlike the
+// terminal LDR readback, this leaves HDR in GENERAL and establishes ordering for a
+// later trace, so reference mode may call it after every serialized sample.
+VkResult readbackHdrImage(
+    const Renderer& renderer,
+    std::uint32_t submittedFrameSlot,
+    HdrImageReadback* output);
 }

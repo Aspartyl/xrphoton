@@ -848,10 +848,226 @@ VkResult readbackStorageImage(
             return result;
         }
 
+        result = vmaInvalidateAllocation(
+            renderer.allocator,
+            readbackBuffer.allocation,
+            0,
+            hostByteCount);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
         std::memcpy(
             candidate.rgba8.data(),
             allocationInfo.pMappedData,
             hostByteCount);
+        *output = std::move(candidate);
+        return VK_SUCCESS;
+    } catch (const std::bad_alloc&) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+        return VK_ERROR_UNKNOWN;
+    }
+}
+
+VkResult readbackHdrImage(
+    const Renderer& renderer,
+    std::uint32_t submittedFrameSlot,
+    HdrImageReadback* output)
+{
+    if (output == nullptr
+        || submittedFrameSlot >= MaxFramesInFlight
+        || renderer.device == VK_NULL_HANDLE
+        || renderer.allocator == nullptr
+        || renderer.traceQueue == VK_NULL_HANDLE
+        || renderer.frames == nullptr
+        || renderer.swap == nullptr
+        || renderer.swap->hdrRadianceImage == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    const Swapchain& swap = *renderer.swap;
+    const std::uint64_t pixelCount =
+        static_cast<std::uint64_t>(swap.extent.width) * swap.extent.height;
+    constexpr std::uint64_t BytesPerPixel = 8;
+    if (swap.extent.width == 0 || swap.extent.height == 0
+        || pixelCount > std::numeric_limits<std::uint64_t>::max() / BytesPerPixel
+        || pixelCount * BytesPerPixel > std::numeric_limits<VkDeviceSize>::max()
+        || pixelCount * 4 > std::numeric_limits<std::size_t>::max()) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const VkDeviceSize byteCount = pixelCount * BytesPerPixel;
+    const std::size_t wordCount = static_cast<std::size_t>(pixelCount * 4);
+    const FrameResources& frame = renderer.frames[submittedFrameSlot];
+    if (frame.commandBuffer == VK_NULL_HANDLE
+        || frame.inFlightFence == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    try {
+        VkResult result = vkWaitForFences(
+            renderer.device,
+            1,
+            &frame.inFlightFence,
+            VK_TRUE,
+            std::numeric_limits<std::uint64_t>::max());
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        HdrImageReadback candidate;
+        candidate.width = swap.extent.width;
+        candidate.height = swap.extent.height;
+        if (wordCount > candidate.rgba16.max_size()) {
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        candidate.rgba16.resize(wordCount);
+
+        TemporaryBuffer readbackBuffer;
+        readbackBuffer.allocator = renderer.allocator;
+        result = createBuffer(
+            renderer.allocator,
+            byteCount,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            &readbackBuffer.buffer,
+            &readbackBuffer.allocation);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        VmaAllocationInfo allocationInfo{};
+        vmaGetAllocationInfo(
+            renderer.allocator,
+            readbackBuffer.allocation,
+            &allocationInfo);
+        if (allocationInfo.pMappedData == nullptr) {
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+
+        result = vkResetCommandBuffer(frame.commandBuffer, 0);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        result = vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        VkImageSubresourceRange colorRange{};
+        colorRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        colorRange.levelCount = 1;
+        colorRange.layerCount = 1;
+        recordImageBarrier(
+            frame.commandBuffer,
+            swap.hdrRadianceImage,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR
+                | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            colorRange);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copyRegion.imageSubresource.layerCount = 1;
+        copyRegion.imageExtent = {
+            swap.extent.width,
+            swap.extent.height,
+            1,
+        };
+        vkCmdCopyImageToBuffer(
+            frame.commandBuffer,
+            swap.hdrRadianceImage,
+            VK_IMAGE_LAYOUT_GENERAL,
+            readbackBuffer.buffer,
+            1,
+            &copyRegion);
+
+        VkBufferMemoryBarrier hostReadBarrier{};
+        hostReadBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        hostReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        hostReadBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        hostReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostReadBarrier.buffer = readbackBuffer.buffer;
+        hostReadBarrier.size = byteCount;
+        vkCmdPipelineBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            0,
+            0,
+            nullptr,
+            1,
+            &hostReadBarrier,
+            0,
+            nullptr);
+        recordExecutionBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
+
+        result = vkEndCommandBuffer(frame.commandBuffer);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        TemporaryFence copyFence;
+        copyFence.device = renderer.device;
+        VkFenceCreateInfo fenceCreateInfo{};
+        fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        result = vkCreateFence(
+            renderer.device,
+            &fenceCreateInfo,
+            nullptr,
+            &copyFence.fence);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &frame.commandBuffer;
+        result = vkQueueSubmit(
+            renderer.traceQueue,
+            1,
+            &submitInfo,
+            copyFence.fence);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        result = vkWaitForFences(
+            renderer.device,
+            1,
+            &copyFence.fence,
+            VK_TRUE,
+            std::numeric_limits<std::uint64_t>::max());
+        if (result != VK_SUCCESS) {
+            if (result != VK_ERROR_DEVICE_LOST) {
+                (void)vkQueueWaitIdle(renderer.traceQueue);
+            }
+            return result;
+        }
+
+        result = vmaInvalidateAllocation(
+            renderer.allocator,
+            readbackBuffer.allocation,
+            0,
+            byteCount);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        std::memcpy(
+            candidate.rgba16.data(),
+            allocationInfo.pMappedData,
+            static_cast<std::size_t>(byteCount));
         *output = std::move(candidate);
         return VK_SUCCESS;
     } catch (const std::bad_alloc&) {

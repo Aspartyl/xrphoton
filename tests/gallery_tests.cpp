@@ -1,4 +1,5 @@
 #include "gallery.hpp"
+#include "scene_lighting.hpp"
 
 #ifndef XRPHOTON_GALLERY_TEST_EXPECTATION
 #define XRPHOTON_GALLERY_TEST_EXPECTATION 0
@@ -339,11 +340,50 @@ void testGeneratedYardPolicy()
     expect(nearly(loaded.spawn.yaw, glm::radians(45.0f)), "yard spawn yaw stays pinned");
     expect(nearly(loaded.spawn.pitch, glm::radians(-5.0f)), "yard spawn pitch stays pinned");
 }
+
+void testNightYardPolicy()
+{
+#if XRPHOTON_GALLERY_TEST_EXPECTATION == 0
+    xrphoton::GalleryLoadResult loaded = xrphoton::loadGalleryScene(
+        xrphoton::ScenePreset::Night);
+    expect(static_cast<bool>(loaded), "night yard loads successfully");
+    if (!loaded) {
+        std::cerr << loaded.error << '\n';
+        return;
+    }
+    expect(
+        loaded.scene.meshes.size() == 8
+            && loaded.scene.geometries.size() == 9
+            && loaded.scene.materials.size() == 9
+            && loaded.scene.instances.size() == 34,
+        "night yard adds three shared emitter meshes and twenty-one placements");
+    xrphoton::SceneLighting lighting = xrphoton::makeSceneLightingPreset(
+        xrphoton::ScenePreset::Night);
+    std::string error;
+    expect(
+        xrphoton::buildSceneLighting(
+            loaded.scene,
+            loaded.dynamicInstances,
+            &lighting,
+            &error),
+        "night yard emitter tables build");
+    xrphoton::FrameLighting packed;
+    expect(
+        error.empty() && lighting.lights.size() == 42
+            && lighting.instanceCount == 34
+            && xrphoton::makeFrameLighting(lighting, 34, &packed)
+            && packed.sunIrradiance == glm::vec3{}
+            && packed.lightCount == 42
+            && packed.pSky == 0.5f && packed.pEmitters == 0.5f,
+        "night lighting disables the sun and publishes forty-two emitter triangles");
+#endif
+}
 }
 
 int main()
 {
     testGeneratedYardPolicy();
+    testNightYardPolicy();
 
     if (failureCount != 0) {
         std::cerr << failureCount << " gallery-policy test assertion(s) failed.\n";

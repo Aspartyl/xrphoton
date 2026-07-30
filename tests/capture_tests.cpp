@@ -1,6 +1,7 @@
 #include "capture.hpp"
 
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -51,6 +52,9 @@ void testCommandLine()
             && options.mode == xrphoton::CommandLineMode::Interactive
             && options.captureFrameCount == 0
             && options.captureOutputPath.empty()
+            && options.referenceSampleCount == 0
+            && options.scenePreset == xrphoton::ScenePreset::Yard
+            && options.estimator == xrphoton::EstimatorMode::Mis
             && error.empty(),
         "no arguments select interactive mode");
 
@@ -65,6 +69,37 @@ void testCommandLine()
             && options.captureOutputPath == "result.ppm"
             && error.empty(),
         "a positive count and output path select capture mode");
+
+    options = parse(
+        {"xrPhoton", "--scene", "night", "--capture", "4", "night.ppm"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded && options.mode == xrphoton::CommandLineMode::Capture
+            && options.captureFrameCount == 4
+            && options.scenePreset == xrphoton::ScenePreset::Night,
+        "capture accepts the shared night scene selector in either option order");
+
+    options = parse(
+        {"xrPhoton", "--scene", "night"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded && options.mode == xrphoton::CommandLineMode::Interactive
+            && options.scenePreset == xrphoton::ScenePreset::Night,
+        "interactive mode accepts the night scene selector");
+
+    options = parse(
+        {"xrPhoton", "--reference", "64", "--scene", "night",
+         "--estimator", "nee"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded && options.mode == xrphoton::CommandLineMode::Reference
+            && options.referenceSampleCount == 64
+            && options.scenePreset == xrphoton::ScenePreset::Night
+            && options.estimator == xrphoton::EstimatorMode::Nee,
+        "reference mode requires and retains its scene and estimator controls");
 
     options = parse(
         {"xrPhoton", "--capture", "4294967295", "result.ppm"},
@@ -87,6 +122,12 @@ void testCommandLine()
         {"xrPhoton", "--capture", "8x", "result.ppm"},
         {"xrPhoton", "--capture", "4294967296", "result.ppm"},
         {"xrPhoton", "--capture", "8", ""},
+        {"xrPhoton", "--scene", "furnace"},
+        {"xrPhoton", "--reference", "8", "--scene", "night"},
+        {"xrPhoton", "--reference", "8", "--estimator", "mis"},
+        {"xrPhoton", "--reference", "0", "--scene", "night", "--estimator", "mis"},
+        {"xrPhoton", "--reference", "8", "--scene", "night", "--estimator", "both"},
+        {"xrPhoton", "--estimator", "mis"},
     };
 
     for (const auto& arguments : invalidArguments) {
@@ -109,6 +150,77 @@ void testCommandLine()
         !xrphoton::parseCommandLine(1, validArguments, nullptr, &error)
             && !xrphoton::parseCommandLine(1, validArguments, &options, nullptr),
         "null parse outputs are rejected");
+}
+
+void testHalfAndReferenceAccumulation()
+{
+    expect(
+        xrphoton::binary16ToFloat(0x0000u) == 0.0f
+            && std::signbit(xrphoton::binary16ToFloat(0x8000u))
+            && xrphoton::binary16ToFloat(0x3c00u) == 1.0f
+            && xrphoton::binary16ToFloat(0xc000u) == -2.0f
+            && xrphoton::binary16ToFloat(0x7bffu) == 65504.0f
+            && xrphoton::binary16ToFloat(0x0001u)
+                == std::ldexp(1.0f, -24)
+            && std::isinf(xrphoton::binary16ToFloat(0x7c00u))
+            && std::isnan(xrphoton::binary16ToFloat(0x7e00u)),
+        "binary16 conversion covers zero, normal, subnormal, and special values");
+
+    std::vector<std::uint16_t> first(8 * 8 * 4);
+    std::vector<std::uint16_t> second(8 * 8 * 4);
+    for (std::size_t pixel = 0; pixel < 8 * 8; ++pixel) {
+        first[pixel * 4 + 0] = 0x3c00u;
+        first[pixel * 4 + 1] = 0x4000u;
+        first[pixel * 4 + 2] = 0x4200u;
+        first[pixel * 4 + 3] = 0x3c00u;
+        second[pixel * 4 + 0] = 0x4000u;
+        second[pixel * 4 + 1] = 0x4400u;
+        second[pixel * 4 + 2] = 0x4600u;
+        second[pixel * 4 + 3] = 0x3c00u;
+    }
+    xrphoton::ReferenceAccumulator accumulator;
+    expect(
+        xrphoton::accumulateReferenceImage(8, 8, first, &accumulator)
+            && xrphoton::accumulateReferenceImage(8, 8, second, &accumulator)
+            && accumulator.sampleCount == 2,
+        "two uniform HDR frames accumulate into every pinned region");
+    std::array<xrphoton::ReferenceRegionSummary,
+        xrphoton::ReferenceRegionCount> summaries{};
+    expect(
+        xrphoton::summarizeReferenceRegions(accumulator, &summaries),
+        "reference region statistics summarize");
+    for (const auto& summary : summaries) {
+        expect(
+            summary.mean[0] == 1.5 && summary.mean[1] == 3.0
+                && summary.mean[2] == 4.5
+                && std::abs(summary.standardError[0] - 0.5) < 1.0e-12
+                && std::abs(summary.standardError[1] - 1.0) < 1.0e-12
+                && std::abs(summary.standardError[2] - 1.5) < 1.0e-12,
+            "reference means and standard errors use frame-level double sums");
+    }
+    xrphoton::ReferenceRegionSummary baseline = summaries[0];
+    baseline.standardError = {};
+    xrphoton::ReferenceRegionSummary close = baseline;
+    close.mean[0] *= 1.009;
+    xrphoton::ReferenceRegionSummary far = baseline;
+    far.mean[0] *= 1.02;
+    far.standardError = {};
+    xrphoton::ReferenceRegionSummary noisy = far;
+    noisy.standardError[0] = 0.02;
+    expect(
+        xrphoton::referenceEstimatesAgree(baseline, close)
+            && !xrphoton::referenceEstimatesAgree(baseline, far)
+            && xrphoton::referenceEstimatesAgree(baseline, noisy),
+        "reference agreement uses the larger of one-percent and three-sigma bounds");
+
+    const xrphoton::ReferenceAccumulator unchanged = accumulator;
+    first[(3 * 8 + 3) * 4] = 0x7e00u;
+    expect(
+        !xrphoton::accumulateReferenceImage(8, 8, first, &accumulator)
+            && accumulator.sampleCount == unchanged.sampleCount
+            && !xrphoton::accumulateReferenceImage(7, 8, second, &accumulator)
+            && !xrphoton::summarizeReferenceRegions(accumulator, nullptr),
+        "invalid HDR data and extent changes are rejected transactionally");
 }
 
 void testHash()
@@ -260,6 +372,7 @@ int main(int argumentCount, char** arguments)
     }
 
     testCommandLine();
+    testHalfAndReferenceAccumulation();
     testHash();
     testTraceTimingSummary();
     testPpm(arguments[1], arguments[2]);

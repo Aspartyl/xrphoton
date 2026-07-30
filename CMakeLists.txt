@@ -809,3 +809,25 @@ add_custom_target(xrPhotonCaptureProof
     VERBATIM
     USES_TERMINAL
 )
+
+add_executable(xrPhotonReferenceCompare
+    tools/reference_compare.cpp
+    src/capture.cpp
+)
+target_include_directories(xrPhotonReferenceCompare PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_options(xrPhotonReferenceCompare PRIVATE -Wall -Wextra)
+
+add_custom_target(xrPhotonReferenceProof
+    COMMAND ${CMAKE_COMMAND}
+        -DENGINE=$<TARGET_FILE:xrPhoton>
+        -DCOMPARATOR=$<TARGET_FILE:xrPhotonReferenceCompare>
+        -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/reference-proof
+        -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -DSAMPLE_COUNT=256
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_runtime_proof.cmake
+    DEPENDS xrPhoton xrPhotonReferenceCompare
+    COMMENT "Running MIS/NEE/BSDF linear-HDR reference proof"
+    VERBATIM
+    USES_TERMINAL
+)

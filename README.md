@@ -116,6 +116,7 @@ write the final tonemapped result as an sRGB PPM:
 
 ```sh
 ./build/debug/xrPhoton --capture 8 capture.ppm
+./build/debug/xrPhoton --capture 8 night.ppm --scene night
 ```
 
 Capture mode fixes the camera and extent, advances physics by exactly 1/60
@@ -124,6 +125,18 @@ the extent, the final frame index and a hash of the raw bytes, and two runs of
 the same binary on the same machine and driver are expected to match. A resize,
 window close, or out-of-date swapchain fails the capture instead of silently
 changing the sampled frame.
+
+P2c also provides an acceptance-only linear-HDR reference mode. It freezes the scene,
+reads every untouched HDR sample back to the CPU, and exposes MIS, NEE-only, and
+BSDF-only controls for estimator checks:
+
+```sh
+./build/release/xrPhoton --reference 256 --scene night --estimator mis
+cmake --build --preset release --target xrPhotonReferenceProof
+```
+
+The proof target runs all three estimators and requires their means to agree in each
+pinned image region; reference mode is offline measurement, not render accumulation.
 
 ### Offline tools
 

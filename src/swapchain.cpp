@@ -21,7 +21,8 @@ constexpr VkImageUsageFlags RequiredSwapchainImageUsage =
     | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 constexpr VkFormat HdrRadianceFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat LdrOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
-constexpr VkImageUsageFlags RequiredHdrRadianceUsage = VK_IMAGE_USAGE_STORAGE_BIT;
+constexpr VkImageUsageFlags RequiredHdrRadianceUsage =
+    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 constexpr VkImageUsageFlags RequiredLdrOutputUsage =
     VK_IMAGE_USAGE_STORAGE_BIT
     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -49,7 +50,9 @@ bool imageFormatFeaturesSupported(
 
 bool renderTargetFormatsSupported(VkPhysicalDevice physicalDevice)
 {
-    constexpr VkFormatFeatureFlags HdrFeatures = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    constexpr VkFormatFeatureFlags HdrFeatures =
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
+        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
     constexpr VkFormatFeatureFlags LdrFeatures =
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
         | VK_FORMAT_FEATURE_BLIT_SRC_BIT

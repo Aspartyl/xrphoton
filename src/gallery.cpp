@@ -423,9 +423,141 @@ std::size_t resolvedTextureCount(
     }
     return count;
 }
+
+bool appendNightEmitterModel(
+    SceneData* scene,
+    std::uint32_t* firstMesh,
+    std::string* error)
+{
+    if (scene == nullptr || firstMesh == nullptr || error == nullptr
+        || scene->meshes.size() > std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+    }
+
+    SceneData model;
+    const glm::vec3 emissions[] = {
+        {28.0f, 15.0f, 6.0f},
+        {45.0f, 10.0f, 1.5f},
+        {5.0f, 14.0f, 38.0f},
+    };
+    for (const glm::vec3 emission : emissions) {
+        const std::uint32_t firstVertex =
+            static_cast<std::uint32_t>(model.positions.size() / 3);
+        const std::uint32_t firstIndex =
+            static_cast<std::uint32_t>(model.indices.size());
+        const std::uint32_t materialIndex =
+            static_cast<std::uint32_t>(model.materials.size());
+        const std::uint32_t geometryIndex =
+            static_cast<std::uint32_t>(model.geometries.size());
+        model.positions.insert(model.positions.end(), {
+            -0.5f, -0.5f, 0.0f,
+             0.5f, -0.5f, 0.0f,
+             0.5f,  0.5f, 0.0f,
+            -0.5f,  0.5f, 0.0f,
+        });
+        for (std::uint32_t vertex = 0; vertex < 4; ++vertex) {
+            model.attributes.push_back({
+                .nx = 0.0f,
+                .ny = 0.0f,
+                .nz = 1.0f,
+                .u = vertex == 1 || vertex == 2 ? 1.0f : 0.0f,
+                .v = vertex >= 2 ? 1.0f : 0.0f,
+            });
+        }
+        model.indices.insert(model.indices.end(), {0, 1, 2, 0, 2, 3});
+        model.geometries.push_back({
+            .firstVertex = firstVertex,
+            .vertexCount = 4,
+            .firstIndex = firstIndex,
+            .indexCount = 6,
+            .materialIndex = materialIndex,
+        });
+        SceneMaterial material;
+        material.baseColorFactor[0] = emission.x / 45.0f;
+        material.baseColorFactor[1] = emission.y / 45.0f;
+        material.baseColorFactor[2] = emission.z / 45.0f;
+        material.emission[0] = emission.x;
+        material.emission[1] = emission.y;
+        material.emission[2] = emission.z;
+        model.materials.push_back(std::move(material));
+        model.meshes.push_back({
+            .firstGeometry = geometryIndex,
+            .geometryCount = 1,
+        });
+    }
+
+    *firstMesh = static_cast<std::uint32_t>(scene->meshes.size());
+    return appendSceneModel(scene, std::move(model), error);
 }
 
-GalleryLoadResult loadGalleryScene()
+bool appendNightEmitters(SceneData* scene, std::string* error)
+{
+    std::uint32_t firstMesh = 0;
+    if (!appendNightEmitterModel(scene, &firstMesh, error)) {
+        return false;
+    }
+
+    struct EmitterPlacement
+    {
+        std::uint32_t localMesh;
+        glm::vec3 position;
+        glm::vec3 scale;
+        float yawDegrees;
+        float pitchDegrees;
+    };
+    const EmitterPlacement placements[] = {
+        // Keep wall lamps visibly detached from the wall's inner faces. Coplanar
+        // emitters make finite NEE segments and BSDF-hit rays see different endpoint
+        // geometry, invalidating the estimator-consistency proof.
+        {0, {-6.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, {-4.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, {-2.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, {-0.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, { 1.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, { 3.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, { 5.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, { 7.5f, 2.2f, 9.60f}, {0.35f, 0.35f, 1.0f}, 180.0f, 0.0f},
+        {0, {9.59f, 2.2f,  8.5f}, {0.35f, 0.35f, 1.0f}, -90.0f, 0.0f},
+        {0, {9.59f, 2.2f,  6.5f}, {0.35f, 0.35f, 1.0f}, -90.0f, 0.0f},
+        {0, {9.59f, 2.2f,  4.5f}, {0.35f, 0.35f, 1.0f}, -90.0f, 0.0f},
+        {0, {9.59f, 2.2f,  2.5f}, {0.35f, 0.35f, 1.0f}, -90.0f, 0.0f},
+        {0, {9.59f, 2.2f,  0.5f}, {0.35f, 0.35f, 1.0f}, -90.0f, 0.0f},
+        {0, {9.59f, 2.2f, -1.5f}, {0.35f, 0.35f, 1.0f}, -90.0f, 0.0f},
+        {0, {4.1f, 1.4f, 4.2f}, {0.25f, 0.25f, 1.0f}, 225.0f, 0.0f},
+        {0, {5.9f, 1.4f, 4.2f}, {0.25f, 0.25f, 1.0f}, 135.0f, 0.0f},
+        {1, {0.0f, 0.04f, 1.5f}, {1.2f, 1.2f, 1.0f}, 0.0f, -90.0f},
+        {2, {-3.5f, 0.8f, 2.0f}, {0.45f, 0.45f, 1.0f}, 45.0f, 0.0f},
+        {2, {-2.7f, 1.2f, 2.8f}, {0.35f, 0.35f, 1.0f}, 45.0f, 0.0f},
+        {2, {-4.2f, 1.5f, 3.2f}, {0.30f, 0.30f, 1.0f}, 45.0f, 0.0f},
+        {2, {-3.2f, 1.9f, 3.8f}, {0.25f, 0.25f, 1.0f}, 45.0f, 0.0f},
+    };
+
+    for (const EmitterPlacement& placement : placements) {
+        const glm::mat4 transform = glm::translate(
+                glm::mat4{1.0f},
+                placement.position)
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(placement.yawDegrees),
+                glm::vec3{0.0f, 1.0f, 0.0f})
+            * glm::rotate(
+                glm::mat4{1.0f},
+                glm::radians(placement.pitchDegrees),
+                glm::vec3{1.0f, 0.0f, 0.0f})
+            * glm::scale(glm::mat4{1.0f}, placement.scale);
+        if (!appendSceneInstance(
+                scene,
+                firstMesh + placement.localMesh,
+                transform,
+                error)) {
+            return false;
+        }
+    }
+    return true;
+}
+}
+
+GalleryLoadResult loadGalleryScene(ScenePreset preset)
 {
     try {
         SceneData scene{};
@@ -531,6 +663,11 @@ GalleryLoadResult loadGalleryScene()
 
         if (dynamicInstances.empty()) {
             return fail("Gallery yard did not produce a dynamic scene instance");
+        }
+
+        if (preset == ScenePreset::Night
+            && !appendNightEmitters(&scene, &assemblyError)) {
+            return fail("Gallery night emitters failed: " + assemblyError);
         }
 
         if (!validateAssembledScene(scene, &assemblyError)) {

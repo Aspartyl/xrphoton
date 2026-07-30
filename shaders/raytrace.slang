@@ -21,6 +21,12 @@ static const uint ShadowRayType = XRPHOTON_SHADOW_RAY_TYPE;
 // share one horizon or their MIS techniques estimate different integrals.
 static const float InfiniteRayTMax = 1.0e30;
 static const float SurfaceRayOffset = 1.0e-3;
+static const uint NoEmitterLight = 0xffffffff;
+static const uint EstimatorShift = 2;
+static const uint EstimatorMask = 3u << EstimatorShift;
+static const uint EstimatorMis = 0;
+static const uint EstimatorNee = 1;
+static const uint EstimatorBsdf = 2;
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
 // swapchain-sized HDR radiance image at 1. The [format] attribute stamps the SPIR-V
@@ -60,6 +66,53 @@ StructuredBuffer<EmitterLookupRecord> emitterLookup;
 
 [[vk::push_constant]]
 ConstantBuffer<RaygenPushConstants> frameConstants;
+
+uint estimatorMode()
+{
+    return (frameLighting.flags & EstimatorMask) >> EstimatorShift;
+}
+
+// At later vertices, surviving Russian roulette is part of the BSDF technique's
+// path density. NEE must use that same density or the two MIS weights do not sum.
+float bsdfTechniquePdfAfterRoulette(
+    uint pathVertex,
+    float3 pathThroughput,
+    float3 brdf,
+    float cosine,
+    float pdf)
+{
+    if (pdf <= 0.0)
+        return 0.0;
+    if (pathVertex < 3)
+        return pdf;
+
+    float3 candidateThroughput = pathThroughput * brdf * (cosine / pdf);
+    float maximumThroughput = max(
+        candidateThroughput.x,
+        max(candidateThroughput.y, candidateThroughput.z));
+    return maximumThroughput > 0.0
+        ? pdf * clamp(maximumThroughput, 0.05, 0.95)
+        : 0.0;
+}
+
+uint selectEmitter(float sample)
+{
+    uint first = 0;
+    uint count = frameLighting.lightCount;
+    while (count > 0)
+    {
+        uint step = count / 2;
+        uint middle = first + step;
+        if (sample < lightCdf[middle])
+            count = step;
+        else
+        {
+            first = middle + 1;
+            count -= step + 1;
+        }
+    }
+    return first;
+}
 
 HitMaterialCoordinates fetchHitMaterialCoordinates(
     BuiltInTriangleIntersectionAttributes attribs)
@@ -264,6 +317,9 @@ void rayGenMain()
         hit.albedo = float3(0.0);
         hit.shadingNormal = float3(0.0);
         hit.geometricNormal = float3(0.0);
+        hit.emission = float3(0.0);
+        hit.emitterArea = 0.0;
+        hit.emitterPTriangle = 0.0;
         hit.rayDirectionX = rayDirectionX;
         hit.rayDirectionY = rayDirectionY;
 
@@ -281,9 +337,12 @@ void rayGenMain()
 
         if (hit.hitT < 0.0)
         {
-            float missWeight = pathVertex == 0
+            uint estimator = estimatorMode();
+            float missWeight = pathVertex == 0 || estimator == EstimatorBsdf
                 ? 1.0
-                : powerHeuristic(previousBsdfPdf, previousSkyPdf);
+                : estimator == EstimatorNee
+                    ? 0.0
+                    : powerHeuristic(previousBsdfPdf, previousSkyPdf);
             radiance += throughput
                 * skyRadiance(frameLighting, ray.Direction)
                 * missWeight;
@@ -297,6 +356,34 @@ void rayGenMain()
             -ray.Direction);
         MaterialRecord material = materials[hit.materialIndex];
         float3 wo = -ray.Direction;
+        uint estimator = estimatorMode();
+        float maximumEmission = max(
+            hit.emission.x,
+            max(hit.emission.y, hit.emission.z));
+        if (maximumEmission > 0.0)
+        {
+            float emissionWeight = 1.0;
+            if (pathVertex > 0)
+            {
+                if (estimator == EstimatorNee)
+                    emissionWeight = 0.0;
+                else if (estimator == EstimatorMis)
+                {
+                    float lightCosine = dot(
+                        hit.geometricNormal,
+                        -ray.Direction);
+                    float lightPdf = lightCosine > 0.0
+                        && hit.emitterArea > 0.0
+                        ? frameLighting.pEmitters
+                            * hit.emitterPTriangle
+                            * (hit.hitT * hit.hitT)
+                            / (hit.emitterArea * lightCosine)
+                        : 0.0;
+                    emissionWeight = powerHeuristic(previousBsdfPdf, lightPdf);
+                }
+            }
+            radiance += throughput * hit.emission * emissionWeight;
+        }
         float shadingCosine = dot(normals.shading, frameLighting.sunDirection);
         float geometricCosine = dot(normals.geometric, frameLighting.sunDirection);
         float maximumSunIrradiance = max(
@@ -341,11 +428,15 @@ void rayGenMain()
                 * shadow.visibility;
         }
 
-        // Draw exactly one non-delta light selector at this path vertex. In Phase 1
-        // sky is the only selectable branch; the sun remains a separately evaluated
-        // delta light and therefore cannot perturb the selector probabilities.
+        // Draw exactly one non-delta branch. The delta sun stays separate and cannot
+        // perturb the sky/emitter probabilities or enter their MIS balances.
         float selectableProbability = frameLighting.pSky + frameLighting.pEmitters;
-        if (selectableProbability > 0.0)
+        // A light connection adds the source endpoint to the path. Do not add it at
+        // the terminal surface where the matching BSDF technique has no remaining
+        // segment; all estimator modes must integrate the same finite path set.
+        if (pathVertex + 1 < MaxPathVertices
+            && estimator != EstimatorBsdf
+            && selectableProbability > 0.0)
         {
             float selectorSample = rngNextFloat(rngState);
             if (selectorSample < frameLighting.pSky)
@@ -395,12 +486,119 @@ void rayGenMain()
                         normals.shading,
                         wo,
                         lightSample.direction);
+                    float neeWeight = estimator == EstimatorNee
+                        ? 1.0
+                        : powerHeuristic(
+                            lightPdf,
+                            bsdfTechniquePdfAfterRoulette(
+                                pathVertex,
+                                throughput,
+                                lightBrdf,
+                                dot(normals.shading, lightSample.direction),
+                                lightBsdfPdf));
                     radiance += throughput
                         * lightBrdf
                         * lightSample.radiance
                         * dot(normals.shading, lightSample.direction)
                         * shadow.visibility
-                        * (powerHeuristic(lightPdf, lightBsdfPdf) / lightPdf);
+                        * (neeWeight / lightPdf);
+                }
+            }
+            else if (frameLighting.lightCount > 0
+                && selectorSample < selectableProbability)
+            {
+                uint lightIndex = selectEmitter(rngNextFloat(rngState));
+                if (lightIndex < frameLighting.lightCount)
+                {
+                    LightRecord light = lightRecords[lightIndex];
+                    float sqrtSample = sqrt(rngNextFloat(rngState));
+                    float triangleSample = rngNextFloat(rngState);
+                    float3 lightPosition = light.v0
+                        + light.edge1 * (sqrtSample * (1.0 - triangleSample))
+                        + light.edge2 * (sqrtSample * triangleSample);
+                    float3 lightNormal = normalize(cross(light.edge1, light.edge2));
+                    float3 shadowOrigin = worldPosition
+                        + normals.geometric * SurfaceRayOffset;
+                    float3 toLight = lightPosition - shadowOrigin;
+                    float distanceSquared = dot(toLight, toLight);
+                    float distance = sqrt(distanceSquared);
+                    if (distance > SurfaceRayOffset)
+                    {
+                        float3 lightDirection = toLight / distance;
+                        float shadingLightCosine = dot(
+                            normals.shading,
+                            lightDirection);
+                        float geometricLightCosine = dot(
+                            normals.geometric,
+                            lightDirection);
+                        float emitterCosine = dot(lightNormal, -lightDirection);
+                        float lightPdf = emitterCosine > 0.0 && light.area > 0.0
+                            ? frameLighting.pEmitters
+                                * light.pTriangle
+                                * distanceSquared
+                                / (light.area * emitterCosine)
+                            : 0.0;
+                        float endpointExclusion = max(
+                            SurfaceRayOffset,
+                            1.0e-4 * distance);
+                        float shadowTMax = distance - endpointExclusion;
+                        if (shadingLightCosine > 0.0
+                            && geometricLightCosine > 0.0
+                            && lightPdf > 0.0
+                            && shadowTMax > 0.0)
+                        {
+                            ShadowPayload shadow;
+                            shadow.visibility = 0.0;
+
+                            RayDesc shadowRay;
+                            shadowRay.Origin = shadowOrigin;
+                            shadowRay.Direction = lightDirection;
+                            shadowRay.TMin = 0.0;
+                            shadowRay.TMax = shadowTMax;
+
+                            TraceRay(
+                                topLevelAS,
+                                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+                                    | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                                0xFF,
+                                ShadowRayType,
+                                XRPHOTON_RAY_TYPE_COUNT,
+                                ShadowRayType,
+                                shadowRay,
+                                shadow);
+
+                            float lightBsdfPdf = dielectricBrdfPdf(
+                                hit.albedo,
+                                material.perceptualRoughness,
+                                material.dielectricF0,
+                                normals.shading,
+                                wo,
+                                lightDirection);
+                            float3 lightBrdf = evaluateDielectricBrdf(
+                                hit.albedo,
+                                material.perceptualRoughness,
+                                material.dielectricF0,
+                                normals.shading,
+                                wo,
+                                lightDirection);
+                            float neeWeight = estimator == EstimatorNee
+                                ? 1.0
+                                : powerHeuristic(
+                                    lightPdf,
+                                    bsdfTechniquePdfAfterRoulette(
+                                        pathVertex,
+                                        throughput,
+                                        lightBrdf,
+                                        shadingLightCosine,
+                                        lightBsdfPdf));
+                            radiance += throughput
+                                * lightBrdf
+                                * light.emission
+                                * shadingLightCosine
+                                * shadow.visibility
+                                * (neeWeight / lightPdf);
+                        }
+                    }
                 }
             }
         }
@@ -474,6 +672,7 @@ void rayGenMain()
             if (rngNextFloat(rngState) >= survivalProbability)
                 break;
             throughput /= survivalProbability;
+            previousBsdfPdf *= survivalProbability;
         }
 
         ray.Origin = worldPosition + normals.geometric * SurfaceRayOffset;
@@ -510,6 +709,34 @@ void closestHitMain(
               .SampleGrad(hit.uv, hit.uvDx, hit.uvDy).rgb;
     payload.shadingNormal = hit.worldShadingNormal;
     payload.geometricNormal = hit.worldGeometricNormal;
+    payload.emission = float3(0.0);
+    payload.emitterArea = 0.0;
+    payload.emitterPTriangle = 0.0;
+
+    uint instanceIndex = InstanceIndex();
+    if (instanceIndex < frameLighting.instanceCount)
+    {
+        EmitterLookupRecord header = emitterLookup[instanceIndex];
+        uint geometryIndex = GeometryIndex();
+        if (geometryIndex < header.count)
+        {
+            EmitterLookupRecord range = emitterLookup[header.first + geometryIndex];
+            uint primitiveIndex = PrimitiveIndex();
+            if (range.first != NoEmitterLight
+                && primitiveIndex < range.count
+                && range.first < frameLighting.lightCount
+                && primitiveIndex < frameLighting.lightCount - range.first)
+            {
+                LightRecord light = lightRecords[range.first + primitiveIndex];
+                if (dot(hit.worldGeometricNormal, -WorldRayDirection()) > 0.0)
+                {
+                    payload.emission = light.emission;
+                    payload.emitterArea = light.area;
+                    payload.emitterPTriangle = light.pTriangle;
+                }
+            }
+        }
+    }
 }
 
 [shader("anyhit")]

@@ -122,6 +122,17 @@ const SceneLighting DefaultSceneLighting{
     .instanceCount = 0,
 };
 
+SceneLighting makeSceneLightingPreset(ScenePreset preset)
+{
+    SceneLighting lighting = DefaultSceneLighting;
+    if (preset == ScenePreset::Night) {
+        lighting.sun.irradiance = {};
+        lighting.sky.zenithRadiance = {0.0015f, 0.003f, 0.008f};
+        lighting.sky.horizonRadiance = {0.006f, 0.008f, 0.014f};
+    }
+    return lighting;
+}
+
 bool validateEmitterLookup(
     std::span<const EmitterLookupRecord> lookup,
     std::uint32_t instanceCount,
@@ -535,5 +546,24 @@ bool sampleSky(
         .pdf = skyPdf(normal, direction),
     };
     return output->pdf > 0.0f;
+}
+
+float emitterSolidAnglePdf(
+    float pEmitters,
+    float pTriangle,
+    float area,
+    float distanceSquared,
+    float lightCosine)
+{
+    if (!std::isfinite(pEmitters) || !std::isfinite(pTriangle)
+        || !std::isfinite(area) || !std::isfinite(distanceSquared)
+        || !std::isfinite(lightCosine)
+        || pEmitters <= 0.0f || pTriangle <= 0.0f || area <= 0.0f
+        || distanceSquared < 0.0f || lightCosine <= 0.0f) {
+        return 0.0f;
+    }
+    const float pdf = pEmitters * pTriangle * distanceSquared
+        / (area * lightCosine);
+    return std::isfinite(pdf) ? pdf : 0.0f;
 }
 }

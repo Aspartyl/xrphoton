@@ -9,6 +9,7 @@
 #include <new>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace xrphoton
@@ -66,6 +67,25 @@ void setError(std::string* error, const char* message)
         *error = message;
     }
 }
+
+bool parsePositiveU32(std::string_view text, std::uint32_t* value)
+{
+    if (value == nullptr || text.empty()) {
+        return false;
+    }
+    std::uint32_t parsed = 0;
+    const std::from_chars_result result = std::from_chars(
+        text.data(),
+        text.data() + text.size(),
+        parsed,
+        10);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()
+        || parsed == 0) {
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
 }
 
 bool parseCommandLine(
@@ -90,49 +110,271 @@ bool parseCommandLine(
         return true;
     }
 
-    constexpr const char* Usage =
-        "Usage: xrPhoton [--capture <positive-frame-count> <output.ppm>]";
-
-    if (argumentCount != 4
-        || arguments[1] == nullptr
-        || arguments[2] == nullptr
-        || arguments[3] == nullptr
-        || std::string_view(arguments[1]) != "--capture") {
-        *error = Usage;
-        return false;
-    }
-
-    const std::string_view countText(arguments[2]);
-    std::uint32_t frameCount = 0;
-    const std::from_chars_result parseResult = std::from_chars(
-        countText.data(),
-        countText.data() + countText.size(),
-        frameCount,
-        10);
-
-    if (countText.empty()
-        || parseResult.ec != std::errc{}
-        || parseResult.ptr != countText.data() + countText.size()
-        || frameCount == 0) {
-        *error = "Capture frame count must be a positive 32-bit integer.";
-        return false;
-    }
-
-    if (arguments[3][0] == '\0') {
-        *error = "Capture output path must not be empty.";
-        return false;
-    }
-
     try {
-        options->mode = CommandLineMode::Capture;
-        options->captureFrameCount = frameCount;
-        options->captureOutputPath = arguments[3];
+        constexpr const char* Usage =
+            "Usage: xrPhoton [--capture <count> <output.ppm>] "
+            "[--scene <yard|night>] | --reference <count> "
+            "--scene <yard|night> --estimator <mis|nee|bsdf>";
+        bool modeSeen = false;
+        bool sceneSeen = false;
+        bool estimatorSeen = false;
+        CommandLineOptions candidate;
+        for (int index = 1; index < argumentCount;) {
+            if (arguments[index] == nullptr) {
+                *error = Usage;
+                return false;
+            }
+            const std::string_view option(arguments[index]);
+            if (option == "--capture") {
+                if (modeSeen || index + 2 >= argumentCount
+                    || arguments[index + 1] == nullptr
+                    || arguments[index + 2] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                std::uint32_t count = 0;
+                if (!parsePositiveU32(arguments[index + 1], &count)) {
+                    *error = "Capture frame count must be a positive 32-bit integer.";
+                    return false;
+                }
+                if (arguments[index + 2][0] == '\0') {
+                    *error = "Capture output path must not be empty.";
+                    return false;
+                }
+                candidate.mode = CommandLineMode::Capture;
+                candidate.captureFrameCount = count;
+                candidate.captureOutputPath = arguments[index + 2];
+                modeSeen = true;
+                index += 3;
+            } else if (option == "--reference") {
+                if (modeSeen || index + 1 >= argumentCount
+                    || arguments[index + 1] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                std::uint32_t count = 0;
+                if (!parsePositiveU32(arguments[index + 1], &count)) {
+                    *error = "Reference sample count must be a positive 32-bit integer.";
+                    return false;
+                }
+                candidate.mode = CommandLineMode::Reference;
+                candidate.referenceSampleCount = count;
+                modeSeen = true;
+                index += 2;
+            } else if (option == "--scene") {
+                if (sceneSeen || index + 1 >= argumentCount
+                    || arguments[index + 1] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                const std::string_view value(arguments[index + 1]);
+                if (value == "yard") {
+                    candidate.scenePreset = ScenePreset::Yard;
+                } else if (value == "night") {
+                    candidate.scenePreset = ScenePreset::Night;
+                } else {
+                    *error = "Scene must be 'yard' or 'night'.";
+                    return false;
+                }
+                sceneSeen = true;
+                index += 2;
+            } else if (option == "--estimator") {
+                if (estimatorSeen || index + 1 >= argumentCount
+                    || arguments[index + 1] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                const std::string_view value(arguments[index + 1]);
+                if (value == "mis") {
+                    candidate.estimator = EstimatorMode::Mis;
+                } else if (value == "nee") {
+                    candidate.estimator = EstimatorMode::Nee;
+                } else if (value == "bsdf") {
+                    candidate.estimator = EstimatorMode::Bsdf;
+                } else {
+                    *error = "Estimator must be 'mis', 'nee', or 'bsdf'.";
+                    return false;
+                }
+                estimatorSeen = true;
+                index += 2;
+            } else {
+                *error = Usage;
+                return false;
+            }
+        }
+        if (candidate.mode == CommandLineMode::Reference
+            && (!sceneSeen || !estimatorSeen)) {
+            *error = "Reference mode requires --scene and --estimator.";
+            return false;
+        }
+        if (candidate.mode != CommandLineMode::Reference && estimatorSeen) {
+            *error = "--estimator is only valid with --reference.";
+            return false;
+        }
+        *options = std::move(candidate);
     } catch (const std::bad_alloc&) {
         *options = {};
         *error = "Not enough host memory to store capture arguments.";
         return false;
     }
 
+    return true;
+}
+
+float binary16ToFloat(std::uint16_t bits)
+{
+    const bool negative = (bits & 0x8000u) != 0;
+    const std::uint32_t exponent = (bits >> 10u) & 0x1fu;
+    const std::uint32_t fraction = bits & 0x03ffu;
+    double magnitude = 0.0;
+    if (exponent == 0) {
+        magnitude = std::ldexp(static_cast<double>(fraction), -24);
+    } else if (exponent == 31) {
+        magnitude = fraction == 0
+            ? std::numeric_limits<double>::infinity()
+            : std::numeric_limits<double>::quiet_NaN();
+    } else {
+        magnitude = std::ldexp(
+            1.0 + static_cast<double>(fraction) / 1024.0,
+            static_cast<int>(exponent) - 15);
+    }
+    return static_cast<float>(negative ? -magnitude : magnitude);
+}
+
+bool accumulateReferenceImage(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::span<const std::uint16_t> rgba16,
+    ReferenceAccumulator* accumulator)
+{
+    if (accumulator == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    const std::uint64_t pixelCount =
+        static_cast<std::uint64_t>(width) * height;
+    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4
+        || rgba16.size() != static_cast<std::size_t>(pixelCount * 4)
+        || accumulator->sampleCount == std::numeric_limits<std::uint32_t>::max()
+        || (accumulator->sampleCount != 0
+            && (accumulator->width != width
+                || accumulator->height != height))) {
+        return false;
+    }
+
+    struct Region
+    {
+        std::uint32_t x0Numerator;
+        std::uint32_t x1Numerator;
+        std::uint32_t y0Numerator;
+        std::uint32_t y1Numerator;
+    };
+    constexpr std::uint32_t Denominator = 8;
+    constexpr Region Regions[ReferenceRegionCount] = {
+        {3, 5, 3, 5},
+        {4, 6, 2, 4},
+        {2, 6, 4, 6},
+    };
+
+    auto updated = *accumulator;
+    if (updated.sampleCount == 0) {
+        updated.width = width;
+        updated.height = height;
+    }
+    for (std::size_t regionIndex = 0;
+         regionIndex < ReferenceRegionCount;
+         ++regionIndex) {
+        const Region& region = Regions[regionIndex];
+        const std::uint32_t x0 = width * region.x0Numerator / Denominator;
+        const std::uint32_t x1 = width * region.x1Numerator / Denominator;
+        const std::uint32_t y0 = height * region.y0Numerator / Denominator;
+        const std::uint32_t y1 = height * region.y1Numerator / Denominator;
+        if (x0 >= x1 || y0 >= y1) {
+            return false;
+        }
+        const double regionPixelCount =
+            static_cast<double>(x1 - x0) * (y1 - y0);
+        std::array<double, 3> frameMean{};
+        for (std::uint32_t y = y0; y < y1; ++y) {
+            for (std::uint32_t x = x0; x < x1; ++x) {
+                const std::size_t pixel =
+                    (static_cast<std::size_t>(y) * width + x) * 4;
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const float value = binary16ToFloat(rgba16[pixel + channel]);
+                    if (!std::isfinite(value) || value < 0.0f) {
+                        return false;
+                    }
+                    frameMean[channel] += value;
+                }
+            }
+        }
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            frameMean[channel] /= regionPixelCount;
+            updated.sums[regionIndex][channel] += frameMean[channel];
+            updated.squaredSums[regionIndex][channel] +=
+                frameMean[channel] * frameMean[channel];
+        }
+    }
+    ++updated.sampleCount;
+    *accumulator = updated;
+    return true;
+}
+
+bool summarizeReferenceRegions(
+    const ReferenceAccumulator& accumulator,
+    std::array<ReferenceRegionSummary, ReferenceRegionCount>* summaries)
+{
+    if (summaries == nullptr || accumulator.sampleCount == 0) {
+        return false;
+    }
+    std::array<ReferenceRegionSummary, ReferenceRegionCount> candidate{};
+    const double count = accumulator.sampleCount;
+    for (std::size_t region = 0; region < ReferenceRegionCount; ++region) {
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            const double mean = accumulator.sums[region][channel] / count;
+            double standardError = 0.0;
+            if (accumulator.sampleCount > 1) {
+                const double variance = std::max(
+                    0.0,
+                    (accumulator.squaredSums[region][channel]
+                        - count * mean * mean)
+                        / (count - 1.0));
+                standardError = std::sqrt(variance / count);
+            }
+            if (!std::isfinite(mean) || !std::isfinite(standardError)) {
+                return false;
+            }
+            candidate[region].mean[channel] = mean;
+            candidate[region].standardError[channel] = standardError;
+        }
+    }
+    *summaries = candidate;
+    return true;
+}
+
+bool referenceEstimatesAgree(
+    const ReferenceRegionSummary& first,
+    const ReferenceRegionSummary& second)
+{
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        const double firstMean = first.mean[channel];
+        const double secondMean = second.mean[channel];
+        const double firstError = first.standardError[channel];
+        const double secondError = second.standardError[channel];
+        if (!std::isfinite(firstMean) || !std::isfinite(secondMean)
+            || !std::isfinite(firstError) || !std::isfinite(secondError)
+            || firstError < 0.0 || secondError < 0.0) {
+            return false;
+        }
+        const double difference = std::abs(firstMean - secondMean);
+        const double relativeTolerance =
+            0.01 * std::max(std::abs(firstMean), std::abs(secondMean));
+        const double statisticalTolerance = 3.0 * std::hypot(
+            firstError,
+            secondError);
+        if (difference > std::max(relativeTolerance, statisticalTolerance)) {
+            return false;
+        }
+    }
     return true;
 }
 
