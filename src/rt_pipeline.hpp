@@ -86,8 +86,8 @@ void writeSceneDescriptorSet(
     VkDescriptorSet descriptorSet,
     const GpuScene& gpuScene);
 
-// Write binding 5 once at startup with base offset zero and an exact one-record
-// range. Each trace selects its retired frame slot through a dynamic offset.
+// Write binding 5's dynamic frame record and immutable P2 light bindings 6-8 once at
+// startup. Each trace selects its retired frame slot through a dynamic offset.
 void writeLightingDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,

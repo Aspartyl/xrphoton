@@ -408,6 +408,16 @@ int main(int argumentCount, char** arguments)
         return 1;
     }
     SceneLighting sceneLighting = DefaultSceneLighting;
+    std::string sceneLightingError;
+    if (!buildSceneLighting(
+            sceneData,
+            loadedGallery.dynamicInstances,
+            &sceneLighting,
+            &sceneLightingError)) {
+        std::cerr << "Failed to build scene lighting: "
+                  << sceneLightingError << '\n';
+        return 1;
+    }
     FrameLighting frameLighting;
     if (!makeFrameLighting(
             sceneLighting,
@@ -464,21 +474,26 @@ int main(int argumentCount, char** arguments)
               << ", geometries: " << sceneData.geometries.size()
               << ", materials: " << sceneData.materials.size() << ").\n";
 
-    // Declared before the ray tracing pipeline so binding 5 never outlives the
-    // buffer it references. Each frame slot is written only after its fence wait.
+    // Declared before the ray tracing pipeline so bindings 5-8 never outlive their
+    // buffers. Each frame slot is written only after its fence wait.
     GpuLighting gpuLighting;
     const VkResult gpuLightingResult = createGpuLighting(
         &gpuLighting,
         physicalDevice,
         ctx.device,
         ctx.allocator,
-        MaxFramesInFlight);
+        MaxFramesInFlight,
+        sceneLighting,
+        ctx.frames[0].commandBuffer,
+        traceQueue,
+        ctx.frames[0].inFlightFence);
     if (gpuLightingResult != VK_SUCCESS) {
         std::cerr << "Failed to create Vulkan GPU lighting: "
                   << formatVkResult(gpuLightingResult) << ".\n";
         return 1;
     }
-    std::cout << "Created Vulkan frame-lighting buffer.\n";
+    std::cout << "Created Vulkan lighting buffers (emitting triangles: "
+              << sceneLighting.lights.size() << ").\n";
 
     // Declared after ctx so it destructs before the device it borrows; its destructor
     // waits for device idle itself, so ordering relative to swap is immaterial. The

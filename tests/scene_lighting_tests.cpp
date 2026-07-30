@@ -1,14 +1,19 @@
 #include "frame_lighting_layout.hpp"
+#include "scene.hpp"
 #include "scene_lighting.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace
 {
@@ -32,6 +37,282 @@ bool nearly(const glm::vec3& left, const glm::vec3& right, float tolerance = 1.0
     return nearly(left.x, right.x, tolerance)
         && nearly(left.y, right.y, tolerance)
         && nearly(left.z, right.z, tolerance);
+}
+
+xrphoton::SceneData triangleScene(bool emissive = true)
+{
+    xrphoton::SceneData scene;
+    scene.positions = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+    };
+    scene.indices = {0, 1, 2};
+    scene.materials.resize(1);
+    if (emissive) {
+        scene.materials[0].emission[0] = 2.0f;
+        scene.materials[0].emission[1] = 2.0f;
+        scene.materials[0].emission[2] = 2.0f;
+    }
+    scene.geometries.push_back({
+        .firstVertex = 0,
+        .vertexCount = 3,
+        .firstIndex = 0,
+        .indexCount = 3,
+        .materialIndex = 0,
+    });
+    scene.meshes.push_back({.firstGeometry = 0, .geometryCount = 1});
+    scene.instances.push_back({.meshIndex = 0});
+    return scene;
+}
+
+void testEmitterRecordAbi()
+{
+    expect(
+        sizeof(xrphoton::LightRecord) == 64
+            && alignof(xrphoton::LightRecord) == 16
+            && offsetof(xrphoton::LightRecord, v0) == 0
+            && offsetof(xrphoton::LightRecord, edge1) == 16
+            && offsetof(xrphoton::LightRecord, edge2) == 32
+            && offsetof(xrphoton::LightRecord, emission) == 48,
+        "LightRecord has its exact four-lane storage-buffer ABI");
+    expect(
+        sizeof(xrphoton::EmitterLookupRecord) == 16
+            && offsetof(xrphoton::EmitterLookupRecord, first) == 0
+            && offsetof(xrphoton::EmitterLookupRecord, count) == 4,
+        "EmitterLookupRecord has its exact four-uint ABI");
+}
+
+void testEmitterDistribution()
+{
+    xrphoton::SceneData equalScene = triangleScene();
+    equalScene.positions.insert(equalScene.positions.end(), {
+        2.0f, 0.0f, 0.0f,
+        3.0f, 0.0f, 0.0f,
+        2.0f, 1.0f, 0.0f,
+    });
+    equalScene.indices.insert(equalScene.indices.end(), {3, 4, 5});
+    equalScene.geometries[0].vertexCount = 6;
+    equalScene.geometries[0].indexCount = 6;
+
+    xrphoton::SceneLighting lighting = xrphoton::DefaultSceneLighting;
+    std::string error;
+    expect(
+        xrphoton::buildSceneLighting(equalScene, {}, &lighting, &error),
+        "equal-power emitter scene builds");
+    expect(
+        error.empty() && lighting.lights.size() == 2
+            && lighting.lightCdf.size() == 2
+            && nearly(lighting.lights[0].area, 0.5f)
+            && nearly(lighting.lights[0].pTriangle, 0.5f)
+            && nearly(lighting.lights[1].pTriangle, 0.5f)
+            && nearly(lighting.lightCdf[0], 0.5f)
+            && lighting.lightCdf[1] == 1.0f
+            && nearly(lighting.totalLightPower, 2.0f),
+        "equal-power triangles produce a uniform monotonic CDF");
+    expect(
+        nearly(lighting.lights[0].v0, {0.0f, 0.0f, 0.0f})
+            && nearly(lighting.lights[0].edge1, {1.0f, 0.0f, 0.0f})
+            && nearly(lighting.lights[0].edge2, {0.0f, 1.0f, 0.0f})
+            && lighting.lights[0].flags == 0
+            && lighting.lights[0].materialIndex == 0,
+        "light records preserve world triangle edges and reserved fields");
+
+    equalScene.positions[12] = 4.0f;
+    expect(
+        xrphoton::buildSceneLighting(equalScene, {}, &lighting, &error)
+            && nearly(lighting.lights[0].pTriangle, 1.0f / 3.0f)
+            && nearly(lighting.lights[1].pTriangle, 2.0f / 3.0f)
+            && nearly(lighting.lightCdf[0], 1.0f / 3.0f)
+            && lighting.lightCdf[1] == 1.0f,
+        "unequal triangle power produces proportional probabilities and CDF");
+}
+
+void testEmitterLookupAndSelectors()
+{
+    xrphoton::SceneData scene = triangleScene();
+    scene.instances.push_back({
+        .meshIndex = 0,
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{5.0f, 0.0f, 0.0f}),
+    });
+    xrphoton::SceneLighting lighting = xrphoton::DefaultSceneLighting;
+    std::string error;
+    expect(
+        xrphoton::buildSceneLighting(scene, {}, &lighting, &error),
+        "repeated static placement emitter scene builds");
+    expect(
+        lighting.lights.size() == 2 && lighting.emitterLookup.size() == 4
+            && lighting.emitterLookup[0].first == 2
+            && lighting.emitterLookup[0].count == 1
+            && lighting.emitterLookup[1].first == 3
+            && lighting.emitterLookup[1].count == 1
+            && lighting.emitterLookup[2].first == 0
+            && lighting.emitterLookup[2].count == 1
+            && lighting.emitterLookup[3].first == 1
+            && lighting.emitterLookup[3].count == 1
+            && nearly(lighting.lights[1].v0, {5.0f, 0.0f, 0.0f}),
+        "repeated mesh placements receive distinct headers, ranges, and world lights");
+    expect(
+        lighting.instanceCount == 2
+            && xrphoton::validateEmitterLookup(
+                lighting.emitterLookup,
+                lighting.instanceCount,
+                static_cast<std::uint32_t>(lighting.lights.size())),
+        "constructed repeated-placement lookup validates independently");
+
+    std::vector<xrphoton::EmitterLookupRecord> malformed =
+        lighting.emitterLookup;
+    malformed[0].reserved0 = 1;
+    expect(
+        !xrphoton::validateEmitterLookup(malformed, 2, 2),
+        "nonzero lookup header reservation is rejected");
+    malformed = lighting.emitterLookup;
+    malformed[0].first = 1;
+    expect(
+        !xrphoton::validateEmitterLookup(malformed, 2, 2),
+        "lookup range pointing into the header region is rejected");
+    malformed = lighting.emitterLookup;
+    malformed[2].count = 2;
+    expect(
+        !xrphoton::validateEmitterLookup(malformed, 2, 2),
+        "lookup light range exceeding the light table is rejected");
+    malformed = lighting.emitterLookup;
+    malformed[3].first = 0;
+    expect(
+        !xrphoton::validateEmitterLookup(malformed, 2, 2),
+        "overlapping lookup light ranges are rejected");
+    malformed = lighting.emitterLookup;
+    malformed[2].first = xrphoton::NoEmitterLight;
+    malformed[2].count = 1;
+    expect(
+        !xrphoton::validateEmitterLookup(malformed, 2, 2),
+        "nonempty non-emitter sentinel is rejected");
+    malformed = lighting.emitterLookup;
+    malformed.pop_back();
+    expect(
+        !xrphoton::validateEmitterLookup(malformed, 2, 2),
+        "truncated lookup range table is rejected");
+
+    xrphoton::FrameLighting packed;
+    expect(
+        xrphoton::makeFrameLighting(lighting, 2, &packed)
+            && packed.lightCount == 2 && packed.instanceCount == 2
+            && nearly(packed.totalLightPower, 2.0f)
+            && packed.pSky == 0.5f && packed.pEmitters == 0.5f,
+        "mixed sky and emitters split one normalized selector");
+    lighting.sky.enabled = false;
+    expect(
+        xrphoton::makeFrameLighting(lighting, 2, &packed)
+            && packed.pSky == 0.0f && packed.pEmitters == 1.0f,
+        "emitters become the sole selector branch when sky is disabled");
+
+    xrphoton::SceneData darkScene = triangleScene(false);
+    lighting = xrphoton::DefaultSceneLighting;
+    expect(
+        xrphoton::buildSceneLighting(darkScene, {}, &lighting, &error)
+            && lighting.lights.empty() && lighting.lightCdf.empty()
+            && lighting.totalLightPower == 0.0f
+            && lighting.emitterLookup.size() == 2
+            && lighting.emitterLookup[0].first == 1
+            && lighting.emitterLookup[0].count == 1
+            && lighting.emitterLookup[1].first == xrphoton::NoEmitterLight
+            && lighting.emitterLookup[1].count == 0
+            && xrphoton::validateEmitterLookup(
+                lighting.emitterLookup,
+                lighting.instanceCount,
+                0)
+            && xrphoton::makeFrameLighting(lighting, 1, &packed)
+            && packed.pSky == 1.0f && packed.pEmitters == 0.0f,
+        "zero-emitter scenes retain a valid lookup and sky-only selector");
+}
+
+void testEmitterRejections()
+{
+    std::string error;
+    xrphoton::SceneLighting lighting = xrphoton::DefaultSceneLighting;
+    const xrphoton::SceneData valid = triangleScene();
+    expect(
+        xrphoton::buildSceneLighting(valid, {}, &lighting, &error),
+        "rejection fixture first builds successfully");
+    const float preservedPower = lighting.totalLightPower;
+    const std::size_t preservedLights = lighting.lights.size();
+    const std::array<std::size_t, 1> dynamicInstance{0};
+    const std::array<std::size_t, 1> invalidDynamicInstance{1};
+    const std::array<std::size_t, 2> duplicateDynamicInstance{0, 0};
+
+    expect(
+        !xrphoton::buildSceneLighting(
+            valid,
+            dynamicInstance,
+            &lighting,
+            &error)
+            && error.find("dynamic") != std::string::npos
+            && lighting.totalLightPower == preservedPower
+            && lighting.lights.size() == preservedLights,
+        "dynamic emitters are loudly rejected transactionally");
+    xrphoton::SceneData invalid = valid;
+    invalid.geometries[0].alphaTested = true;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error)
+            && error.find("alpha-tested") != std::string::npos,
+        "alpha-tested emitters are loudly rejected");
+    expect(
+        !xrphoton::buildSceneLighting(
+            valid,
+            invalidDynamicInstance,
+            &lighting,
+            &error),
+        "out-of-range dynamic instance is rejected");
+    expect(
+        !xrphoton::buildSceneLighting(
+            valid,
+            duplicateDynamicInstance,
+            &lighting,
+            &error),
+        "duplicate dynamic instance is rejected");
+
+    invalid = valid;
+    invalid.instances[0].meshIndex = 1;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "out-of-range mesh reference is rejected");
+    invalid = valid;
+    invalid.meshes[0].firstGeometry = 1;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "out-of-range geometry range is rejected");
+    invalid = valid;
+    invalid.geometries[0].materialIndex = 1;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "out-of-range material reference is rejected");
+    invalid = valid;
+    invalid.geometries[0].firstIndex = 1;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "out-of-range emitter index span is rejected");
+    invalid = valid;
+    invalid.indices[2] = 3;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "out-of-range local emitter vertex is rejected");
+    invalid = valid;
+    invalid.positions.resize(8);
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "truncated emitter position span is rejected");
+    invalid = valid;
+    invalid.instances[0].transform[0][3] = 1.0f;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "projective emitter transform is rejected");
+    invalid = valid;
+    invalid.instances[0].transform[0][0] = 0.0f;
+    expect(
+        !xrphoton::buildSceneLighting(invalid, {}, &lighting, &error),
+        "singular emitter transform is rejected");
 }
 
 void testFrameAbiAndFlags()
@@ -296,6 +577,10 @@ void testDynamicBufferMath()
 
 int main()
 {
+    testEmitterRecordAbi();
+    testEmitterDistribution();
+    testEmitterLookupAndSelectors();
+    testEmitterRejections();
     testFrameAbiAndFlags();
     testSelectorPacking();
     testSkyEvaluationSamplingAndPdf();

@@ -2,7 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -10,6 +13,8 @@
 
 namespace xrphoton
 {
+struct SceneData;
+
 struct DirectionalSun
 {
     // Direction points from a surface toward the sun. Irradiance is the incident
@@ -25,15 +30,74 @@ struct AnalyticSky
     bool enabled = true;
 };
 
-// Vulkan-free scene light authority. Later phases extend this with static light
-// declarations; GPU allocation and publication remain GpuLighting's responsibility.
+// Exact storage-buffer records mirrored by records.slang. LightRecord stores one
+// immutable world-space emitting triangle. EmitterLookupRecord maps a TLAS instance
+// and its geometry-local index back to the corresponding consecutive light records.
+struct alignas(16) LightRecord
+{
+    glm::vec3 v0{}; float area = 0.0f;
+    glm::vec3 edge1{}; float pTriangle = 0.0f;
+    glm::vec3 edge2{}; std::uint32_t flags = 0;
+    glm::vec3 emission{}; std::uint32_t materialIndex = 0;
+};
+static_assert(std::is_standard_layout_v<LightRecord>);
+static_assert(alignof(LightRecord) == 16 && sizeof(LightRecord) == 64);
+static_assert(offsetof(LightRecord, v0) == 0
+    && offsetof(LightRecord, area) == 12
+    && offsetof(LightRecord, edge1) == 16
+    && offsetof(LightRecord, pTriangle) == 28
+    && offsetof(LightRecord, edge2) == 32
+    && offsetof(LightRecord, flags) == 44
+    && offsetof(LightRecord, emission) == 48
+    && offsetof(LightRecord, materialIndex) == 60);
+
+constexpr std::uint32_t NoEmitterLight = UINT32_MAX;
+struct EmitterLookupRecord
+{
+    std::uint32_t first = NoEmitterLight;
+    std::uint32_t count = 0;
+    std::uint32_t reserved0 = 0;
+    std::uint32_t reserved1 = 0;
+};
+static_assert(std::is_standard_layout_v<EmitterLookupRecord>);
+static_assert(sizeof(EmitterLookupRecord) == 16);
+static_assert(offsetof(EmitterLookupRecord, first) == 0
+    && offsetof(EmitterLookupRecord, count) == 4
+    && offsetof(EmitterLookupRecord, reserved0) == 8
+    && offsetof(EmitterLookupRecord, reserved1) == 12);
+
+// Vulkan-free scene light authority. The analytic lights remain mutable per-frame;
+// emitting triangles and their lookup/distribution are rebuilt from immutable static
+// placements and then uploaded once by GpuLighting.
 struct SceneLighting
 {
     DirectionalSun sun{};
     AnalyticSky sky{};
+    std::vector<LightRecord> lights;
+    std::vector<float> lightCdf;
+    std::vector<EmitterLookupRecord> emitterLookup;
+    float totalLightPower = 0.0f;
+    std::uint32_t instanceCount = 0;
 };
 
 extern const SceneLighting DefaultSceneLighting;
+
+// Preserve lighting's analytic configuration and transactionally rebuild all derived
+// emitter state. Dynamic and alpha-tested emitters are deliberately rejected because
+// P2's records are immutable and its triangle-area PDF assumes fully opaque geometry.
+[[nodiscard]] bool buildSceneLighting(
+    const SceneData& scene,
+    std::span<const std::size_t> dynamicInstances,
+    SceneLighting* lighting,
+    std::string* error);
+
+// Validate the exact two-level lookup and its referenced light ranges without Vulkan.
+// This is repeated at the upload boundary so malformed caller-built tables never
+// become shader-visible even though buildSceneLighting itself only emits valid data.
+[[nodiscard]] bool validateEmitterLookup(
+    std::span<const EmitterLookupRecord> lookup,
+    std::uint32_t instanceCount,
+    std::uint32_t lightCount);
 
 constexpr std::uint32_t FrameLightingPerezSkyBit = 1u << 0u;
 constexpr std::uint32_t FrameLightingGlassBit = 1u << 1u;
@@ -42,7 +106,7 @@ constexpr std::uint32_t FrameLightingEstimatorMask = 3u << FrameLightingEstimato
 constexpr std::uint32_t FrameLightingKnownFlags =
     FrameLightingPerezSkyBit | FrameLightingGlassBit | FrameLightingEstimatorMask;
 // Estimator modes are ABI reservations validated now and consumed by P2c's linear-HDR
-// reference path; Phase 1 publishes MIS mode zero and does not expose a partial toggle.
+// reference path; P2b still publishes MIS mode zero and exposes no partial toggle.
 
 // Exact std140 CPU mirror for binding 5. The scalar after each vec3 fills its
 // 16-byte lane explicitly, so this is stable with ordinary (unaligned) GLM types.

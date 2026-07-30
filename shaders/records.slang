@@ -73,6 +73,26 @@ struct FrameLighting
     uint reserved2;
 };
 
+struct LightRecord
+{
+    float3 v0;
+    float area;
+    float3 edge1;
+    float pTriangle;
+    float3 edge2;
+    uint flags;
+    float3 emission;
+    uint materialIndex;
+};
+
+struct EmitterLookupRecord
+{
+    uint first;
+    uint count;
+    uint reserved0;
+    uint reserved1;
+};
+
 struct SurfaceHit
 {
     float hitT;

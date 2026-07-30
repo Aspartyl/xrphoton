@@ -10,16 +10,23 @@
 namespace xrphoton
 {
 struct FrameLighting;
+struct SceneLighting;
 
-// GPU publication owner for lighting records. The one persistently mapped uniform
-// buffer is partitioned by frame slot; callers may rewrite a slot only after its
-// in-flight fence has signaled.
+// GPU publication owner for lighting records. The persistently mapped uniform buffer
+// is partitioned by frame slot; callers may rewrite a slot only after its in-flight
+// fence has signaled. The three storage buffers are immutable after startup upload.
 struct GpuLighting
 {
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = nullptr;
     VkBuffer frameBuffer = VK_NULL_HANDLE;
     VmaAllocation frameAllocation = nullptr;
+    VkBuffer lightBuffer = VK_NULL_HANDLE;
+    VmaAllocation lightAllocation = nullptr;
+    VkBuffer lightCdfBuffer = VK_NULL_HANDLE;
+    VmaAllocation lightCdfAllocation = nullptr;
+    VkBuffer emitterLookupBuffer = VK_NULL_HANDLE;
+    VmaAllocation emitterLookupAllocation = nullptr;
     void* mappedFrameData = nullptr;
     FrameLightingBufferLayout frameLayout{};
 
@@ -34,7 +41,11 @@ struct GpuLighting
     VkPhysicalDevice physicalDevice,
     VkDevice device,
     VmaAllocator allocator,
-    std::uint32_t frameSlotCount);
+    std::uint32_t frameSlotCount,
+    const SceneLighting& lighting,
+    VkCommandBuffer commandBuffer,
+    VkQueue traceQueue,
+    VkFence fence);
 
 // Copy a packed record into a retired frame slot and produce the checked 32-bit
 // dynamic offset required by vkCmdBindDescriptorSets.

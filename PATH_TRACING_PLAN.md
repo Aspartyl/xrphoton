@@ -287,6 +287,18 @@ tests pass; SPIR-V validation pins offsets 32/44 and `ArrayStride 48`. Because n
 shader consumes emission until P2c, the Phase-1 frame-7 hash remains
 `0xd6550332dd29cf6c`.
 
+**P2b status: complete (2026-07-29).** The Vulkan-free builder now rejects dynamic or
+alpha-tested emitters, expands every supported static placement into exact 64-byte
+world-space triangle records, constructs the `area × luminance` float CDF, and emits
+the bounded 16-byte instance/geometry reverse lookup. `GpuLighting` stages bindings
+6–8 into device-local storage with valid zero-emitter sentinels, while `FrameLighting`
+publishes light count, total power, and normalized sky/emitter branch probabilities.
+Headless coverage pins record ABIs, equal/unequal distributions, repeated placements,
+zero emitters, malformed bounds, rejection policy, and selector modes. P2c remains the
+first shader consumer, so P2b deliberately preserves the P1 image. All 7 graphics-free
+and 21 debug/release tests pass, SPIR-V validation is clean, and the matching
+validation-enabled frame-7 capture retains hash `0xd6550332dd29cf6c`.
+
 **Goal.** Surfaces can emit; emitters are importance-sampled from a real distribution;
 a BSDF ray that lands on an emitter is MIS-weighted instead of double-counted.
 
@@ -649,7 +661,7 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
 4. **P2a — complete.** `OGFX_MATERIALS` v3 + emission through the whole chain,
    GPU record 32 → 48.
    No shading change yet (emission unreferenced).
-5. **P2b** light builder, records, CDF, emitter lookup, bindings 6–8.
+5. **P2b — complete.** Light builder, records, CDF, emitter lookup, bindings 6–8.
 6. **P2c** emitter NEE + emitter MIS + the night yard preset + linear-HDR reference
    capture and estimator controls.
 7. **P3a** `OGFX_MATERIALS` v4 class word + metal class + sphere acceptance.

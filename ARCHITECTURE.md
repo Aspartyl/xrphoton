@@ -33,6 +33,10 @@ OGFx writer selects a 48-byte v3 material record only when emission RGB is nonze
 both strict decoder profiles map v1/v2 to zero emission, and `SceneMaterial` carries
 the validated value through assembly into the matching 48-byte CPU/Slang GPU record.
 Offset 44 remains zero until the material-class phase gives it meaning.
+P2b still leaves shading unchanged, but turns that emission data into immutable
+world-space triangle records, a power-weighted CDF, and an instance/geometry reverse
+lookup. `GpuLighting` uploads the three tables once and binds valid sentinels when a
+scene has no emitters; P2c is the first phase that reads them in an estimator.
 The repository-owned crate is now a live Jolt body: it spawns above the yard,
 falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
 transform into `SceneData`; the renderer remains physics-agnostic, writing one
@@ -215,11 +219,11 @@ the renderer layering.)
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free 80-byte view-only `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain per-dispatch state composed by `main()`; lighting does not ride this path |
-| [src/scene_lighting.hpp](src/scene_lighting.hpp) / [.cpp](src/scene_lighting.cpp) and [src/frame_lighting_layout.hpp](src/frame_lighting_layout.hpp) | Vulkan-free mutable sun/sky authority, exact 192-byte `FrameLighting` ABI and flags, selector packing, CPU sky evaluation/sample/PDF/MIS references, and checked dynamic-slot arithmetic | Plain scene state plus immutable per-frame publications; available to the `ogfx-core` headless suite |
-| [src/gpu_lighting.hpp](src/gpu_lighting.hpp) / [.cpp](src/gpu_lighting.cpp) | `GpuLighting` RAII owner for the persistently mapped, host-coherent dynamic uniform buffer and checked per-slot publication | Program lifetime — one aligned subrange per frame in flight, rewritten only after its fence wait |
+| [src/scene_lighting.hpp](src/scene_lighting.hpp) / [.cpp](src/scene_lighting.cpp) and [src/frame_lighting_layout.hpp](src/frame_lighting_layout.hpp) | Vulkan-free mutable sun/sky authority; static-emitter extraction into the exact 64-byte `LightRecord`, power CDF, and 16-byte reverse-lookup records; exact 192-byte `FrameLighting` ABI and flags; selector packing; CPU sky evaluation/sample/PDF/MIS references; and checked dynamic-slot arithmetic | Plain scene state plus immutable emitter tables and per-frame publications; available to the `ogfx-core` headless suite |
+| [src/gpu_lighting.hpp](src/gpu_lighting.hpp) / [.cpp](src/gpu_lighting.cpp) | `GpuLighting` RAII owner for the persistently mapped, host-coherent dynamic uniform buffer, checked per-slot publication, and device-local light/CDF/lookup buffers uploaded through the common staged path | Program lifetime — one aligned uniform subrange per frame in flight plus three immutable static-light allocations |
 | [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) | Vulkan-free command-line parsing, checked raw RGBA8 hashing, linear-to-sRGB PPM publication, and fixed-protocol trace-timing median policy | One-shot capture policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
-| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (six-binding descriptor set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, and the render/scene/lighting descriptor writers | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
+| [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (nine-binding descriptor set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, and the render/scene/lighting descriptor writers | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/tonemap.hpp](src/tonemap.hpp) / [src/tonemap_pipeline.hpp](src/tonemap_pipeline.hpp) / [.cpp](src/tonemap_pipeline.cpp) | Fixed exposure/dispatch ABI plus `TonemapPipeline`, its two-image descriptor set, compute pipeline, and resize rewrite | Program lifetime pipeline over resize-bound HDR/LDR images |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene plus GPU-lighting and acceleration-structure owners), `drawFrame` with its post-fence lighting/instance slot writes, trace-only timestamp readback, `prepareRtForSwapchain`, the terminal one-shot `readbackStorageImage`, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
 | [src/main.cpp](src/main.cpp) | `main()` orchestration, player/free-camera switching, physics stepping, and the render loop | Program lifetime |
@@ -446,6 +450,10 @@ returns `1` on failure (RAII handles the unwind):
     scene images; and returns the accepted spawn plus flat `dynamicInstances`.
     The generated crate is always dynamic. Unconfigured optional dynamics skip;
     configured ones must be single-mesh and carry exactly one body recipe.
+    `buildSceneLighting` then receives that dynamic-instance set explicitly and
+    transactionally builds immutable world-space emitter records, their power CDF,
+    and one bounded reverse-lookup range per instance geometry. It rejects emission
+    on dynamic placements and alpha-tested geometry instead of silently omitting it.
 11. **Physics world.** Immediately after scene load and before any GPU scene
     creation, `createPhysicsWorld` binds that stable `SceneData`, creates one static
     triangle-mesh body for every non-dynamic instance, creates recipe-driven dynamic
@@ -454,11 +462,13 @@ returns `1` on failure (RAII handles the unwind):
 12. **GPU scene.** `createGpuScene` gates both shader-record buffers against
     `maxStorageBufferRange`, then uploads its five geometry/record buffers and all
     sampled scene images through the borrowed frame-0 slot.
-13. **GPU lighting.** `SceneLighting` validates and packs the default analytic sun
-    and sky into `FrameLighting`; `createGpuLighting` queries
+13. **GPU lighting.** `SceneLighting` validates and packs the analytic sun, sky,
+    emitter count/power, and normalized sky/emitter selector into `FrameLighting`;
+    `createGpuLighting` queries
     `minUniformBufferOffsetAlignment`, checks the complete allocation and 32-bit
     dynamic-offset arithmetic, and creates one mapped uniform-buffer subrange per
-    frame slot.
+    frame slot. It also uploads device-local bindings 6–8 once; empty light/CDF tables
+    receive inert one-record allocations, while the lookup remains structurally valid.
 14. **Acceleration structures.** `buildAccelerationStructures` — see
     [Acceleration structures](#acceleration-structures). It takes the frame-slot
     count, builds the stable fields of the TLAS instance template, allocates one
@@ -725,6 +735,7 @@ The frame model has two rotating frame slots:
 | `frames[i].traceTimestampQueryPool` | one **per frame in flight when supported** | `VulkanContext` | Two queries reset after slot retirement and written immediately before/after the RT dispatch; capture reads them with availability waiting. Null on trace families without timestamp support. |
 | `instanceSlots[i]` | one **per frame in flight** | `AccelerationStructure` | Persistently mapped, host-coherent TLAS build input. The CPU rewrites only the slot whose matching fence has completed, so an in-flight build never races a host write. |
 | `GpuLighting.frameLayout` subrange `i` | one **per frame in flight** | `GpuLighting` | Persistently mapped, host-coherent dynamic uniform data. The CPU rewrites only the retired slot and binds `i × stride` as a checked 32-bit dynamic offset. |
+| `GpuLighting` light/CDF/lookup buffers | three **per scene** | `GpuLighting` | Device-local immutable emitter selection and reverse-lookup data, staged once at startup. Zero-emitter scenes bind inert light/CDF sentinels and a valid non-emitter lookup. |
 
 Synchronization details worth preserving:
 
@@ -1184,10 +1195,15 @@ Decisions and contracts worth preserving:
   `FrameLighting`. The `alignas(16)` record is exactly 192 bytes: sun lanes at 0/16,
   sky lanes at 32/48, counts/power/flags at 64, five Perez `float4`s at 80–144,
   `nightZenith` at 160, then daylight blend and reserved words at 176–188. P1 sets
-  Perez/glass/estimator flags to zero, `pSky` to one only for a powered enabled sky,
-  and `pEmitters` to zero; sun power cannot change those probabilities. `GpuLighting`
+  Perez/glass/estimator flags to zero. A powered sky or a nonempty static-emitter table
+  is the sole selector branch; when both exist they receive equal branch probability,
+  while triangle selection inside the emitter branch follows `area × luminance`.
+  Sun power cannot change those probabilities. Each emitting triangle is a 64-byte
+  world-space `LightRecord`; the float CDF and 16-byte instance/geometry lookup are
+  validated transactionally before upload. `GpuLighting`
   rounds this size to `minUniformBufferOffsetAlignment` with checked `VkDeviceSize`
-  allocation math and rejects any dynamic offset that cannot fit `uint32_t`.
+  allocation math, rejects any dynamic offset that cannot fit `uint32_t`, and owns the
+  three device-local static-light buffers.
 - **Descriptor set:** binding 0 TLAS and binding 1 HDR storage image are raygen-only;
   binding 2 is the geometry storage buffer visible to hit stages, while binding 3's
   material records are visible to hit stages and raygen for BRDF scalar lookup. Binding
@@ -1197,8 +1213,11 @@ Decisions and contracts worth preserving:
   `NonUniformResourceIndex`; no partially-bound, variable-count, or runtime-array
   feature is enabled. Binding 5 is `UNIFORM_BUFFER_DYNAMIC`, visible to raygen and
   closest-hit, with descriptor offset zero and range exactly `sizeof(FrameLighting)`;
-  each trace supplies `frameSlot × alignedStride`. Bindings 6–8 are reserved for the
-  later light-record/alias/emissive-instance buffers and are not live layout entries.
+  each trace supplies `frameSlot × alignedStride`. Binding 6 is the immutable
+  `LightRecord[]` visible to raygen and closest-hit, binding 7 is its float CDF visible
+  to raygen, and binding 8 is the reverse lookup visible to closest-hit. P2b binds all
+  three but does not read them until P2c, so this infrastructure phase changes no
+  rendered pixels.
   The pool holds exactly the one
   set, without `FREE_DESCRIPTOR_SET_BIT` (the set is only released with the pool).
   The TLAS write chains `VkWriteDescriptorSetAccelerationStructureKHR` via `pNext`;

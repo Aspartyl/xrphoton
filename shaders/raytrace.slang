@@ -44,10 +44,19 @@ StructuredBuffer<MaterialRecord> materials;
 [[vk::binding(4, 0)]]
 Sampler2D sceneTextures[1024];
 
-// Bindings 6-8 are reserved for P2 light records, alias tables, and emissive
-// instance data. Binding 5 alone is live in Phase 1.
 [[vk::binding(5, 0)]]
 ConstantBuffer<FrameLighting> frameLighting;
+
+// P2b publishes these immutable tables. P2c consumes them for emitter NEE and
+// BSDF-hit emission; keeping them live now makes the descriptor ABI land atomically.
+[[vk::binding(6, 0)]]
+StructuredBuffer<LightRecord> lightRecords;
+
+[[vk::binding(7, 0)]]
+StructuredBuffer<float> lightCdf;
+
+[[vk::binding(8, 0)]]
+StructuredBuffer<EmitterLookupRecord> emitterLookup;
 
 [[vk::push_constant]]
 ConstantBuffer<RaygenPushConstants> frameConstants;
