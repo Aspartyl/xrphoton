@@ -34,6 +34,13 @@ struct SceneGeometry
     bool alphaTested = false;
 };
 
+enum class SceneMaterialClass : uint32_t
+{
+    Dielectric = 0,
+    Metal = 1,
+    Glass = 2,
+};
+
 struct SceneMaterial
 {
     float baseColorFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -42,6 +49,7 @@ struct SceneMaterial
     float perceptualRoughness = 1.0f;
     float dielectricF0 = 0.04f;
     float emission[3] = {};
+    SceneMaterialClass materialClass = SceneMaterialClass::Dielectric;
     // Exact logical texture reference carried by OGFx. Resolution assigns the
     // scene-global baseColorImage later; an empty string means no reference.
     std::string baseColorTexture;

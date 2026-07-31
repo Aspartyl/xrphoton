@@ -832,6 +832,46 @@ void testMaterialChunkVersions()
             "material v3 decode and reserialize is byte-canonical");
     }
 
+    Model metalModel = makeQuad();
+    metalModel.materials[0].baseColorFactor = {0.92f, 0.48f, 0.16f, 1.0f};
+    metalModel.materials[0].perceptualRoughness = 0.12f;
+    metalModel.materials[0].materialClass = xrphoton::ogfx::MaterialClass::Metal;
+    const SerializeResult version4 =
+        xrphoton::ogfx::serializeModel(metalModel, "material-v4.ogfx");
+    expect(static_cast<bool>(version4), "a Metal material serializes as material v4");
+    if (version4) {
+        const std::size_t version4Header =
+            chunkHeaderOffset(version4.bytes, ChunkId::Materials);
+        const std::size_t version4Record = version4Header
+            + xrphoton::ogfx::ChunkHeaderSize
+            + xrphoton::ogfx::MaterialHeaderSize;
+        expect(
+            readU32(version4.bytes, version4Header + 8)
+                == xrphoton::ogfx::MaterialChunkVersion4,
+            "a non-dielectric class selects material chunk v4");
+        expect(
+            readU32(version4.bytes, version4Record + 44)
+                == static_cast<std::uint32_t>(xrphoton::ogfx::MaterialClass::Metal),
+            "material v4 writes Metal into the former reserved class word");
+        const xrphoton::ogfx::DecodeResult decodedVersion4 =
+            xrphoton::ogfx::decodeModel(version4.bytes, "material-v4.ogfx");
+        expect(
+            decodedVersion4
+                && decodedVersion4.model.materials[0].materialClass
+                    == xrphoton::ogfx::MaterialClass::Metal,
+            "the runtime decoder preserves the v4 Metal class");
+        if (decodedVersion4) {
+            const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+                decodedVersion4.model,
+                "material-v4-roundtrip.ogfx");
+            expect(
+                roundTrip && roundTrip.bytes == version4.bytes,
+                "material v4 decode and reserialize is byte-canonical");
+        }
+    } else {
+        std::cerr << version4.error << '\n';
+    }
+
     Model mixedModel = makeQuad();
     mixedModel.materials[0].emission = {1.0f, 0.0f, 0.0f};
     mixedModel.materials.push_back({});
@@ -845,6 +885,19 @@ void testMaterialChunkVersions()
                 chunkHeaderOffset(mixedVersion.bytes, ChunkId::Materials) + 8)
                 == xrphoton::ogfx::MaterialChunkVersion3,
         "a later nonemissive custom BRDF material cannot downgrade v3 selection");
+
+    Model mixedV4Model = metalModel;
+    mixedV4Model.materials.push_back({});
+    mixedV4Model.materials[1].emission = {1.0f, 0.0f, 0.0f};
+    const SerializeResult mixedV4 =
+        xrphoton::ogfx::serializeModel(mixedV4Model, "material-v4-mixed.ogfx");
+    expect(
+        mixedV4
+            && readU32(
+                mixedV4.bytes,
+                chunkHeaderOffset(mixedV4.bytes, ChunkId::Materials) + 8)
+                == xrphoton::ogfx::MaterialChunkVersion4,
+        "a later emissive dielectric cannot downgrade v4 selection");
 }
 
 void testRigidPhysicsChunk()
@@ -1190,6 +1243,18 @@ void testValidation()
         model.geometries[0].vertexCount = 3;
         model.geometries[0].indexCount = 3;
         expectRejected(std::move(model), "sphereRadius");
+    }
+    {
+        Model model = makeQuad();
+        model.materials[0].materialClass =
+            static_cast<xrphoton::ogfx::MaterialClass>(99);
+        expectRejected(std::move(model), "materials[0].materialClass");
+    }
+    {
+        Model model = makeQuad();
+        model.materials[0].materialClass = xrphoton::ogfx::MaterialClass::Metal;
+        model.materials[0].baseColorFactor[1] = 1.01f;
+        expectRejected(std::move(model), "materials[0].baseColorFactor[1]");
     }
     {
         Model model = makeRigidPhysicsQuad();

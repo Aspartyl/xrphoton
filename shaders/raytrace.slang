@@ -414,7 +414,8 @@ void rayGenMain()
                 shadowRay,
                 shadow);
 
-            float3 sunBrdf = evaluateDielectricBrdf(
+            float3 sunBrdf = evaluateBsdf(
+                material.materialClass,
                 hit.albedo,
                 material.perceptualRoughness,
                 material.dielectricF0,
@@ -472,14 +473,16 @@ void rayGenMain()
                         shadowRay,
                         shadow);
 
-                    float lightBsdfPdf = dielectricBrdfPdf(
+                    float lightBsdfPdf = bsdfPdf(
+                        material.materialClass,
                         hit.albedo,
                         material.perceptualRoughness,
                         material.dielectricF0,
                         normals.shading,
                         wo,
                         lightSample.direction);
-                    float3 lightBrdf = evaluateDielectricBrdf(
+                    float3 lightBrdf = evaluateBsdf(
+                        material.materialClass,
                         hit.albedo,
                         material.perceptualRoughness,
                         material.dielectricF0,
@@ -567,14 +570,16 @@ void rayGenMain()
                                 shadowRay,
                                 shadow);
 
-                            float lightBsdfPdf = dielectricBrdfPdf(
+                            float lightBsdfPdf = bsdfPdf(
+                                material.materialClass,
                                 hit.albedo,
                                 material.perceptualRoughness,
                                 material.dielectricF0,
                                 normals.shading,
                                 wo,
                                 lightDirection);
-                            float3 lightBrdf = evaluateDielectricBrdf(
+                            float3 lightBrdf = evaluateBsdf(
+                                material.materialClass,
                                 hit.albedo,
                                 material.perceptualRoughness,
                                 material.dielectricF0,
@@ -606,43 +611,28 @@ void rayGenMain()
         if (pathVertex + 1 >= MaxPathVertices)
             break;
 
-        // Select one lobe by its normalized energy estimate, then evaluate the full
-        // diffuse+specular mixture and matching mixture PDF. Directions rejected by
-        // the actual triangle are terminated rather than resampled, which would bias
-        // the distribution selected around the smooth shading normal.
-        float2 lobeProbabilities = brdfLobeProbabilities(
-            hit.albedo,
-            material.dielectricF0);
-        if (lobeProbabilities.x + lobeProbabilities.y <= 0.0)
-            break;
+        // Draw through the class-aware sampler, then evaluate the matching complete
+        // BSDF and PDF. Directions rejected by the actual triangle are terminated
+        // rather than resampled, which would bias the smooth-normal distribution.
         float lobeSample = rngNextFloat(rngState);
         float2 directionSample = float2(
             rngNextFloat(rngState),
             rngNextFloat(rngState));
-        float3 bounceDirection;
-        if (lobeSample < lobeProbabilities.y)
-        {
-            float alpha = max(
-                material.perceptualRoughness * material.perceptualRoughness,
-                1.0e-4);
-            float3 halfVector = sampleGgxVisibleNormal(
-                normals.shading,
-                wo,
-                alpha,
-                directionSample);
-            bounceDirection = reflect(-wo, halfVector);
-        }
-        else
-        {
-            bounceDirection = cosineSampleHemisphere(
-                normals.shading,
-                directionSample);
-        }
+        float3 bounceDirection = sampleBsdf(
+            material.materialClass,
+            hit.albedo,
+            material.perceptualRoughness,
+            material.dielectricF0,
+            normals.shading,
+            wo,
+            lobeSample,
+            directionSample);
         if (dot(normals.geometric, bounceDirection) <= 0.0)
             break;
 
         float bounceCosine = dot(normals.shading, bounceDirection);
-        float bouncePdf = dielectricBrdfPdf(
+        float bouncePdf = bsdfPdf(
+            material.materialClass,
             hit.albedo,
             material.perceptualRoughness,
             material.dielectricF0,
@@ -651,7 +641,8 @@ void rayGenMain()
             bounceDirection);
         if (bounceCosine <= 0.0 || bouncePdf <= 0.0)
             break;
-        float3 bounceBrdf = evaluateDielectricBrdf(
+        float3 bounceBrdf = evaluateBsdf(
+            material.materialClass,
             hit.albedo,
             material.perceptualRoughness,
             material.dielectricF0,

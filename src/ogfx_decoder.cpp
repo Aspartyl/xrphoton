@@ -329,7 +329,8 @@ private:
                     id == static_cast<std::uint32_t>(ChunkId::Materials)
                     && (version == MaterialChunkVersion1
                         || version == MaterialChunkVersion2
-                        || version == MaterialChunkVersion3);
+                        || version == MaterialChunkVersion3
+                        || version == MaterialChunkVersion4);
                 if (version != ChunkVersion && !supportedMaterialVersion) {
                     return reject(
                         id,
@@ -337,7 +338,8 @@ private:
                         id == static_cast<std::uint32_t>(ChunkId::Materials)
                             ? std::to_string(MaterialChunkVersion1) + " or "
                                 + std::to_string(MaterialChunkVersion2) + " or "
-                                + std::to_string(MaterialChunkVersion3)
+                                + std::to_string(MaterialChunkVersion3) + " or "
+                                + std::to_string(MaterialChunkVersion4)
                             : std::to_string(ChunkVersion),
                         std::to_string(version));
                 }
@@ -751,7 +753,8 @@ private:
                         std::to_string(material.dielectricF0));
                 }
             }
-            if (chunk.version == MaterialChunkVersion3) {
+            if (chunk.version == MaterialChunkVersion3
+                || chunk.version == MaterialChunkVersion4) {
                 for (std::size_t component = 0;
                      component < material.emission.size();
                      ++component) {
@@ -767,14 +770,39 @@ private:
                             std::to_string(material.emission[component]));
                     }
                 }
-                const std::uint32_t recordReserved0 =
+                const std::uint32_t classWord =
                     readU32(bytes_, recordOffset + 44);
-                if (recordReserved0 != 0) {
+                if (chunk.version == MaterialChunkVersion3 && classWord != 0) {
                     return reject(
                         chunk.id,
                         indexedField("materials", index, "reserved0"),
                         "0",
-                        std::to_string(recordReserved0));
+                        std::to_string(classWord));
+                }
+                if (chunk.version == MaterialChunkVersion4) {
+                    if (classWord
+                        > static_cast<std::uint32_t>(MaterialClass::Glass)) {
+                        return reject(
+                            chunk.id,
+                            indexedField("materials", index, "materialClass"),
+                            "Dielectric (0), Metal (1), or Glass (2)",
+                            std::to_string(classWord));
+                    }
+                    material.materialClass =
+                        static_cast<MaterialClass>(classWord);
+                }
+            }
+            if (material.materialClass == MaterialClass::Metal) {
+                for (std::size_t component = 0; component < 3; ++component) {
+                    if (material.baseColorFactor[component] < 0.0f
+                        || material.baseColorFactor[component] > 1.0f) {
+                        return reject(
+                            chunk.id,
+                            indexedField("materials", index, "baseColorFactor")
+                                + '[' + std::to_string(component) + ']',
+                            "a finite f32 in [0, 1] for Metal spectral F0",
+                            std::to_string(material.baseColorFactor[component]));
+                    }
                 }
             }
 
@@ -1543,8 +1571,15 @@ private:
 
     bool validateRuntimeProfile()
     {
-        // Every currently decoded v1 render concept has a runtime consumer. Keep
-        // this profile hook so later schema-only additions have one explicit gate.
+        for (std::size_t index = 0; index < model_.materials.size(); ++index) {
+            if (model_.materials[index].materialClass == MaterialClass::Glass) {
+                return reject(
+                    static_cast<std::uint32_t>(ChunkId::Materials),
+                    indexedField("materials", index, "materialClass"),
+                    "Dielectric (0) or Metal (1) in the P3a runtime profile",
+                    "Glass (2)");
+            }
+        }
         return true;
     }
 

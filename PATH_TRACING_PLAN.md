@@ -445,6 +445,11 @@ against it, so it exists before the denoiser does.
 **Goal.** Close the material-class gap named at `ARCHITECTURE.md:1350-1351` and give
 the audited `models\mirror` / `models\window` / `models\glass` families a real target.
 
+**P3a status: complete (2026-07-30).** OGFx v4, runtime/GPU class propagation,
+reflection-only colored-Fresnel Metal transport, XRBM v3, and the sharp/rough
+Blender Metal sphere proof have landed. `Glass` is accepted only by the offline
+schema decoder and remains a deliberate runtime error until P3b lands atomically.
+
 ### 7.1 Decisions
 
 **An explicit material class enum, not a metallic-factor blend.** The SoC audit fixed
@@ -675,7 +680,8 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
 5. **P2b — complete.** Light builder, records, CDF, emitter lookup, bindings 6–8.
 6. **P2c — complete.** Emitter NEE + emitter MIS + the night yard preset + linear-HDR reference
    capture and estimator controls.
-7. **P3a** `OGFX_MATERIALS` v4 class word + metal class + sphere acceptance.
+7. **P3a — complete.** `OGFX_MATERIALS` v4 class word + metal class + sharp/rough
+   Blender sphere acceptance. Glass is schema-reserved but runtime-rejected until P3b.
 8. **P3b** glass class + two-sided direct sampling + unified any-hit routing + explicit
    intervening-glass shadow approximation + perf measurement.
 9. **P4** Preetham sky, time of day, sun disc, cone sampling.

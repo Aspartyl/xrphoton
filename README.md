@@ -32,7 +32,7 @@ probes.
 Each frame traces a ray per pixel through one BLAS per mesh and a real
 multi-instance TLAS, from a perspective camera fed to the shader through push
 constants. Raygen follows paths of up to eight surface vertices, evaluating an
-energy-aware Lambert diffuse plus isotropic GGX dielectric BRDF under a
+energy-aware Lambert diffuse plus isotropic GGX dielectric or conductor BRDF under a
 directional sun, tracing hard visibility rays for shadows, and sampling
 matching lobes for indirect transport. GGX uses visible-normal sampling and
 Russian roulette starts after the third vertex, so bounces gather the
@@ -69,8 +69,8 @@ shared TLAS in place before every trace while all BLAS geometry stays static.
 Plain, GPU-assisted and synchronization validation are clean over live motion,
 resize and teardown.
 
-Deformable skinning and BLAS refits, metallic, transmissive and emissive
-materials, and temporal accumulation and denoising follow later.
+Deformable skinning and BLAS refits, transmissive materials, a time-varying
+sun/sky, and temporal accumulation and denoising follow later.
 [ARCHITECTURE.md](ARCHITECTURE.md) has the module map and the roadmap.
 
 ## Building
@@ -174,8 +174,9 @@ stream to `convert-blender` rather than writing OGFx itself:
 
 Accepted inputs are narrow on purpose: no modifiers, animation, shape keys,
 constraints or parenting, and at most one simple material whose texture is a
-lowercase `.dds` under the supplied texture root. Anything more elaborate fails
-loudly. [FORMATS.md](FORMATS.md) documents the full contract, and each
+lowercase `.dds` under the supplied texture root, or one explicit untextured
+Principled Metal material. Anything more elaborate fails loudly.
+[FORMATS.md](FORMATS.md) documents the full contract, and each
 converted asset has an opt-in CMake proof target there that runs the real tools
 twice and pins the output.
 
@@ -190,6 +191,7 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_BLENDER_OGFX=".../test_pyramid.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=".../test_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=".../test_smooth_sphere.ogfx" \
+  -DXRPHOTON_GALLERY_BLENDER_SHINY_SPHERE_OGFX=".../yard_shiny_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=".../test_leaf_card.ogfx" \
   -DXRPHOTON_GALLERY_BARREL_OGFX=".../bochka_close_1.ogfx" \
   -DXRPHOTON_GALLERY_REMADE_BARREL_OGFX=".../remade_bochka_close_1.ogfx" \

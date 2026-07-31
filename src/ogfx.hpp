@@ -39,6 +39,7 @@ inline constexpr std::uint32_t MaterialRecordSizeV3 = 48;
 inline constexpr std::uint32_t MaterialChunkVersion1 = 1;
 inline constexpr std::uint32_t MaterialChunkVersion2 = 2;
 inline constexpr std::uint32_t MaterialChunkVersion3 = 3;
+inline constexpr std::uint32_t MaterialChunkVersion4 = 4;
 inline constexpr float DefaultPerceptualRoughness = 1.0f;
 inline constexpr float DefaultDielectricF0 = 0.04f;
 inline constexpr std::uint32_t PositionRecordSize = 12;
@@ -60,7 +61,9 @@ inline constexpr std::uint32_t PhysicsColliderAllowedFlags = 0;
     if (version == MaterialChunkVersion1 || version == MaterialChunkVersion2) {
         return MaterialRecordSizeV1V2;
     }
-    return version == MaterialChunkVersion3 ? MaterialRecordSizeV3 : 0;
+    return version == MaterialChunkVersion3 || version == MaterialChunkVersion4
+        ? MaterialRecordSizeV3
+        : 0;
 }
 
 enum class ChunkId : std::uint32_t
@@ -110,6 +113,15 @@ struct Mesh
     std::uint32_t geometryCount = 0;
 };
 
+enum class MaterialClass : std::uint32_t
+{
+    Dielectric = 0,
+    Metal = 1,
+    // The persistent v4 schema reserves Glass now so P3b does not churn the
+    // format again. P3a's runtime profile rejects it until transmission lands.
+    Glass = 2,
+};
+
 struct Material
 {
     std::array<float, 4> baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
@@ -117,6 +129,7 @@ struct Material
     float perceptualRoughness = DefaultPerceptualRoughness;
     float dielectricF0 = DefaultDielectricF0;
     std::array<float, 3> emission{};
+    MaterialClass materialClass = MaterialClass::Dielectric;
 
     // OGFx stores logical texture references in its string arena. Both decoder
     // profiles preserve them so the runtime texture resolver can load the image.

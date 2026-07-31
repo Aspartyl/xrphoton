@@ -393,7 +393,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0001` | `OGFX_MODEL` | yes | `u32` model type, `u32` model flags, model bounds (AABB + bounding sphere — the OGF header heritage) |
 | `0x0010` | `OGFX_GEOMETRIES` | yes | fixed-width geometry-range records (below) |
 | `0x0011` | `OGFX_MESHES` | yes | `{u32 firstGeometry, u32 geometryCount}` records — the BLAS grouping |
-| `0x0012` | `OGFX_MATERIALS` | yes | v1/v2/v3 material records: base color, alpha cutoff, logical texture reference, v2 BRDF scalars, and v3 emission |
+| `0x0012` | `OGFX_MATERIALS` | yes | v1/v2/v3/v4 material records: base color, alpha cutoff, logical texture reference, v2 BRDF scalars, v3 emission, and v4 material class |
 | `0x0020` | `OGFX_POSITIONS` | yes | tightly packed `f32×3` positions, 12-byte stride |
 | `0x0021` | `OGFX_ATTRIBUTES` | yes | 20-byte all-scalar attribute records: `nx, ny, nz, u, v` |
 | `0x0022` | `OGFX_INDICES` | yes | `u32` indices, geometry-local |
@@ -401,7 +401,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0040` | `OGFX_DESC` | optional | provenance (the `OGF_S_DESC` heritage: source asset, converting tool + version, stable source-provided timestamps) plus the complete-input hash the compiler used |
 
 Required chunks set the required flag and occur exactly once. Six use chunk version
-`1`; `OGFX_MATERIALS` accepts version `1`, `2`, or `3`. The canonical writer emits them in
+`1`; `OGFX_MATERIALS` accepts versions `1` through `4`. The canonical writer emits them in
 ascending-id order for deterministic output; the loader is order-independent. There
 is no implicit record padding. The exact version-1 payloads are:
 
@@ -463,7 +463,7 @@ payload header — 16 bytes
  8  u32 reserved0          (zero)
 12  u32 reserved1          (zero)
 
-material record — materialCount records, 32-byte stride in v1/v2 and 48-byte stride in v3
+material record — materialCount records, 32-byte stride in v1/v2 and 48-byte stride in v3/v4
  0  f32 baseColorR
  4  f32 baseColorG
  8  f32 baseColorB
@@ -471,27 +471,35 @@ material record — materialCount records, 32-byte stride in v1/v2 and 48-byte s
 16  f32 alphaCutoff
 20  u32 textureRefOffset   (from string-arena start; UINT32_MAX = none)
 24  v1: u32 reserved0      (zero)
-    v2/v3: f32 perceptualRoughness (finite [0, 1])
+    v2/v3/v4: f32 perceptualRoughness (finite [0, 1])
 28  v1: u32 reserved1      (zero)
-    v2/v3: f32 dielectricF0   (finite [0, 1])
-32  v3: f32 emissionR      (finite, nonnegative)
-36  v3: f32 emissionG      (finite, nonnegative)
-40  v3: f32 emissionB      (finite, nonnegative)
-44  v3: u32 reserved0      (zero; material class in v4)
+    v2/v3/v4: f32 dielectricF0   (finite [0, 1]; ignored by Metal)
+32  v3/v4: f32 emissionR      (finite, nonnegative)
+36  v3/v4: f32 emissionG      (finite, nonnegative)
+40  v3/v4: f32 emissionB      (finite, nonnegative)
+44  v3: u32 reserved0        (zero)
+    v4: u32 materialClass    (0 = Dielectric, 1 = Metal, 2 = Glass)
 
 string arena — stringByteSize bytes immediately after the records
 ```
 
 Its exact size is `16 + materialCount × recordStride + stringByteSize`, where
-`recordStride` is 32 for v1/v2 and 48 for v3, computed with checked 64-bit arithmetic.
+`recordStride` is 32 for v1/v2 and 48 for v3/v4, computed with checked 64-bit arithmetic.
 The arena is a sequence of the length-prefixed
 UTF-8 strings defined above. Version 1 maps to runtime defaults
 `perceptualRoughness = 1.0` and `dielectricF0 = 0.04`; its words at offsets 24/28
-must remain zero. Versions 2 and 3 give those same words their scalar BRDF meanings;
+must remain zero. Versions 2 through 4 give those same words their scalar BRDF meanings;
 versions 1 and 2 decode emission as zero. Version 3 adds emission RGB and requires its
-offset-44 reserved word to be zero. The writer emits v1 when every material has the
+offset-44 reserved word to be zero. Version 4 gives that word an explicit class.
+Older versions decode as `Dielectric`. `Metal` has no diffuse lobe and interprets
+`baseColorFactor.rgb × sampledBaseColor.rgb` as spectral normal-incidence reflectance;
+its authored factor RGB is therefore constrained to `[0, 1]`. `Glass` is reserved by
+the schema for P3b: offline schema decoding preserves it, while the P3a runtime profile
+rejects it rather than rendering it as another class. The writer emits v1 when every material has the
 defaults, preserving old canonical bytes, selects v2 only when at least one BRDF scalar
-differs, and selects v3 whenever any emission channel is positive. A texture offset must point to
+differs, selects v3 whenever any emission channel is positive, and selects v4 whenever
+any material is not `Dielectric`. Later records cannot downgrade an already selected
+version. A texture offset must point to
 the `u16` prefix of a known entry; empty entries and offsets into the middle of entries are
 invalid because `UINT32_MAX` is the only no-texture representation. The
 canonical writer validates every nonempty logical reference as at most 4096
@@ -870,7 +878,7 @@ extractor, stdin payload, deduplication table, and compiler model's combined
 working set. This slice does not flatten hierarchy, apply modifiers, support
 blended transparency, or infer which object the user intended.
 
-Two strict XRBM profiles now share that geometry path:
+Three strict XRBM profiles now share that geometry path:
 
 - **Version 1, 96-byte header:** no material slots or evaluated materials,
   zero or one UV layer, and one emitted opaque geometry/default untextured
@@ -897,14 +905,22 @@ Two strict XRBM profiles now share that geometry path:
   backslash-separated OGFx texture reference. The v2 material-flags word may be
   zero (opaque) or alpha-test bit 0; every unknown bit is rejected rather than
   treated as an extensible ignore-unknown field.
+- **Version 3, 144-byte header:** one explicit material whose class is
+  `Dielectric` or `Metal`, with optional texture-reference bytes plus base-color
+  factor, perceptual roughness, and dielectric F0. P3a authors the narrow Metal
+  branch from an untextured Principled BSDF: `xrphoton_material_class` is exactly
+  `metal`, metallic is exactly 1, base color and roughness are finite unlinked
+  values, alpha testing is false, and only the Principled-to-Output link exists.
+  This rejects a blended metallic factor and maps Blender intent to the same
+  discrete OGFx class used by legacy conversion and the runtime.
 
 The little-endian exchange layout is deliberately small and closed:
 
 | Offset | Bytes | XRBM field |
 |---:|---:|---|
 | 0 | 4 | magic `XRBM` |
-| 4 | 4 | version (`1` or `2`) |
-| 8 | 4 | exact header size (`96` or `112`) |
+| 4 | 4 | version (`1`, `2`, or `3`) |
+| 8 | 4 | exact header size (`96`, `112`, or `144`) |
 | 12 | 4 | flags; bit 0 means UVs, all other bits zero |
 | 16 | 4 | triangle count |
 | 20 | 12 | Blender major/minor/patch as three `u32` values |
@@ -913,14 +929,17 @@ The little-endian exchange layout is deliberately small and closed:
 | 40 | 48 | row-major object affine 3×4 matrix (12 `f32` values) |
 | 88 | 8 | two reserved-zero `u32` values |
 | 96 | 16 | v2 only: material flags (bit 0 = alpha-tested), cutoff, texture-reference byte count, reserved zero |
+| 96 | 16 | v3 only: material flags, cutoff, optional texture-reference byte count, material class |
+| 112 | 16 | v3 only: base-color factor RGBA |
+| 128 | 16 | v3 only: perceptual roughness, dielectric F0, two reserved-zero words |
 
-In v1, triangle-corner records begin at byte 96. In v2, the exact-length ASCII
-texture reference follows byte 112, then the records begin. Every triangle has
+In v1, triangle-corner records begin at byte 96. In v2/v3, the exact-length ASCII
+texture reference follows the declared header when nonempty, then the records begin. Every triangle has
 three 32-byte corner records: position `(x,y,z)`, normal `(x,y,z)`, and UV
 `(u,v)`, all `f32`. Exact file size, reserved fields, flags, string grammar,
 finite values, and semantic ranges are validated before a compiler model is
 accepted. XRBM's exchange version is independent of the persistent format:
-both XRBM v1 and v2 are compiled into canonical OGFx container version 1.
+all three XRBM versions are compiled into canonical OGFx container version 1.
 
 **UV convention at this boundary.** XRBM v1 preserves authored Blender
 `(u, v)` values exactly for backward compatibility. Textured v2 performs the
@@ -932,20 +951,25 @@ future material profiles cannot silently apply a second flip.
 The ignored root `blender/` directory holds owner-local source files. The
 fixtures are `test_pyramid.blend` / object `test_pyramid`, `test_sphere.blend` /
 object `test_sphere`, `test_smooth_sphere.blend` / object
-`test_smooth_sphere`, and `test_leaf_card.blend` / object `test_leaf_card`.
-Those four are optional regression probes; the sphere pair pins identical
+`test_smooth_sphere`, `yard_shiny_sphere.blend` / object
+`yard_shiny_sphere`, and `test_leaf_card.blend` / object `test_leaf_card`.
+Those five are optional regression probes; the sphere pair pins identical
 position/UV corner streams with flat-face normal splits versus shared smooth
-normals, while the leaf card pins the v2 material and UV contract.
-Generated outputs live beneath the ignored
+normals while the proof assigns the same copper-like Metal F0 at roughness 0.12
+and 0.72 respectively. The dedicated `yard_shiny_sphere` source keeps the
+smooth sphere topology with a silver-like Metal F0 and roughness 0.015; the
+gallery scales its unit source radius to 2.5 m. The leaf card pins the v2
+material and UV contract. Generated outputs live beneath the ignored
 `build/<preset>/assets/blender/` directory. The opt-in
 `xrPhotonBlenderOfflineProof` target uses the cache settings
 `XRPHOTON_BLENDER_EXECUTABLE`, `XRPHOTON_BLENDER_PYRAMID_BLEND`, and
 `XRPHOTON_BLENDER_SPHERE_BLEND`, and
 `XRPHOTON_BLENDER_SMOOTH_SPHERE_BLEND`, plus
+`XRPHOTON_BLENDER_SHINY_SPHERE_BLEND`,
 `XRPHOTON_BLENDER_LEAF_CARD_BLEND`, `XRPHOTON_BLENDER_LEAF_TEXTURE_ROOT`, and
-`XRPHOTON_BLENDER_LEAF_TEXTURE_DDS`, to run all four files through Blender and
+`XRPHOTON_BLENDER_LEAF_TEXTURE_DDS`, to run all five files through Blender and
 verify their canonical outputs; it does not make the local `.blend` inputs
-normal-build dependencies. All four outputs can be configured as test-yard props.
+normal-build dependencies. All five outputs can be configured as test-yard props.
 
 The owner-local `remade_bochka_close_1.blend` / object
 `remade_bochka_close_1` is the first opaque-textured v2 asset. It preserves the

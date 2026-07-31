@@ -49,6 +49,7 @@ enum GalleryAssetIndex : uint32_t
     BlenderPyramidAsset,
     BlenderSphereAsset,
     BlenderSmoothSphereAsset,
+    BlenderShinySphereAsset,
     BlenderLeafCardAsset,
     BarrelAsset,
     RemadeBarrelAsset,
@@ -127,6 +128,12 @@ constexpr std::array GalleryAssets{
         .ogfxPath = XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX,
         .optional = true,
         .configurationName = "XRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX",
+    },
+    GalleryAsset{
+        .name = "yard_shiny_sphere",
+        .ogfxPath = XRPHOTON_GALLERY_BLENDER_SHINY_SPHERE_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_BLENDER_SHINY_SPHERE_OGFX",
     },
     GalleryAsset{
         .name = "test_leaf_card",
@@ -289,6 +296,18 @@ const std::array GalleryPlacements{
         .transform = glm::translate(
             glm::mat4{1.0f},
             glm::vec3{-8.0f, 0.99f, 7.0f}),
+    },
+    GalleryPlacement{
+        .assetIndex = BlenderShinySphereAsset,
+        // A five-metre-diameter chrome sphere anchors the otherwise open
+        // south-east quarter. Its three-metre south margin and wider open
+        // approaches leave a safe, complete walking loop around the prop.
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{4.5f, 2.5f, -4.5f})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{2.5f}),
     },
     GalleryPlacement{
         .assetIndex = BlenderLeafCardAsset,

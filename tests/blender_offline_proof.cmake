@@ -11,6 +11,8 @@ set(required_variables
     SPHERE_OUTPUT
     SMOOTH_SPHERE_BLEND
     SMOOTH_SPHERE_OUTPUT
+    SHINY_SPHERE_BLEND
+    SHINY_SPHERE_OUTPUT
     LEAF_CARD_BLEND
     LEAF_CARD_OUTPUT
     LEAF_TEXTURE_ROOT
@@ -32,6 +34,10 @@ set(smooth_sphere_candidate_1
     "${SMOOTH_SPHERE_OUTPUT}.proof-candidate-1")
 set(smooth_sphere_candidate_2
     "${SMOOTH_SPHERE_OUTPUT}.proof-candidate-2")
+set(shiny_sphere_candidate_1
+    "${SHINY_SPHERE_OUTPUT}.proof-candidate-1")
+set(shiny_sphere_candidate_2
+    "${SHINY_SPHERE_OUTPUT}.proof-candidate-2")
 set(leaf_card_candidate_1 "${LEAF_CARD_OUTPUT}.proof-candidate-1")
 set(leaf_card_candidate_2 "${LEAF_CARD_OUTPUT}.proof-candidate-2")
 get_filename_component(leaf_card_output_directory "${LEAF_CARD_OUTPUT}" DIRECTORY)
@@ -53,6 +59,8 @@ function(cleanup_proof_candidates)
         "${sphere_candidate_2}"
         "${smooth_sphere_candidate_1}"
         "${smooth_sphere_candidate_2}"
+        "${shiny_sphere_candidate_1}"
+        "${shiny_sphere_candidate_2}"
         "${leaf_card_candidate_1}"
         "${leaf_card_candidate_2}")
     file(REMOVE_RECURSE "${leaf_alias_texture_root}")
@@ -71,6 +79,8 @@ cmake_path(ABSOLUTE_PATH SPHERE_OUTPUT NORMALIZE
     OUTPUT_VARIABLE sphere_output_absolute)
 cmake_path(ABSOLUTE_PATH SMOOTH_SPHERE_OUTPUT NORMALIZE
     OUTPUT_VARIABLE smooth_sphere_output_absolute)
+cmake_path(ABSOLUTE_PATH SHINY_SPHERE_OUTPUT NORMALIZE
+    OUTPUT_VARIABLE shiny_sphere_output_absolute)
 cmake_path(ABSOLUTE_PATH LEAF_CARD_OUTPUT NORMALIZE
     OUTPUT_VARIABLE leaf_card_output_absolute)
 set(alias_root_path "${leaf_alias_texture_root}")
@@ -94,6 +104,12 @@ cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
 set(candidate_path "${smooth_sphere_candidate_2}")
 cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
     OUTPUT_VARIABLE smooth_sphere_candidate_2_absolute)
+set(candidate_path "${shiny_sphere_candidate_1}")
+cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
+    OUTPUT_VARIABLE shiny_sphere_candidate_1_absolute)
+set(candidate_path "${shiny_sphere_candidate_2}")
+cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
+    OUTPUT_VARIABLE shiny_sphere_candidate_2_absolute)
 set(candidate_path "${leaf_card_candidate_1}")
 cmake_path(ABSOLUTE_PATH candidate_path NORMALIZE
     OUTPUT_VARIABLE leaf_card_candidate_1_absolute)
@@ -104,6 +120,7 @@ set(mutable_paths
     "${pyramid_output_absolute}"
     "${sphere_output_absolute}"
     "${smooth_sphere_output_absolute}"
+    "${shiny_sphere_output_absolute}"
     "${leaf_card_output_absolute}"
     "${leaf_alias_texture_root_absolute}"
     "${pyramid_candidate_1_absolute}"
@@ -112,6 +129,8 @@ set(mutable_paths
     "${sphere_candidate_2_absolute}"
     "${smooth_sphere_candidate_1_absolute}"
     "${smooth_sphere_candidate_2_absolute}"
+    "${shiny_sphere_candidate_1_absolute}"
+    "${shiny_sphere_candidate_2_absolute}"
     "${leaf_card_candidate_1_absolute}"
     "${leaf_card_candidate_2_absolute}")
 set(unique_mutable_paths ${mutable_paths})
@@ -126,7 +145,8 @@ endif()
 
 foreach(input_variable
         BLENDER_EXECUTABLE EXPORT_SCRIPT ASSET_COMPILER VERIFIER
-        PYRAMID_BLEND SPHERE_BLEND SMOOTH_SPHERE_BLEND LEAF_CARD_BLEND
+        PYRAMID_BLEND SPHERE_BLEND SMOOTH_SPHERE_BLEND SHINY_SPHERE_BLEND
+        LEAF_CARD_BLEND
         LEAF_TEXTURE_ROOT LEAF_TEXTURE_DDS)
     set(input_path "${${input_variable}}")
     cmake_path(ABSOLUTE_PATH input_path NORMALIZE
@@ -140,7 +160,8 @@ endforeach()
 
 foreach(input_variable
         BLENDER_EXECUTABLE EXPORT_SCRIPT ASSET_COMPILER VERIFIER
-        PYRAMID_BLEND SPHERE_BLEND SMOOTH_SPHERE_BLEND LEAF_CARD_BLEND
+        PYRAMID_BLEND SPHERE_BLEND SMOOTH_SPHERE_BLEND SHINY_SPHERE_BLEND
+        LEAF_CARD_BLEND
         LEAF_TEXTURE_DDS)
     if(NOT EXISTS "${${input_variable}}")
         proof_failure(
@@ -177,7 +198,8 @@ if(NOT leaf_texture_resolved_real STREQUAL leaf_texture_dds_real)
 endif()
 
 foreach(output_variable
-        PYRAMID_OUTPUT SPHERE_OUTPUT SMOOTH_SPHERE_OUTPUT LEAF_CARD_OUTPUT)
+        PYRAMID_OUTPUT SPHERE_OUTPUT SMOOTH_SPHERE_OUTPUT
+        SHINY_SPHERE_OUTPUT LEAF_CARD_OUTPUT)
     if(IS_DIRECTORY "${${output_variable}}")
         proof_failure(
             "${output_variable} must not identify a directory: ${${output_variable}}")
@@ -383,6 +405,39 @@ function(export_candidate asset_label blend_path object_name candidate_path)
     endif()
 endfunction()
 
+function(export_metal_candidate
+        asset_label blend_path object_name candidate_path roughness
+        red green blue)
+    set(python_expression
+        "import bpy; o=bpy.data.objects['${object_name}']; m=bpy.data.materials.new('${object_name}_xrphoton_metal'); m.use_nodes=True; m['xrphoton_material_class']='metal'; m['xrphoton_alpha_tested']=False; m.surface_render_method='DITHERED'; m.alpha_threshold=0.5; p=next(n for n in m.node_tree.nodes if n.bl_idname=='ShaderNodeBsdfPrincipled'); p.inputs['Base Color'].default_value=(${red},${green},${blue},1.0); p.inputs['Metallic'].default_value=1.0; p.inputs['Roughness'].default_value=${roughness}; o.data.materials.clear(); o.data.materials.append(m)")
+    execute_process(
+        COMMAND "${BLENDER_EXECUTABLE}"
+            --background
+            --factory-startup
+            --disable-autoexec
+            --python-exit-code 1
+            "${blend_path}"
+            --python-expr "${python_expression}"
+            --python "${EXPORT_SCRIPT}"
+            --
+            --compiler "${ASSET_COMPILER}"
+            --output "${candidate_path}"
+            --object "${object_name}"
+        RESULT_VARIABLE export_result
+        OUTPUT_VARIABLE export_output
+        ERROR_VARIABLE export_error)
+    if(NOT "${export_result}" STREQUAL "0")
+        proof_failure(
+            "${asset_label} Blender Metal export failed with exit ${export_result}\n"
+            "stdout: ${export_output}\nstderr: ${export_error}")
+    endif()
+    if(NOT EXISTS "${candidate_path}" OR IS_DIRECTORY "${candidate_path}")
+        proof_failure(
+            "${asset_label} Blender Metal export reported success without creating "
+            "its candidate: ${candidate_path}")
+    endif()
+endfunction()
+
 export_candidate(
     "test_pyramid first pass"
     "${PYRAMID_BLEND}"
@@ -393,26 +448,44 @@ export_candidate(
     "${PYRAMID_BLEND}"
     "test_pyramid"
     "${pyramid_candidate_2}")
-export_candidate(
+export_metal_candidate(
     "test_sphere first pass"
     "${SPHERE_BLEND}"
     "test_sphere"
-    "${sphere_candidate_1}")
-export_candidate(
+    "${sphere_candidate_1}"
+    0.12
+    0.95 0.64 0.54)
+export_metal_candidate(
     "test_sphere second pass"
     "${SPHERE_BLEND}"
     "test_sphere"
-    "${sphere_candidate_2}")
-export_candidate(
+    "${sphere_candidate_2}"
+    0.12
+    0.95 0.64 0.54)
+export_metal_candidate(
     "test_smooth_sphere first pass"
     "${SMOOTH_SPHERE_BLEND}"
     "test_smooth_sphere"
-    "${smooth_sphere_candidate_1}")
-export_candidate(
+    "${smooth_sphere_candidate_1}"
+    0.72
+    0.95 0.64 0.54)
+export_metal_candidate(
     "test_smooth_sphere second pass"
     "${SMOOTH_SPHERE_BLEND}"
     "test_smooth_sphere"
-    "${smooth_sphere_candidate_2}")
+    "${smooth_sphere_candidate_2}"
+    0.72
+    0.95 0.64 0.54)
+export_candidate(
+    "yard_shiny_sphere first pass"
+    "${SHINY_SPHERE_BLEND}"
+    "yard_shiny_sphere"
+    "${shiny_sphere_candidate_1}")
+export_candidate(
+    "yard_shiny_sphere second pass"
+    "${SHINY_SPHERE_BLEND}"
+    "yard_shiny_sphere"
+    "${shiny_sphere_candidate_2}")
 export_candidate(
     "test_leaf_card first pass"
     "${LEAF_CARD_BLEND}"
@@ -449,6 +522,10 @@ require_identical(
     "${smooth_sphere_candidate_1}"
     "${smooth_sphere_candidate_2}")
 require_identical(
+    "yard_shiny_sphere"
+    "${shiny_sphere_candidate_1}"
+    "${shiny_sphere_candidate_2}")
+require_identical(
     "test_leaf_card" "${leaf_card_candidate_1}" "${leaf_card_candidate_2}")
 
 function(verify_candidate asset_label verifier_flag candidate_path)
@@ -478,6 +555,10 @@ verify_candidate(
     "--verify-smooth-sphere-output"
     "${smooth_sphere_candidate_1}")
 verify_candidate(
+    "yard_shiny_sphere"
+    "--verify-yard-shiny-sphere-output"
+    "${shiny_sphere_candidate_1}")
+verify_candidate(
     "test_leaf_card"
     "--verify-leaf-card-output"
     "${leaf_card_candidate_1}")
@@ -500,6 +581,8 @@ file(SIZE "${sphere_candidate_1}" sphere_size)
 file(SHA256 "${sphere_candidate_1}" sphere_hash)
 file(SIZE "${smooth_sphere_candidate_1}" smooth_sphere_size)
 file(SHA256 "${smooth_sphere_candidate_1}" smooth_sphere_hash)
+file(SIZE "${shiny_sphere_candidate_1}" shiny_sphere_size)
+file(SHA256 "${shiny_sphere_candidate_1}" shiny_sphere_hash)
 file(SIZE "${leaf_card_candidate_1}" leaf_card_size)
 file(SHA256 "${leaf_card_candidate_1}" leaf_card_hash)
 
@@ -509,6 +592,7 @@ file(REMOVE
     "${pyramid_candidate_2}"
     "${sphere_candidate_2}"
     "${smooth_sphere_candidate_2}"
+    "${shiny_sphere_candidate_2}"
     "${leaf_card_candidate_2}")
 file(RENAME
     "${pyramid_candidate_1}" "${PYRAMID_OUTPUT}"
@@ -535,6 +619,14 @@ if(NOT smooth_sphere_publish_result STREQUAL "0")
         "${smooth_sphere_publish_result}")
 endif()
 file(RENAME
+    "${shiny_sphere_candidate_1}" "${SHINY_SPHERE_OUTPUT}"
+    RESULT shiny_sphere_publish_result)
+if(NOT shiny_sphere_publish_result STREQUAL "0")
+    proof_failure(
+        "yard_shiny_sphere proof succeeded but publishing its output failed: "
+        "${shiny_sphere_publish_result}")
+endif()
+file(RENAME
     "${leaf_card_candidate_1}" "${LEAF_CARD_OUTPUT}"
     RESULT leaf_card_publish_result)
 if(NOT leaf_card_publish_result STREQUAL "0")
@@ -553,9 +645,12 @@ message(STATUS
     "Blender offline proof passed: test_smooth_sphere ${smooth_sphere_size} "
     "bytes / SHA-256 ${smooth_sphere_hash}")
 message(STATUS
+    "Blender offline proof passed: yard_shiny_sphere ${shiny_sphere_size} "
+    "bytes / SHA-256 ${shiny_sphere_hash}")
+message(STATUS
     "Blender offline proof passed: test_leaf_card ${leaf_card_size} "
     "bytes / SHA-256 ${leaf_card_hash}; DDS mip 0 has 153894 transparent "
     "texels")
 message(STATUS
     "Persistent Blender proof outputs: ${PYRAMID_OUTPUT}; ${SPHERE_OUTPUT}; "
-    "${SMOOTH_SPHERE_OUTPUT}; ${LEAF_CARD_OUTPUT}")
+    "${SMOOTH_SPHERE_OUTPUT}; ${SHINY_SPHERE_OUTPUT}; ${LEAF_CARD_OUTPUT}")

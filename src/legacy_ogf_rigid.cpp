@@ -1128,6 +1128,7 @@ private:
             // Both accepted model/model_aref profiles lack scalar BRDF authoring.
             material.perceptualRoughness = ogfx::DefaultPerceptualRoughness;
             material.dielectricF0 = ogfx::DefaultDielectricF0;
+            material.materialClass = ogfx::MaterialClass::Dielectric;
             material.baseColorTexture = textureName;
             if (alphaTested) {
                 material.alphaCutoff = ModelAlphaReference;

@@ -329,18 +329,21 @@ ogfx::DecodeResult decodeStaticMesh(
 
     Reader reader(bytes.subspan(4));
     const std::uint32_t version = reader.readU32();
-    if (version != StreamVersion1 && version != StreamVersion2) {
+    if (version != StreamVersion1
+        && version != StreamVersion2
+        && version != StreamVersion3) {
         return failure(
             diagnosticName,
             "version",
             std::to_string(StreamVersion1) + " or "
-                + std::to_string(StreamVersion2),
+                + std::to_string(StreamVersion2) + " or "
+                + std::to_string(StreamVersion3),
             std::to_string(version));
     }
     const std::uint32_t headerSize = reader.readU32();
     const std::uint32_t expectedHeaderSize = version == StreamVersion1
         ? StreamHeaderSizeV1
-        : StreamHeaderSizeV2;
+        : version == StreamVersion2 ? StreamHeaderSizeV2 : StreamHeaderSizeV3;
     if (headerSize != expectedHeaderSize) {
         return failure(
             diagnosticName,
@@ -412,10 +415,15 @@ ogfx::DecodeResult decodeStaticMesh(
     }
 
     bool alphaTested = false;
-    const bool texturedMaterial = version == StreamVersion2;
+    const bool hasMaterial = version != StreamVersion1;
+    bool texturedMaterial = version == StreamVersion2;
     float alphaCutoff = 0.5f;
     std::uint32_t textureReferenceByteCount = 0;
-    if (texturedMaterial) {
+    std::array<float, 4> baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
+    float perceptualRoughness = ogfx::DefaultPerceptualRoughness;
+    float dielectricF0 = ogfx::DefaultDielectricF0;
+    ogfx::MaterialClass materialClass = ogfx::MaterialClass::Dielectric;
+    if (hasMaterial) {
         const std::uint32_t materialFlags = reader.readU32();
         if ((materialFlags & ~MaterialFlagAlphaTested) != 0) {
             return failure(
@@ -435,23 +443,95 @@ ogfx::DecodeResult decodeStaticMesh(
                 std::to_string(alphaCutoff));
         }
         textureReferenceByteCount = reader.readU32();
-        if (textureReferenceByteCount == 0
+        const std::uint32_t minimumTextureBytes = version == StreamVersion2 ? 1 : 0;
+        if (textureReferenceByteCount < minimumTextureBytes
             || textureReferenceByteCount > ogfx::MaximumStringBytes) {
             return failure(
                 diagnosticName,
                 "material texture-reference byte count",
-                "1.." + std::to_string(ogfx::MaximumStringBytes),
+                std::to_string(minimumTextureBytes) + ".."
+                    + std::to_string(ogfx::MaximumStringBytes),
                 std::to_string(textureReferenceByteCount));
         }
-        const std::uint32_t materialReserved = reader.readU32();
-        if (materialReserved != 0) {
+        if (version == StreamVersion2) {
+            const std::uint32_t materialReserved = reader.readU32();
+            if (materialReserved != 0) {
+                return failure(
+                    diagnosticName,
+                    "material reserved word",
+                    "zero",
+                    std::to_string(materialReserved));
+            }
+        } else {
+            const std::uint32_t classWord = reader.readU32();
+            if (classWord
+                > static_cast<std::uint32_t>(ogfx::MaterialClass::Metal)) {
+                return failure(
+                    diagnosticName,
+                    "material class",
+                    "Dielectric (0) or Metal (1)",
+                    std::to_string(classWord));
+            }
+            materialClass = static_cast<ogfx::MaterialClass>(classWord);
+            for (std::size_t component = 0; component < baseColorFactor.size(); ++component) {
+                baseColorFactor[component] = reader.readF32();
+                if (!std::isfinite(baseColorFactor[component])) {
+                    return failure(
+                        diagnosticName,
+                        "material base color",
+                        "four finite f32 values",
+                        "a non-finite value");
+                }
+                if (materialClass == ogfx::MaterialClass::Metal
+                    && component < 3
+                    && (baseColorFactor[component] < 0.0f
+                        || baseColorFactor[component] > 1.0f)) {
+                    return failure(
+                        diagnosticName,
+                        "material base color",
+                        "Metal RGB in [0, 1]",
+                        std::to_string(baseColorFactor[component]));
+                }
+            }
+            perceptualRoughness = reader.readF32();
+            dielectricF0 = reader.readF32();
+            if (!std::isfinite(perceptualRoughness)
+                || perceptualRoughness < 0.0f
+                || perceptualRoughness > 1.0f) {
+                return failure(
+                    diagnosticName,
+                    "material perceptual roughness",
+                    "a finite f32 in [0, 1]",
+                    std::to_string(perceptualRoughness));
+            }
+            if (!std::isfinite(dielectricF0)
+                || dielectricF0 < 0.0f
+                || dielectricF0 > 1.0f) {
+                return failure(
+                    diagnosticName,
+                    "material dielectric F0",
+                    "a finite f32 in [0, 1]",
+                    std::to_string(dielectricF0));
+            }
+            const std::uint32_t reserved0 = reader.readU32();
+            const std::uint32_t reserved1 = reader.readU32();
+            if (reserved0 != 0 || reserved1 != 0) {
+                return failure(
+                    diagnosticName,
+                    "material reserved words",
+                    "both zero",
+                    "a nonzero value");
+            }
+        }
+        texturedMaterial = textureReferenceByteCount != 0;
+        if (alphaTested && !texturedMaterial) {
             return failure(
                 diagnosticName,
-                "material reserved word",
-                "zero",
-                std::to_string(materialReserved));
+                "material texture-reference byte count",
+                "nonzero for an alpha-tested material",
+                "0");
         }
-        if ((flags & StreamFlagHasUvs) == 0) {
+        if (texturedMaterial && (flags & StreamFlagHasUvs) == 0) {
             return failure(
                 diagnosticName,
                 "flags",
@@ -642,10 +722,12 @@ ogfx::DecodeResult decodeStaticMesh(
     });
     model.meshes.push_back({.firstGeometry = 0, .geometryCount = 1});
     ogfx::Material material{};
-    // XRBM v1/v2 predate scalar BRDF fields, so their deliberate mapping is the
-    // backward-compatible rough dielectric rather than guessed Blender state.
-    material.perceptualRoughness = ogfx::DefaultPerceptualRoughness;
-    material.dielectricF0 = ogfx::DefaultDielectricF0;
+    // XRBM v1/v2 predate explicit material values, so their deliberate mapping
+    // remains the backward-compatible rough dielectric.
+    material.baseColorFactor = baseColorFactor;
+    material.perceptualRoughness = perceptualRoughness;
+    material.dielectricF0 = dielectricF0;
+    material.materialClass = materialClass;
     material.alphaCutoff = alphaCutoff;
     material.baseColorTexture = std::move(textureReference);
     model.materials.push_back(std::move(material));

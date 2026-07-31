@@ -604,6 +604,7 @@ bool modelsEqual(const Model& left, const Model& right)
             || a.perceptualRoughness != b.perceptualRoughness
             || a.dielectricF0 != b.dielectricF0
             || a.emission != b.emission
+            || a.materialClass != b.materialClass
             || a.baseColorTexture != b.baseColorTexture) {
             return false;
         }

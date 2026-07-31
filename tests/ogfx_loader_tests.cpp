@@ -58,6 +58,7 @@ xrphoton::ogfx::Model makeQuad()
     model.materials[0].perceptualRoughness = 0.3f;
     model.materials[0].dielectricF0 = 0.08f;
     model.materials[0].emission = {3.0f, 1.5f, 0.25f};
+    model.materials[0].materialClass = xrphoton::ogfx::MaterialClass::Metal;
     return model;
 }
 
@@ -427,8 +428,10 @@ void testSceneConversion()
             && loaded.scene.materials[0].dielectricF0 == 0.08f
             && loaded.scene.materials[0].emission[0] == 3.0f
             && loaded.scene.materials[0].emission[1] == 1.5f
-            && loaded.scene.materials[0].emission[2] == 0.25f,
-        "runtime material fields include v3 emission, BRDF scalars, and an empty texture reference");
+            && loaded.scene.materials[0].emission[2] == 0.25f
+            && loaded.scene.materials[0].materialClass
+                == xrphoton::SceneMaterialClass::Metal,
+        "runtime material fields include v4 Metal, emission, BRDF scalars, and an empty texture reference");
     expect(loaded.scene.instances.empty(), "OGFx decoding creates no world instances");
     expect(loaded.scene.images.empty(), "the untextured adapter fixture creates no images");
     expect(loaded.scene.physicsBodies.empty()

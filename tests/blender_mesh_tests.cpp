@@ -41,6 +41,12 @@ constexpr std::size_t MaterialAlphaCutoffOffset = 100;
 constexpr std::size_t TextureReferenceByteCountOffset = 104;
 constexpr std::size_t MaterialReservedOffset = 108;
 constexpr std::size_t V2TextureReferenceOffset = 112;
+constexpr std::size_t MaterialClassOffsetV3 = 108;
+constexpr std::size_t MaterialBaseColorOffsetV3 = 112;
+constexpr std::size_t MaterialRoughnessOffsetV3 = 128;
+constexpr std::size_t MaterialDielectricF0OffsetV3 = 132;
+constexpr std::size_t MaterialReserved0OffsetV3 = 136;
+constexpr std::size_t MaterialReserved1OffsetV3 = 140;
 constexpr std::size_t FirstCornerOffset = 96;
 constexpr std::size_t PositionOffsetInCorner = 0;
 constexpr std::size_t NormalOffsetInCorner = 12;
@@ -211,6 +217,66 @@ std::vector<std::uint8_t> makeTexturedStream(
     return bytes;
 }
 
+std::vector<std::uint8_t> makeMetalStream(
+    const std::vector<Triangle>& triangles,
+    const std::array<float, 4>& baseColor = {0.92f, 0.48f, 0.16f, 1.0f},
+    float perceptualRoughness = 0.12f)
+{
+    std::vector<std::uint8_t> bytes;
+    const std::size_t expectedSize = xrphoton::blender_mesh::StreamHeaderSizeV3
+        + triangles.size()
+            * xrphoton::blender_mesh::CornersPerTriangle
+            * xrphoton::blender_mesh::CornerRecordSize;
+    bytes.reserve(expectedSize);
+    bytes.insert(
+        bytes.end(),
+        xrphoton::blender_mesh::StreamMagic.begin(),
+        xrphoton::blender_mesh::StreamMagic.end());
+    appendU32(&bytes, xrphoton::blender_mesh::StreamVersion3);
+    appendU32(&bytes, xrphoton::blender_mesh::StreamHeaderSizeV3);
+    appendU32(&bytes, xrphoton::blender_mesh::StreamFlagHasUvs);
+    appendU32(&bytes, static_cast<std::uint32_t>(triangles.size()));
+    appendU32(&bytes, 5);
+    appendU32(&bytes, 1);
+    appendU32(&bytes, 2);
+    appendF32(&bytes, 1.0f);
+    appendU32(&bytes, 0);
+    for (float value : IdentityTransform) {
+        appendF32(&bytes, value);
+    }
+    appendU32(&bytes, 0);
+    appendU32(&bytes, 0);
+    appendU32(&bytes, 0);
+    appendF32(&bytes, 0.5f);
+    appendU32(&bytes, 0);
+    appendU32(
+        &bytes,
+        static_cast<std::uint32_t>(xrphoton::ogfx::MaterialClass::Metal));
+    for (float component : baseColor) {
+        appendF32(&bytes, component);
+    }
+    appendF32(&bytes, perceptualRoughness);
+    appendF32(&bytes, xrphoton::ogfx::DefaultDielectricF0);
+    appendU32(&bytes, 0);
+    appendU32(&bytes, 0);
+
+    for (const Triangle& triangle : triangles) {
+        for (const Corner& corner : triangle) {
+            for (float value : corner.position) {
+                appendF32(&bytes, value);
+            }
+            for (float value : corner.normal) {
+                appendF32(&bytes, value);
+            }
+            appendF32(&bytes, corner.u);
+            appendF32(&bytes, corner.v);
+        }
+    }
+    expect(bytes.size() == expectedSize,
+        "synthetic Metal XRBM builder emits its declared byte size");
+    return bytes;
+}
+
 Triangle makeAsymmetricTriangle()
 {
     // cross(p1 - p0, p2 - p0) = (0, -16, 32). Both Y and Z are
@@ -300,6 +366,7 @@ bool modelsEqual(const Model& left, const Model& right)
             || a.perceptualRoughness != b.perceptualRoughness
             || a.dielectricF0 != b.dielectricF0
             || a.emission != b.emission
+            || a.materialClass != b.materialClass
             || a.baseColorTexture != b.baseColorTexture) {
             return false;
         }
@@ -637,6 +704,66 @@ void testOpaqueTexturedMaterialAndTextureVNormalization()
         "runtime decoder exactly reconstructs opaque-textured Blender output");
 }
 
+void testMetalMaterialProfile()
+{
+    const std::vector<std::uint8_t> bytes = makeMetalStream(makeQuadTriangles());
+    const DecodeResult decoded = decodeStaticMesh(bytes, "metal-sphere.blend::sphere");
+    expect(static_cast<bool>(decoded), "XRBM v3 Metal material decodes");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+    expect(decoded.model.geometries.size() == 1
+            && !decoded.model.geometries[0].alphaTested,
+        "untextured Metal remains ordinary opaque geometry");
+    expect(decoded.model.materials.size() == 1
+            && decoded.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Metal
+            && decoded.model.materials[0].baseColorFactor
+                == std::array<float, 4>{0.92f, 0.48f, 0.16f, 1.0f}
+            && decoded.model.materials[0].perceptualRoughness == 0.12f
+            && decoded.model.materials[0].dielectricF0
+                == xrphoton::ogfx::DefaultDielectricF0
+            && decoded.model.materials[0].baseColorTexture.empty(),
+        "XRBM v3 preserves Metal spectral F0 and roughness without a texture");
+
+    const SerializeResult serialized = xrphoton::ogfx::serializeModel(
+        decoded.model,
+        "metal-sphere.ogfx");
+    expect(static_cast<bool>(serialized), "the Blender Metal model serializes to OGFx");
+    if (serialized) {
+        const DecodeResult runtime = xrphoton::ogfx::decodeModel(
+            serialized.bytes,
+            "metal-sphere.ogfx");
+        expect(runtime
+                && runtime.model.materials[0].materialClass
+                    == xrphoton::ogfx::MaterialClass::Metal,
+            "the canonical OGFx runtime profile accepts Blender-authored Metal");
+    }
+
+    std::vector<std::uint8_t> malformed = bytes;
+    writeU32(&malformed, MaterialClassOffsetV3, 2);
+    expectRejected(malformed, "material class");
+    malformed = bytes;
+    writeF32(&malformed, MaterialBaseColorOffsetV3, 1.01f);
+    expectRejected(malformed, "material base color");
+    malformed = bytes;
+    writeF32(
+        &malformed,
+        MaterialRoughnessOffsetV3,
+        std::numeric_limits<float>::quiet_NaN());
+    expectRejected(malformed, "material perceptual roughness");
+    malformed = bytes;
+    writeF32(&malformed, MaterialDielectricF0OffsetV3, -0.01f);
+    expectRejected(malformed, "material dielectric F0");
+    malformed = bytes;
+    writeU32(&malformed, MaterialReserved0OffsetV3, 1);
+    expectRejected(malformed, "material reserved words");
+    malformed = bytes;
+    writeU32(&malformed, MaterialReserved1OffsetV3, 1);
+    expectRejected(malformed, "material reserved words");
+}
+
 void testNonuniformTransformAndUnitScale()
 {
     constexpr float inverseSqrt2 = 0.7071067690849304f;
@@ -790,7 +917,7 @@ void testFramingAndHeaderRejections()
     expectRejected(bytes, "magic");
 
     bytes = valid;
-    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion2 + 1);
+    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion3 + 1);
     expectRejected(bytes, "version");
 
     bytes = valid;
@@ -1464,7 +1591,11 @@ bool verifyCommonBlenderProofOutput(
     std::string_view assetLabel,
     std::size_t expectedVertexCount,
     std::size_t expectedIndexCount,
-    Model* model)
+    Model* model,
+    xrphoton::ogfx::MaterialClass expectedMaterialClass =
+        xrphoton::ogfx::MaterialClass::Dielectric,
+    std::array<float, 4> expectedBaseColor = {1.0f, 1.0f, 1.0f, 1.0f},
+    float expectedRoughness = xrphoton::ogfx::DefaultPerceptualRoughness)
 {
     std::vector<std::uint8_t> bytes;
     if (!readBytes(path, &bytes)) {
@@ -1528,11 +1659,14 @@ bool verifyCommonBlenderProofOutput(
         std::string(assetLabel) + " contains exactly one mesh");
     expect(decoded.materials.size() == 1
             && decoded.materials[0].baseColorFactor
-                == std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}
+                == expectedBaseColor
             && decoded.materials[0].alphaCutoff == 0.5f
+            && decoded.materials[0].perceptualRoughness == expectedRoughness
+            && decoded.materials[0].materialClass == expectedMaterialClass
+            && decoded.materials[0].emission == std::array<float, 3>{}
             && decoded.materials[0].baseColorTexture.empty(),
         std::string(assetLabel)
-            + " contains exactly one opaque white material with no texture");
+            + " contains exactly the expected untextured material");
     expect(everyTriangleIsCcwAndAgreesWithNormals(decoded),
         std::string(assetLabel)
             + " has nondegenerate CCW triangles agreeing with every corner normal");
@@ -1815,11 +1949,46 @@ bool hasApproximateUnitSphereBounds(const Model& model)
         && near(bounds.maximum.z, 1.0f, 1.0e-5f);
 }
 
+void expectSmoothSphereTopology(
+    const Model& model,
+    std::string_view assetLabel)
+{
+    std::map<PositionKey, std::pair<NormalKey, UvKey>> firstAttributesByPosition;
+    bool hasNormalSplit = false;
+    bool hasUvSplit = false;
+    for (std::size_t index = 0; index < model.positions.size(); ++index) {
+        const auto& attributes = model.attributes[index];
+        const std::pair attributeTuple{normalKey(attributes), uvKey(attributes)};
+        const auto [found, inserted] = firstAttributesByPosition.emplace(
+            positionKey(model.positions[index]), attributeTuple);
+        if (!inserted) {
+            hasNormalSplit |= found->second.first != attributeTuple.first;
+            hasUvSplit |= found->second.second != attributeTuple.second;
+        }
+    }
+    expect(firstAttributesByPosition.size() == 482,
+        std::string(assetLabel)
+            + " retains the source UV sphere's 482 geometric positions");
+    expect(!hasNormalSplit,
+        std::string(assetLabel)
+            + " shares one smooth normal across every equal position");
+    expect(hasUvSplit,
+        std::string(assetLabel)
+            + " preserves UV seam splits without splitting its normals");
+}
+
 void verifySphereOutput(const std::filesystem::path& path)
 {
     Model model{};
     if (!verifyCommonBlenderProofOutput(
-            path, "test_sphere", 1984, 2880, &model)) {
+            path,
+            "test_sphere",
+            1984,
+            2880,
+            &model,
+            xrphoton::ogfx::MaterialClass::Metal,
+            {0.95f, 0.64f, 0.54f, 1.0f},
+            0.12f)) {
         return;
     }
 
@@ -1851,32 +2020,41 @@ void verifySmoothSphereOutput(const std::filesystem::path& path)
 {
     Model model{};
     if (!verifyCommonBlenderProofOutput(
-            path, "test_smooth_sphere", 559, 2880, &model)) {
+            path,
+            "test_smooth_sphere",
+            559,
+            2880,
+            &model,
+            xrphoton::ogfx::MaterialClass::Metal,
+            {0.95f, 0.64f, 0.54f, 1.0f},
+            0.72f)) {
         return;
     }
 
     expect(hasApproximateUnitSphereBounds(model),
         "test_smooth_sphere retains approximate unit bounds after the engine axis map");
 
-    std::map<PositionKey, std::pair<NormalKey, UvKey>> firstAttributesByPosition;
-    bool hasNormalSplit = false;
-    bool hasUvSplit = false;
-    for (std::size_t index = 0; index < model.positions.size(); ++index) {
-        const auto& attributes = model.attributes[index];
-        const std::pair attributeTuple{normalKey(attributes), uvKey(attributes)};
-        const auto [found, inserted] = firstAttributesByPosition.emplace(
-            positionKey(model.positions[index]), attributeTuple);
-        if (!inserted) {
-            hasNormalSplit |= found->second.first != attributeTuple.first;
-            hasUvSplit |= found->second.second != attributeTuple.second;
-        }
+    expectSmoothSphereTopology(model, "test_smooth_sphere");
+}
+
+void verifyYardShinySphereOutput(const std::filesystem::path& path)
+{
+    Model model{};
+    if (!verifyCommonBlenderProofOutput(
+            path,
+            "yard_shiny_sphere",
+            559,
+            2880,
+            &model,
+            xrphoton::ogfx::MaterialClass::Metal,
+            {0.97f, 0.96f, 0.91f, 1.0f},
+            0.015f)) {
+        return;
     }
-    expect(firstAttributesByPosition.size() == 482,
-        "test_smooth_sphere retains the source UV sphere's 482 geometric positions");
-    expect(!hasNormalSplit,
-        "test_smooth_sphere shares one smooth normal across every equal position");
-    expect(hasUvSplit,
-        "test_smooth_sphere preserves UV seam splits without splitting its normals");
+
+    expect(hasApproximateUnitSphereBounds(model),
+        "yard_shiny_sphere keeps unit source bounds before its gallery scale");
+    expectSmoothSphereTopology(model, "yard_shiny_sphere");
 }
 
 void verifySpherePairOutputs(
@@ -1940,6 +2118,17 @@ void verifySpherePairOutputs(
         "flat and smooth spheres have the same indexed UV corner stream");
     expect(normalDiffers,
         "flat and smooth spheres differ in their exported corner normals");
+    expect(flat.model.materials.size() == 1
+            && smooth.model.materials.size() == 1
+            && flat.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Metal
+            && smooth.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Metal
+            && flat.model.materials[0].baseColorFactor
+                == smooth.model.materials[0].baseColorFactor
+            && flat.model.materials[0].perceptualRoughness == 0.12f
+            && smooth.model.materials[0].perceptualRoughness == 0.72f,
+        "sphere pair isolates sharp versus rough Metal over one spectral F0");
 }
 }
 
@@ -2069,6 +2258,17 @@ int main(int argumentCount, char** arguments)
         std::cout << "test_smooth_sphere OGFx output verification passed.\n";
         return 0;
     }
+    if (argumentCount == 3
+        && std::string_view(arguments[1]) == "--verify-yard-shiny-sphere-output") {
+        verifyYardShinySphereOutput(arguments[2]);
+        if (failureCount != 0) {
+            std::cerr << failureCount
+                      << " yard_shiny_sphere offline proof assertion(s) failed.\n";
+            return 1;
+        }
+        std::cout << "yard_shiny_sphere OGFx output verification passed.\n";
+        return 0;
+    }
     if (argumentCount != 1) {
         std::cerr
             << "Usage: xrPhotonBlenderMeshTests\n"
@@ -2083,6 +2283,7 @@ int main(int argumentCount, char** arguments)
             << "       xrPhotonBlenderMeshTests --verify-custom-barrel-texture <dds>\n"
             << "       xrPhotonBlenderMeshTests --verify-sphere-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-smooth-sphere-output <ogfx>\n"
+            << "       xrPhotonBlenderMeshTests --verify-yard-shiny-sphere-output <ogfx>\n"
             << "       xrPhotonBlenderMeshTests --verify-sphere-pair <flat> <smooth>\n";
         return 1;
     }
@@ -2091,6 +2292,7 @@ int main(int argumentCount, char** arguments)
     testUvPreservationAndVertexDeduplication();
     testAlphaTestedMaterialAndTextureVNormalization();
     testOpaqueTexturedMaterialAndTextureVNormalization();
+    testMetalMaterialProfile();
     testNonuniformTransformAndUnitScale();
     testNegativeDeterminantKeepsSourceOrder();
     testShearedTransformUsesFullInverseTranspose();

@@ -549,6 +549,8 @@ bool modelsEqual(const Model& left, const Model& right)
                 != right.materials[index].perceptualRoughness
             || left.materials[index].dielectricF0 != right.materials[index].dielectricF0
             || left.materials[index].emission != right.materials[index].emission
+            || left.materials[index].materialClass
+                != right.materials[index].materialClass
             || left.materials[index].baseColorTexture != right.materials[index].baseColorTexture) {
             return false;
         }
@@ -1102,7 +1104,7 @@ void testRequiredChunkRules()
         expectRejected(assembleFile(chunks), expectedChunkName(id), "flags");
 
         chunks = source;
-        chunkById(&chunks, id).version = id == ChunkId::Materials ? 4 : 2;
+        chunkById(&chunks, id).version = id == ChunkId::Materials ? 5 : 2;
         expectRejected(assembleFile(chunks), expectedChunkName(id), "version");
 
         chunks = source;
@@ -1208,6 +1210,68 @@ void testPayloadFramingAndScalars()
     writeF32(&materialV3.payload, 56, 0.25f);
     writeU32(&materialV3.payload, 60, 1);
     expectRejected(assembleFile(chunks), "OGFX_MATERIALS", "reserved0");
+
+    chunks = splitChunks(canonical);
+    RawChunk& materialV4 = chunkById(&chunks, ChunkId::Materials);
+    materialV4.version = xrphoton::ogfx::MaterialChunkVersion4;
+    materialV4.payload.resize(
+        xrphoton::ogfx::MaterialHeaderSize
+        + xrphoton::ogfx::MaterialRecordSizeV3);
+    writeF32(&materialV4.payload, 40, 0.12f);
+    writeF32(&materialV4.payload, 44, 0.04f);
+    writeU32(
+        &materialV4.payload,
+        60,
+        static_cast<std::uint32_t>(xrphoton::ogfx::MaterialClass::Metal));
+    const std::vector<std::uint8_t> metalBytes = assembleFile(chunks);
+    const DecodeResult decodedMaterialV4 = xrphoton::ogfx::decodeModel(
+        metalBytes,
+        "material-v4.ogfx");
+    expect(
+        decodedMaterialV4
+            && decodedMaterialV4.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Metal
+            && decodedMaterialV4.model.materials[0].perceptualRoughness == 0.12f,
+        "runtime decoder accepts and preserves material chunk v4 Metal");
+
+    writeU32(
+        &materialV4.payload,
+        60,
+        static_cast<std::uint32_t>(xrphoton::ogfx::MaterialClass::Glass));
+    const std::vector<std::uint8_t> glassBytes = assembleFile(chunks);
+    const DecodeResult glassSchema = xrphoton::ogfx::decodeModelSchema(
+        glassBytes,
+        "material-v4-glass.ogfx");
+    expect(
+        glassSchema
+            && glassSchema.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Glass,
+        "schema decoder preserves the v4 Glass value reserved for P3b");
+    if (glassSchema) {
+        const SerializeResult glassRoundTrip = xrphoton::ogfx::serializeModel(
+            glassSchema.model,
+            "material-v4-glass-round-trip.ogfx");
+        expect(
+            glassRoundTrip && glassRoundTrip.bytes == glassBytes,
+            "schema-decoded v4 Glass material round-trips byte-for-byte");
+    }
+    expectRejected(glassBytes, "OGFX_MATERIALS", "materialClass");
+
+    writeU32(&materialV4.payload, 60, 3);
+    expectSchemaRejected(
+        assembleFile(chunks),
+        "OGFX_MATERIALS",
+        "materialClass");
+
+    writeU32(
+        &materialV4.payload,
+        60,
+        static_cast<std::uint32_t>(xrphoton::ogfx::MaterialClass::Metal));
+    writeF32(&materialV4.payload, 16, 1.01f);
+    expectSchemaRejected(
+        assembleFile(chunks),
+        "OGFX_MATERIALS",
+        "baseColorFactor[0]");
 
     chunks = splitChunks(canonical);
     writeU32(&chunkById(&chunks, ChunkId::Model).payload, 0, 1);

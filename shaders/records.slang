@@ -25,7 +25,7 @@ struct MaterialRecord
     float perceptualRoughness;
     float dielectricF0;
     float3 emission;
-    uint reserved0;
+    uint materialClass;
 };
 
 struct CameraPushConstants

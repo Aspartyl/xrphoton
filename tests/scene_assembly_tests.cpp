@@ -134,6 +134,7 @@ bool sameMaterial(
         && left.alphaCutoff == right.alphaCutoff
         && left.perceptualRoughness == right.perceptualRoughness
         && left.dielectricF0 == right.dielectricF0
+        && left.materialClass == right.materialClass
         && left.baseColorTexture == right.baseColorTexture;
 }
 
@@ -919,6 +920,14 @@ void testFinalValidation()
         "material[0].emission[2]",
         "nonfinite assembled material emission is rejected");
 
+    xrphoton::SceneData unsupportedGlass = valid;
+    unsupportedGlass.materials[0].materialClass =
+        xrphoton::SceneMaterialClass::Glass;
+    expectValidationRejected(
+        std::move(unsupportedGlass),
+        "material[0].materialClass",
+        "Glass is rejected until the P3b runtime profile lands");
+
     xrphoton::SceneData bodyWithoutColliders = valid;
     bodyWithoutColliders.physicsColliders.clear();
     expectValidationRejected(
@@ -1177,6 +1186,14 @@ void testModelPreconditionsAreTransactional()
         std::move(nonfiniteEmission),
         "incoming material[0].emission[2]",
         "nonfinite material emission precondition");
+
+    xrphoton::SceneData unsupportedGlass = makeTriangleModel();
+    unsupportedGlass.materials[0].materialClass =
+        xrphoton::SceneMaterialClass::Glass;
+    expectAppendRejectedUnchanged(
+        std::move(unsupportedGlass),
+        "incoming material[0].materialClass",
+        "Glass material precondition before P3b");
 
     xrphoton::SceneData scene = makeTriangleModel(100.0f, "target\\with_image");
     scene.images.push_back({

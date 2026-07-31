@@ -10,7 +10,7 @@ brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and 
 TLAS over every yard placement, then launches one path per pixel from either a basic
 collision-aware player view or the original perspective fly camera. The ray-tracing
 shader evaluates direct sun, hard alpha-aware visibility, a procedural sky, and up to
-eight Lambert+GGX surface vertices before it
+eight dielectric-or-metal GGX surface vertices before it
 stores linear radiance in a device-local float HDR image. A compute pass applies
 fixed-exposure Reinhard tonemapping into an 8-bit linear image, which is blitted to
 the sRGB swapchain. The present path has two frames in flight, resize handling, and
@@ -29,10 +29,11 @@ surface, traces an infinite alpha-aware visibility ray, and combines that estima
 with sky hits from the ordinary BSDF path using the power heuristic. The delta sun is
 still evaluated separately at every vertex and never enters the non-delta selector.
 Path-tracing P2a extends the material path without changing shading: the canonical
-OGFx writer selects a 48-byte v3 material record only when emission RGB is nonzero,
+OGFx writer selects a 48-byte v3 material record when emission RGB is nonzero unless
+an explicit class requires v4,
 both strict decoder profiles map v1/v2 to zero emission, and `SceneMaterial` carries
 the validated value through assembly into the matching 48-byte CPU/Slang GPU record.
-Offset 44 remains zero until the material-class phase gives it meaning.
+Offset 44 remains zero in v3.
 P2b turns that emission data into immutable world-space triangle records, a
 power-weighted CDF, and an instance/geometry reverse lookup. `GpuLighting` uploads the
 three tables once and binds valid sentinels when a scene has no emitters. P2c consumes
@@ -43,6 +44,13 @@ offers a code-owned night yard with 21 small emissive placements / 42 triangles,
 sun, and a dim sky. An acceptance-only linear-HDR reference mode freezes the scene,
 reads `R16G16B16A16_SFLOAT` after every sample, and proves MIS, NEE-only, and BSDF-only
 agreement in three pinned regions.
+P3a gives material offset 44 its v4 class meaning without changing the 48-byte
+record: older versions decode as `Dielectric`, `Metal` uses base color as spectral
+F0 with no diffuse lobe, and `Glass` is schema-reserved but rejected by the runtime
+until P3b. The BSDF module now exposes class-aware evaluation, sampling, and PDF
+entry points; metal uses the same GGX visible-normal sampler as dielectric specular
+reflection. The optional Blender sphere proof emits one sharp and one rough
+copper-like Metal asset and retains the pair's existing normal/UV regression checks.
 The repository-owned crate is now a live Jolt body: it spawns above the yard,
 falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
 transform into `SceneData`; the renderer remains physics-agnostic, writing one
@@ -76,9 +84,10 @@ The mixed `item_psevdodog_tail.ogfx` follows that three-barrel comparison: its s
 mesh contains one `models\model_aref` alpha-tested geometry and one
 `models\model` opaque geometry, sharing `act\act_pseudodog_fur` and one material
 whose cutoff is exactly 128/255. The wedge remains the shared-BLAS probe. The sphere
-pair has identical indexed
-position/UV corner streams but deliberately different normals: flat-face splits
-versus shared smooth normals that remain split only at the UV seam.
+pair has identical indexed position/UV corner streams and one shared copper-like
+Metal F0, at roughness 0.12 and 0.72. It also retains deliberately different
+normals: flat-face splits versus shared smooth normals that remain split only at
+the UV seam.
 The three SoC yard exhibits retain authored scale: plitka keeps its static
 rotated/translated placement, the barrel's rigid spawn is raised to y = 0.6 and
 rolled 20 degrees about +Z, and the tail keeps its platform pose.
@@ -134,14 +143,16 @@ convert-blender`. [`src/blender_mesh.cpp`](src/blender_mesh.cpp) bakes scene uni
 and the object transform, maps Blender `(x, y, z)` to engine `(x, z, y)`, applies
 inverse-transpose normal transformation, and reverses winding according to the
 combined object/axis-transform determinant before populating the ordinary compiler
-model. Only the shared canonical writer serializes OGFx. `test_pyramid`, the
-flat-shaded `test_sphere`, and `test_smooth_sphere` use the byte-compatible
-material-free XRBM v1 profile. XRBM v2 adds exactly one strict opaque or
+model. Only the shared canonical writer serializes OGFx. `test_pyramid` uses the
+byte-compatible material-free XRBM v1 profile. XRBM v2 adds exactly one strict opaque or
 alpha-tested DDS material; `test_leaf_card` exercises the alpha-tested branch and
 the remade barrel exercises opaque texturing. It carries the logical texture
 reference and classification/cutoff and normalizes textured V once at the adapter boundary.
-The sphere pair exercises dense triangulation, UV seams, corner splitting, and
-flat-versus-smooth normal preservation; the leaf card visibly proves any-hit
+XRBM v3 adds explicit material class, factor, roughness, and F0 fields with an
+optional texture; the sphere proof uses its narrow untextured Principled-Metal
+profile. The pair exercises dense triangulation, UV seams, corner splitting,
+flat-versus-smooth normal preservation, and sharp-versus-rough conductor shading;
+the leaf card visibly proves any-hit
 rejection through the same runtime path as legacy content.
 
 ## Goals and constraints
@@ -206,22 +217,22 @@ the renderer layering.)
 | [src/vulkan_context.hpp](src/vulkan_context.hpp) / [.cpp](src/vulkan_context.cpp) | `VulkanContext` (instance, debug messenger, surface, device, VMA allocator, command pool, per-frame command buffers and sync, plus optional trace timestamp pools), `FrameResources`, `QueueFamilyIndices`, `RayTracingFunctions`, and the bring-up helpers (including `createAllocator`, shared VMA-backed `createBuffer`, and `uploadDeviceLocalBuffer`) | Program lifetime — created once |
 | [src/third_party_impl.cpp](src/third_party_impl.cpp) / [src/vma_fwd.hpp](src/vma_fwd.hpp) | The one `VMA_IMPLEMENTATION` translation unit and the lightweight VMA handle declarations project headers use | Program lifetime infrastructure |
 | [src/swapchain.hpp](src/swapchain.hpp) / [.cpp](src/swapchain.cpp) | `Swapchain` (swapchain, images, image views, per-image render-finished semaphores, and the VMA-backed storage output image + its view) and its create/recreate/query lifecycle | Recreated on resize |
-| [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU render records, including validated material emission, plus backend-neutral `ScenePhysicsBody` / `ScenePhysicsCollider` recipes | Plain value state loaded from OGFx and owned by `main()`; instance transforms are mutable physics output |
-| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only render/physics model and schema constants, version-dependent v1/v2/v3 material framing, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; backend-neutral physics records contain no live backend state |
+| [src/scene.hpp](src/scene.hpp) | Vulkan-free `SceneData` and its CPU render records, including validated material emission and class, plus backend-neutral `ScenePhysicsBody` / `ScenePhysicsCollider` recipes | Plain value state loaded from OGFx and owned by `main()`; instance transforms are mutable physics output |
+| [src/ogfx.hpp](src/ogfx.hpp), [src/ogfx_detail.hpp](src/ogfx_detail.hpp), [src/ogfx.cpp](src/ogfx.cpp), and [src/ogfx_decoder.cpp](src/ogfx_decoder.cpp) | Standard-library-only render/physics model and schema constants, version-dependent v1–v4 material framing, private shared format invariants and diagnostics, checked compiler validation/bounds generation, the canonical explicit-little-endian writer, and the transactional strict OGFx schema/runtime byte decoder | Shared offline/runtime core; backend-neutral physics records contain no live backend state |
 | [src/legacy_ogf.hpp](src/legacy_ogf.hpp), [src/legacy_ogf.cpp](src/legacy_ogf.cpp), and [src/legacy_ogf_rigid.cpp](src/legacy_ogf_rigid.cpp) | Transactional source dispatch for the pinned M4a flat-static and narrow SoC rigid-compound OGF v4 profiles; the rigid branch flattens validated bind-pose render data, maps `models\model`/`models\model_aref` to opaque/alpha-tested geometry, and retains box-or-cylinder body metadata without owning OGFx serialization | Offline-only source adapters in the graphics-free build |
 | [src/blender_mesh.hpp](src/blender_mesh.hpp) / [.cpp](src/blender_mesh.cpp) | Transactional decoder for the private versioned `XRBM` extraction stream; validates the narrow static profile, bakes units/transforms, converts axes, normals, and winding, deduplicates corners, and populates the compiler model without owning OGFx serialization | Offline-only source adapter in the graphics-free build; no Blender or renderer dependency |
-| [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named static mesh; emits material-free XRBM v1 or the strict one-opaque-or-alpha-tested-DDS-material v2 profile, invokes `convert-blender`, and supplies the exchange on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
+| [tools/blender/export_ogfx.py](tools/blender/export_ogfx.py) | Blender 5.1.x source validation and evaluated triangle/corner extraction for one explicitly named static mesh; emits material-free XRBM v1, strict DDS-material v2, or explicit-class/material-scalar v3, invokes `convert-blender`, and supplies the exchange on stdin | Headless Blender-side front end; never writes OGFx and is not a runtime dependency |
 | [tools/asset_compiler.cpp](tools/asset_compiler.cpp) | `xrPhotonAssetCompiler convert-ogf` / `convert-blender` dispatch, bounded source input, canonical-writer invocation, and exclusive adjacent-temp publication | Offline CLI; no runtime or renderer dependency |
 | [src/ogfx_loader.hpp](src/ogfx_loader.hpp) / [.cpp](src/ogfx_loader.cpp) | Checked filesystem input and field-by-field conversion of decoded OGFx render and rigid-recipe data into owned `SceneData`; quaternion component order is crossed explicitly, while source-node names and reserved flags remain format provenance and are dropped | Vulkan-free runtime adapter used by scene producers such as the yard policy; returns no instances or images |
 | [src/scene_assembly.hpp](src/scene_assembly.hpp) / [.cpp](src/scene_assembly.cpp) and [src/scene_assembly_detail.hpp](src/scene_assembly_detail.hpp) | Transactional model concatenation and offset rebasing (including body mesh and collider ranges), bounded instance insertion, and complete whole-scene render/physics validation; the detail header exposes only the pure count-check seam | Vulkan-free runtime mechanism; mutates caller-owned `SceneData` and owns no long-lived state |
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned radiance/shadow indices, `RayTypeCount`, and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; fixed at radiance 0, shadow 1, count 2 |
-| [shaders/raytrace.slang](shaders/raytrace.slang), [records.slang](shaders/records.slang), [sampling.slang](shaders/sampling.slang), [bsdf.slang](shaders/bsdf.slang), and [lighting.slang](shaders/lighting.slang) | Six RT entry points and the iterative path loop, with imported ABI records, RNG/sampling/MIS helpers, dielectric BSDF, and analytic-light evaluation | Build-time sources compiled and embedded as one SPIR-V module; Slang depfile tracks every import |
+| [shaders/raytrace.slang](shaders/raytrace.slang), [records.slang](shaders/records.slang), [sampling.slang](shaders/sampling.slang), [bsdf.slang](shaders/bsdf.slang), and [lighting.slang](shaders/lighting.slang) | Six RT entry points and the iterative path loop, with imported ABI records, RNG/sampling/MIS helpers, class-aware dielectric/Metal BSDF evaluation/sampling/PDF, and analytic-light evaluation | Build-time sources compiled and embedded as one SPIR-V module; Slang depfile tracks every import |
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) and [src/scene_preset.hpp](src/scene_preset.hpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, optionally adds the shared-mesh 21-placement night emitter set, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; `ScenePreset` is the shared CLI/gallery/lighting selector and retires with this policy when level data has a real owner |
 | [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, the invisible `CharacterVirtual`, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
 | [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency; never configured by the graphics-free `ogfx-core` build |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
-| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` and 48-byte emission-capable `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
+| [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` and 48-byte emission/class-capable `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free 80-byte view-only `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain per-dispatch state composed by `main()`; lighting does not ride this path |
@@ -1120,10 +1131,11 @@ Decisions and contracts worth preserving:
   resources, hit-data helpers, and the path loop. It imports
   [records.slang](shaders/records.slang) for shared ABI/payload structs,
   [sampling.slang](shaders/sampling.slang) for PCG/directional/MIS helpers,
-  [bsdf.slang](shaders/bsdf.slang) for surface orientation and dielectric lobes, and
+  [bsdf.slang](shaders/bsdf.slang) for surface orientation plus class-aware
+  dielectric/Metal evaluation, sampling, and PDFs, and
   [lighting.slang](shaders/lighting.slang) for analytic light evaluation. `rayGenMain`
   (perspective rays from the frame constants, an eight-vertex iterative throughput
-  loop, direct Lambert+GGX sun lighting with a hard visibility trace at each hit,
+  loop, direct class-aware GGX sun lighting with a hard visibility trace at each hit,
   one cosine-sampled sky visibility ray with power-heuristic MIS against BSDF sky
   hits, evaluation of the black-lower-hemisphere/horizon-to-zenith environment on a
   miss, sampled diffuse/GGX indirect transport with Russian roulette, and the HDR
@@ -1198,10 +1210,12 @@ Decisions and contracts worth preserving:
   additionally returns the sampled albedo plus raw shading/geometric normals.
   Shading normals use the inverse-transpose implied by row-vector multiplication
   with `WorldToObject3x4()`; raygen owns their surface orientation and shading use.
-  Raygen fetches the hit material's scalar perceptual roughness and dielectric F0,
-  evaluates Lambert diffuse plus isotropic GGX with Schlick Fresnel and Smith masking,
-  and samples normalized-energy diffuse/specular lobes with cosine or GGX VNDF
-  sampling. The matching mixture PDF drives throughput; paths reach at most eight
+  Raygen fetches the hit material's class, base color, scalar perceptual roughness,
+  and dielectric F0. Dielectric evaluates energy-aware Lambert diffuse plus isotropic
+  GGX with scalar Schlick Fresnel and samples a normalized-energy diffuse/specular
+  mixture. Metal has no diffuse floor, interprets base color as spectral F0, evaluates
+  colored Schlick Fresnel with the same GGX/Smith terms, and samples only GGX VNDF
+  reflection. Each class's matching PDF drives throughput; paths reach at most eight
   vertices and use `[0.05, 0.95]` throughput-based Russian roulette after vertex 3.
   At every nonterminal surface raygen also draws one non-delta selector sample. The
   sky branch cosine-samples about the shading normal and traces an infinite
@@ -1428,9 +1442,13 @@ Decisions and contracts worth preserving:
    part of that conversion path. The separate landed `convert-blender` path produces
    `test_pyramid.ogfx`, the flat-shaded dense-triangulation/UV-seam/corner-
    splitting `test_sphere.ogfx`, and its smooth-normal comparison
-   `test_smooth_sphere.ogfx`, plus the alpha-tested
+   `test_smooth_sphere.ogfx`. A dedicated smooth Blender source produces the
+   silver-like `yard_shiny_sphere.ogfx`, placed at a 2.5 m radius with a safe
+   walking loop in the yard's open south-east quarter. The path additionally
+   produces the
+   alpha-tested
    `test_leaf_card.ogfx` and opaque-textured
-   `remade_bochka_close_1.ogfx` / `custom_stalker_barrel.ogfx`, for the optional
+   `remade_bochka_close_1.ogfx` / `custom_stalker_barrel.ogfx` for the optional
    yard beneath
    `build/<preset>/assets/blender/`. The leaf uses strict XRBM v2 material
    metadata and `trees\trees_new_vetka_green`; its transparent DXT1 samples
@@ -1443,7 +1461,7 @@ Decisions and contracts worth preserving:
    emits one mesh with two geometries—`models\model_aref` alpha-tested and
    `models\model` opaque—sharing `act\act_pseudodog_fur`, a material cutoff of
    128/255, and one preserved box-body recipe. It follows the barrel comparison
-   trio; the complete configured scene has 14 BLASes, 22 instances, and 16
+   trio; the complete configured scene has 15 BLASes, 23 instances, and 17
    geometries. The tail's
    mip-0 texels are all opaque, so the milestone proves mixed SBT routing and
    sampled-alpha any-hit execution; the leaf provides the visible cutout proof.
@@ -1481,20 +1499,21 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **Phases P0–P2 plus HDR, general dielectric
+4. **Lighting + path tracing.** **Phases P0–P3a plus HDR, dielectric/metal
    materials, emissive geometry, and multi-bounce transport landed** — the shader is
    split into
    depfile-tracked imported modules and trace-only GPU timing establishes the fixed
    32+256 cost protocol. `SceneLighting`/`GpuLighting` provide one per-frame light
    authority and an aligned dynamic uniform slot. Raygen owns an eight-vertex loop,
-   direct Lambert+GGX delta-sun evaluation at every hit, hard alpha-aware shadow rays,
+   direct class-aware GGX delta-sun evaluation at every hit, hard alpha-aware shadow rays,
    sky and finite-emitter NEE with power-heuristic MIS against BSDF misses/hits,
-   diffuse/GGX VNDF mixture sampling, and Russian roulette. OGFx material v2 carries
-   roughness/F0 while v3 carries emission; older versions map missing fields to
+   diffuse/GGX VNDF mixture sampling for dielectrics, reflection-only GGX VNDF
+   sampling for metals, and Russian roulette. OGFx material v2 carries
+   roughness/F0, v3 carries emission, and v4 carries the explicit class; older versions map missing fields to
    deliberate defaults. The night yard exercises a flat power-weighted CDF over 42
    emitting triangles, and the frozen linear-HDR proof independently runs MIS,
    NEE-only, and BSDF-only to guard against double-counted or missing energy. The
-   renderer still needs metallic/transmissive material classes and a time-varying
+   renderer still needs transmissive glass and a time-varying
    sun/sky model. Many-light sampling remains a first-class requirement, with a
    ReSTIR-class upgrade tracked once the flat selector is measurably limiting.
 5. **Temporal accumulation + denoising.** Pending — one coupled system, and the

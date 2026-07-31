@@ -23,8 +23,10 @@ import bpy  # pyright: ignore[reportMissingImports]
 STREAM_MAGIC = b"XRBM"
 STREAM_VERSION_1 = 1
 STREAM_VERSION_2 = 2
+STREAM_VERSION_3 = 3
 STREAM_HEADER_SIZE_V1 = 96
 STREAM_HEADER_SIZE_V2 = 112
+STREAM_HEADER_SIZE_V3 = 144
 CORNER_RECORD_SIZE = 32
 MAXIMUM_TRIANGLE_COUNT = 1_000_000
 MAXIMUM_TEXTURE_REFERENCE_BYTES = 4096
@@ -41,7 +43,11 @@ class MaterialProfile:
     texture_reference: str
     alpha_tested: bool
     alpha_cutoff: float
-    image_path: Path
+    image_path: Path | None
+    material_class: int = 0
+    base_color_factor: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    perceptual_roughness: float = 1.0
+    dielectric_f0: float = 0.04
 
 
 def source_name(object_name: str) -> str:
@@ -235,14 +241,7 @@ def validate_material_profile(
         "material slot 0",
         "expected a material",
     )
-    reject(
-        texture_root is None,
-        object_name,
-        "texture root",
-        "--texture-root is required for a textured material",
-    )
     assert material is not None
-    assert texture_root is not None
     reject(
         material.library is not None or material.override_library is not None,
         object_name,
@@ -255,6 +254,15 @@ def validate_material_profile(
         "material animation data",
         "animated materials are not supported yet",
     )
+    material_class_name = material.get("xrphoton_material_class", "dielectric")
+    reject(
+        type(material_class_name) is not str
+        or material_class_name not in {"dielectric", "metal"},
+        object_name,
+        "material class",
+        "expected xrphoton_material_class to be 'dielectric' or 'metal'",
+    )
+    is_metal = material_class_name == "metal"
     alpha_tested = material.get("xrphoton_alpha_tested")
     reject(
         type(alpha_tested) is not bool,
@@ -297,16 +305,20 @@ def validate_material_profile(
     )
     nodes = list(node_tree.nodes)
     reject(
-        len(nodes) != 3,
+        len(nodes) != (2 if is_metal else 3),
         object_name,
         "material node count",
-        "expected exactly Material Output, Principled BSDF, and Image Texture nodes",
+        (
+            "expected exactly Material Output and Principled BSDF nodes"
+            if is_metal
+            else "expected exactly Material Output, Principled BSDF, and Image Texture nodes"
+        ),
     )
     reject(
         any(node.mute for node in nodes),
         object_name,
         "material node mute state",
-        "all three validated nodes must be enabled",
+        "every validated node must be enabled",
     )
     outputs = [
         node
@@ -345,6 +357,76 @@ def validate_material_profile(
     principled = surface_links[0].from_node
     base_color_links = list(principled.inputs["Base Color"].links)
     alpha_links = list(principled.inputs["Alpha"].links)
+    if is_metal:
+        reject(
+            alpha_tested,
+            object_name,
+            "material alpha-test classification",
+            "the P3a Metal profile must be opaque",
+        )
+        roughness_links = list(principled.inputs["Roughness"].links)
+        metallic_links = list(principled.inputs["Metallic"].links)
+        reject(
+            bool(base_color_links)
+            or bool(alpha_links)
+            or bool(roughness_links)
+            or bool(metallic_links)
+            or len(node_tree.links) != 1
+            or any(link.is_muted or not link.is_valid for link in node_tree.links),
+            object_name,
+            "metal material links",
+            "only the direct Principled BSDF to Material Output link is supported",
+        )
+        base_color_components = tuple(
+            float(value) for value in principled.inputs["Base Color"].default_value
+        )
+        reject(
+            len(base_color_components) != 4
+            or not finite_values(list(base_color_components))
+            or any(value < 0.0 or value > 1.0 for value in base_color_components),
+            object_name,
+            "metal base color",
+            "expected four unlinked finite values in [0, 1]",
+        )
+        base_color_factor = (
+            base_color_components[0],
+            base_color_components[1],
+            base_color_components[2],
+            base_color_components[3],
+        )
+        metallic = float(principled.inputs["Metallic"].default_value)
+        reject(
+            metallic != 1.0,
+            object_name,
+            "metallic value",
+            "expected exactly 1.0 for the Metal class",
+        )
+        perceptual_roughness = float(principled.inputs["Roughness"].default_value)
+        reject(
+            not math.isfinite(perceptual_roughness)
+            or perceptual_roughness < 0.0
+            or perceptual_roughness > 1.0,
+            object_name,
+            "metal roughness",
+            "expected an unlinked finite value in [0, 1]",
+        )
+        return MaterialProfile(
+            texture_reference="",
+            alpha_tested=alpha_tested,
+            alpha_cutoff=alpha_cutoff,
+            image_path=None,
+            material_class=1,
+            base_color_factor=base_color_factor,
+            perceptual_roughness=perceptual_roughness,
+        )
+
+    reject(
+        texture_root is None,
+        object_name,
+        "texture root",
+        "--texture-root is required for a textured material",
+    )
+    assert texture_root is not None
     reject(
         len(base_color_links) != 1
         or base_color_links[0].from_node.bl_idname != "ShaderNodeTexImage"
@@ -573,7 +655,9 @@ def extract_stream(
 
         uv_layer = mesh.uv_layers[0] if mesh.uv_layers else None
         reject(
-            material_profile is not None and uv_layer is None,
+            material_profile is not None
+            and bool(material_profile.texture_reference)
+            and uv_layer is None,
             object_name,
             "UV layers",
             "the textured material requires exactly one UV layer",
@@ -585,12 +669,18 @@ def extract_stream(
             else b""
         )
         stream_version = (
-            STREAM_VERSION_2 if material_profile is not None else STREAM_VERSION_1
+            STREAM_VERSION_1
+            if material_profile is None
+            else STREAM_VERSION_3
+            if material_profile.material_class != 0
+            else STREAM_VERSION_2
         )
         stream_header_size = (
-            STREAM_HEADER_SIZE_V2
-            if material_profile is not None
-            else STREAM_HEADER_SIZE_V1
+            STREAM_HEADER_SIZE_V1
+            if stream_version == STREAM_VERSION_1
+            else STREAM_HEADER_SIZE_V2
+            if stream_version == STREAM_VERSION_2
+            else STREAM_HEADER_SIZE_V3
         )
         stream_size = (
             stream_header_size
@@ -619,19 +709,34 @@ def extract_stream(
         if len(payload) != STREAM_HEADER_SIZE_V1:
             raise ExportError("Blender extractor internal XRBM header-size mismatch")
         if material_profile is not None:
-            payload.extend(
-                struct.pack(
-                    "<IfII",
-                    (
-                        MATERIAL_FLAG_ALPHA_TESTED
-                        if material_profile.alpha_tested
-                        else 0
-                    ),
-                    material_profile.alpha_cutoff,
-                    len(texture_reference_bytes),
-                    0,
-                )
+            material_flags = (
+                MATERIAL_FLAG_ALPHA_TESTED if material_profile.alpha_tested else 0
             )
+            if stream_version == STREAM_VERSION_2:
+                payload.extend(
+                    struct.pack(
+                        "<IfII",
+                        material_flags,
+                        material_profile.alpha_cutoff,
+                        len(texture_reference_bytes),
+                        0,
+                    )
+                )
+            else:
+                payload.extend(
+                    struct.pack(
+                        "<IfII4f2f2I",
+                        material_flags,
+                        material_profile.alpha_cutoff,
+                        len(texture_reference_bytes),
+                        material_profile.material_class,
+                        *material_profile.base_color_factor,
+                        material_profile.perceptual_roughness,
+                        material_profile.dielectric_f0,
+                        0,
+                        0,
+                    )
+                )
         if len(payload) != stream_header_size:
             raise ExportError("Blender extractor internal XRBM header-size mismatch")
         payload.extend(texture_reference_bytes)
@@ -694,7 +799,9 @@ def run() -> int:
         Path(arguments.texture_root) if arguments.texture_root is not None else None
     )
     material_profile = validate_material_profile(obj, texture_root)
-    if material_profile is not None and paths_alias(output, material_profile.image_path):
+    if (material_profile is not None
+        and material_profile.image_path is not None
+        and paths_alias(output, material_profile.image_path)):
         raise ExportError(
             "output path must not identify the material image: "
             f"{material_profile.image_path}"

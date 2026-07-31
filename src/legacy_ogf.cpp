@@ -188,6 +188,7 @@ public:
         // Map it explicitly to the OGFx v1 dielectric defaults.
         model_.materials[0].perceptualRoughness = ogfx::DefaultPerceptualRoughness;
         model_.materials[0].dielectricF0 = ogfx::DefaultDielectricF0;
+        model_.materials[0].materialClass = ogfx::MaterialClass::Dielectric;
         model_.materials[0].baseColorTexture = std::move(textureName_);
 
         return {

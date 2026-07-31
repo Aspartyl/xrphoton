@@ -273,7 +273,36 @@ SerializeResult prepareModel(
             }
             hasEmission = hasEmission || material.emission[component] > 0.0f;
         }
-        if (hasEmission) {
+        const bool validMaterialClass =
+            material.materialClass == MaterialClass::Dielectric
+            || material.materialClass == MaterialClass::Metal
+            || material.materialClass == MaterialClass::Glass;
+        if (!validMaterialClass) {
+            return failure(
+                diagnosticName,
+                ChunkId::Materials,
+                indexedField("materials", index, "materialClass"),
+                "Dielectric (0), Metal (1), or Glass (2)",
+                std::to_string(static_cast<std::uint32_t>(material.materialClass)));
+        }
+        if (material.materialClass == MaterialClass::Metal) {
+            for (std::size_t component = 0; component < 3; ++component) {
+                if (material.baseColorFactor[component] < 0.0f
+                    || material.baseColorFactor[component] > 1.0f) {
+                    return failure(
+                        diagnosticName,
+                        ChunkId::Materials,
+                        indexedField("materials", index, "baseColorFactor")
+                            + '[' + std::to_string(component) + ']',
+                        "a finite f32 in [0, 1] for Metal spectral F0",
+                        std::to_string(material.baseColorFactor[component]));
+                }
+            }
+        }
+        if (material.materialClass != MaterialClass::Dielectric) {
+            prepared->materialChunkVersion = MaterialChunkVersion4;
+        } else if (hasEmission
+            && prepared->materialChunkVersion < MaterialChunkVersion3) {
             prepared->materialChunkVersion = MaterialChunkVersion3;
         } else if (prepared->materialChunkVersion < MaterialChunkVersion2
             && (material.perceptualRoughness != DefaultPerceptualRoughness
@@ -990,11 +1019,16 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
             appendF32(&result.bytes, material.perceptualRoughness);
             appendF32(&result.bytes, material.dielectricF0);
         }
-        if (prepared.materialChunkVersion == MaterialChunkVersion3) {
+        if (prepared.materialChunkVersion == MaterialChunkVersion3
+            || prepared.materialChunkVersion == MaterialChunkVersion4) {
             for (float component : material.emission) {
                 appendF32(&result.bytes, component);
             }
-            appendU32(&result.bytes, 0);
+            appendU32(
+                &result.bytes,
+                prepared.materialChunkVersion == MaterialChunkVersion4
+                    ? static_cast<std::uint32_t>(material.materialClass)
+                    : 0);
         }
     }
     result.bytes.insert(

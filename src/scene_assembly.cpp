@@ -453,6 +453,27 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
                             + "] must be finite and nonnegative");
                 }
             }
+            if (material.materialClass != SceneMaterialClass::Dielectric
+                && material.materialClass != SceneMaterialClass::Metal) {
+                return reject(
+                    error,
+                    "scene assembly: incoming material[" + std::to_string(index)
+                        + "].materialClass must be Dielectric or Metal in P3a");
+            }
+            if (material.materialClass == SceneMaterialClass::Metal) {
+                for (std::size_t component = 0; component < 3; ++component) {
+                    if (!std::isfinite(material.baseColorFactor[component])
+                        || material.baseColorFactor[component] < 0.0f
+                        || material.baseColorFactor[component] > 1.0f) {
+                        return reject(
+                            error,
+                            "scene assembly: incoming material["
+                                + std::to_string(index) + "].baseColorFactor["
+                                + std::to_string(component)
+                                + "] must be finite and in [0, 1] for Metal");
+                    }
+                }
+            }
         }
 
         const scene_assembly_detail::SceneElementCounts destinationCounts =
@@ -616,6 +637,26 @@ bool validateAssembledScene(const SceneData& scene, std::string* error)
                         "scene assembly: material[" + std::to_string(index)
                             + "].emission[" + std::to_string(component)
                             + "] must be finite and nonnegative");
+                }
+            }
+            if (material.materialClass != SceneMaterialClass::Dielectric
+                && material.materialClass != SceneMaterialClass::Metal) {
+                return reject(
+                    error,
+                    "scene assembly: material[" + std::to_string(index)
+                        + "].materialClass must be Dielectric or Metal in P3a");
+            }
+            if (material.materialClass == SceneMaterialClass::Metal) {
+                for (std::size_t component = 0; component < 3; ++component) {
+                    if (!std::isfinite(material.baseColorFactor[component])
+                        || material.baseColorFactor[component] < 0.0f
+                        || material.baseColorFactor[component] > 1.0f) {
+                        return reject(
+                            error,
+                            "scene assembly: material[" + std::to_string(index)
+                                + "].baseColorFactor[" + std::to_string(component)
+                                + "] must be finite and in [0, 1] for Metal");
+                    }
                 }
             }
         }

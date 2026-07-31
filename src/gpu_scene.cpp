@@ -704,7 +704,7 @@ VkResult createGpuScene(
             destination.emission,
             source.emission,
             sizeof(source.emission));
-        destination.reserved0 = 0;
+        destination.materialClass = static_cast<uint32_t>(source.materialClass);
     }
 
     return uploadDeviceLocalBuffer(
