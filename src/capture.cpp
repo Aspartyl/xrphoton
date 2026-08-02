@@ -1,5 +1,7 @@
 #include "capture.hpp"
 
+#include "lighting.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -232,15 +234,17 @@ bool parseCommandLine(
 
     try {
         constexpr const char* Usage =
-            "Usage: xrPhoton [--validation] [--capture <count> <output.ppm>] "
-            "[--time <hours>] | [--validation] --reference <count> "
-            "--estimator <mis|nee|bsdf> [--time <hours>] | [--validation] "
+            "Usage: xrPhoton [--validation] [--spp <1|2|4|8|16>] "
+            "[--capture <count> <output.ppm>] [--time <hours>] | "
+            "[--validation] --reference <count> --estimator <mis|nee|bsdf> "
+            "[--spp <1|2|4|8|16>] [--time <hours>] | [--validation] "
             "--reference <count> --estimator bsdf --furnace";
         bool modeSeen = false;
         bool estimatorSeen = false;
         bool timeSeen = false;
         bool furnaceSeen = false;
         bool validationSeen = false;
+        bool samplesPerPixelSeen = false;
         CommandLineOptions candidate;
         for (int index = 1; index < argumentCount;) {
             if (arguments[index] == nullptr) {
@@ -324,6 +328,21 @@ bool parseCommandLine(
                 }
                 candidate.timeOfDayHours = hours;
                 timeSeen = true;
+                index += 2;
+            } else if (option == "--spp") {
+                if (samplesPerPixelSeen || index + 1 >= argumentCount
+                    || arguments[index + 1] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                std::uint32_t samplesPerPixel = 0;
+                if (!parsePositiveU32(arguments[index + 1], &samplesPerPixel)
+                    || !isSupportedSamplesPerPixel(samplesPerPixel)) {
+                    *error = "Samples per pixel must be 1, 2, 4, 8, or 16.";
+                    return false;
+                }
+                candidate.samplesPerPixel = samplesPerPixel;
+                samplesPerPixelSeen = true;
                 index += 2;
             } else if (option == "--furnace") {
                 if (furnaceSeen) {

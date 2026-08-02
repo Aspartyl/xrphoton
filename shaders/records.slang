@@ -42,7 +42,7 @@ struct RaygenPushConstants
     uint frameIndex;
     float cameraJitterX;
     float cameraJitterY;
-    uint reserved0;
+    uint samplesPerPixel;
 };
 
 // Exact 192-byte std140 record mirrored by scene_lighting.hpp. The explicit scalar

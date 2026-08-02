@@ -331,16 +331,53 @@ HitAttributes fetchHitAttributes(
     return result;
 }
 
-[shader("raygeneration")]
-void rayGenMain()
+uint cameraJitterCell(uint sequenceIndex)
+{
+    // Mirrored by CameraJitterCellPermutation in lighting.hpp. Keeping the compact
+    // known-answer schedule here lets every in-frame path sample occupy a distinct
+    // 4x4 cell while 1 SPP remains byte-for-byte identical.
+    switch (sequenceIndex & 15u)
+    {
+    case 0u: return 3u;
+    case 1u: return 9u;
+    case 2u: return 8u;
+    case 3u: return 0u;
+    case 4u: return 7u;
+    case 5u: return 2u;
+    case 6u: return 4u;
+    case 7u: return 12u;
+    case 8u: return 15u;
+    case 9u: return 5u;
+    case 10u: return 1u;
+    case 11u: return 10u;
+    case 12u: return 13u;
+    case 13u: return 14u;
+    case 14u: return 11u;
+    default: return 6u;
+    }
+}
+
+float2 cameraJitterForSequence(uint sequenceIndex)
+{
+    uint cell = cameraJitterCell(sequenceIndex);
+    // Keep samples in distinct stratification cells, but do not align every extra
+    // primary ray to the same 4x4 center lattice. The separate frame-global scramble
+    // is deterministic and does not consume the per-pixel path stream.
+    uint jitterState = pcgHash(sequenceIndex ^ 0x4a495454u);
+    float2 withinCell = float2(
+        rngNextFloat(jitterState),
+        rngNextFloat(jitterState));
+    return (float2(cell & 3u, cell >> 2u) + withinCell) * 0.25 - 0.5;
+}
+
+float3 traceCameraPath(
+    uint2 pixel,
+    float2 dimensions,
+    uint sampleSequence,
+    float2 cameraJitter)
 {
     // The CPU sends a camera origin plus a pre-scaled perspective basis: forward is
     // unit length, while right/up already include FOV and aspect scaling.
-    uint2 pixel = DispatchRaysIndex().xy;
-    float2 dimensions = float2(DispatchRaysDimensions().xy);
-    float2 cameraJitter = float2(
-        frameConstants.cameraJitterX,
-        frameConstants.cameraJitterY);
     float2 ndc = (float2(pixel) + 0.5 + cameraJitter)
         / dimensions * 2.0 - 1.0;
     float2 ndcStep = 2.0 / dimensions;
@@ -380,7 +417,7 @@ void rayGenMain()
     float previousSkyPdf = 0.0;
     uint shadowRayFlags = shadowTraceFlags();
     uint rngState = pcgHash(
-        pixel.x + pcgHash(pixel.y + pcgHash(frameConstants.frameIndex)));
+        pixel.x + pcgHash(pixel.y + pcgHash(sampleSequence)));
     for (uint pathVertex = 0; pathVertex < maxPathVertices; ++pathVertex)
     {
         SurfaceHit hit;
@@ -873,7 +910,33 @@ void rayGenMain()
         rayDirectionY = bounceDirection;
     }
 
-    hdrRadianceImage[pixel] = float4(max(radiance, 0.0), 1.0);
+    return radiance;
+}
+
+[shader("raygeneration")]
+void rayGenMain()
+{
+    uint2 pixel = DispatchRaysIndex().xy;
+    float2 dimensions = float2(DispatchRaysDimensions().xy);
+    uint samplesPerPixel = clamp(frameConstants.samplesPerPixel, 1u, 16u);
+    float3 accumulatedRadiance = float3(0.0);
+    for (uint sampleIndex = 0; sampleIndex < samplesPerPixel; ++sampleIndex)
+    {
+        uint sampleSequence =
+            frameConstants.frameIndex * samplesPerPixel + sampleIndex;
+        float2 cameraJitter = sampleIndex == 0
+            ? float2(frameConstants.cameraJitterX, frameConstants.cameraJitterY)
+            : cameraJitterForSequence(sampleSequence);
+        accumulatedRadiance += traceCameraPath(
+            pixel,
+            dimensions,
+            sampleSequence,
+            cameraJitter);
+    }
+
+    hdrRadianceImage[pixel] = float4(
+        max(accumulatedRadiance / float(samplesPerPixel), 0.0),
+        1.0);
 }
 
 [shader("miss")]

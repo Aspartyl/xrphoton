@@ -53,7 +53,7 @@ function(run_capture label output_path)
     set(start_extent "${CMAKE_MATCH_1}")
 
     string(REGEX MATCH
-        "Capture complete: extent=([0-9]+x[0-9]+) successfulFrames=${FRAME_COUNT} frameIndex=${FINAL_FRAME_INDEX} hash=0x([0-9a-f]+)"
+        "Capture complete: extent=([0-9]+x[0-9]+) successfulFrames=${FRAME_COUNT} frameIndex=${FINAL_FRAME_INDEX} spp=1 hash=0x([0-9a-f]+)"
         summary
         "${stdout}")
     if(summary STREQUAL "")

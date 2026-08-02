@@ -17,7 +17,7 @@ struct RaygenPushConstants
     std::uint32_t frameIndex = 0;
     float cameraJitterX = 0.0f;
     float cameraJitterY = 0.0f;
-    std::uint32_t reserved0 = 0;
+    std::uint32_t samplesPerPixel = 1;
 };
 static_assert(std::is_standard_layout_v<RaygenPushConstants>,
     "offsetof requires the CPU mirror to remain standard-layout");
@@ -27,8 +27,32 @@ static_assert(offsetof(RaygenPushConstants, camera) == 0
     && offsetof(RaygenPushConstants, frameIndex) == 64
     && offsetof(RaygenPushConstants, cameraJitterX) == 68
     && offsetof(RaygenPushConstants, cameraJitterY) == 72
-    && offsetof(RaygenPushConstants, reserved0) == 76,
+    && offsetof(RaygenPushConstants, samplesPerPixel) == 76,
     "field offsets are the shader ABI, not just the total size");
+
+constexpr std::uint32_t DefaultSamplesPerPixel = 1;
+constexpr std::uint32_t MaximumSamplesPerPixel = 16;
+
+[[nodiscard]] constexpr bool isSupportedSamplesPerPixel(std::uint32_t value)
+{
+    return value == 1 || value == 2 || value == 4 || value == 8 || value == 16;
+}
+
+[[nodiscard]] constexpr std::uint32_t nextSamplesPerPixel(std::uint32_t value)
+{
+    switch (value) {
+    case 1:
+        return 2;
+    case 2:
+        return 4;
+    case 4:
+        return 8;
+    case 8:
+        return 16;
+    default:
+        return 1;
+    }
+}
 
 // Small stateless PCG permutation used as the CPU reference for the matching Slang
 // RNG. Unsigned overflow is intentional and defined.
@@ -93,9 +117,21 @@ inline constexpr auto CameraJitterCellPermutation =
     };
 }
 
+// Select the first path's cell in the global jitter sequence. The shader assigns
+// following paths to the subsequent distinct cells and deterministically scrambles
+// their positions within those cells without adding per-sample push data.
+[[nodiscard]] constexpr CameraJitter cameraJitterForSample(
+    std::uint32_t frameIndex,
+    std::uint32_t samplesPerPixel,
+    std::uint32_t sampleIndex)
+{
+    return cameraJitterForFrame(frameIndex * samplesPerPixel + sampleIndex);
+}
+
 // Preserve the camera prefix byte-for-byte and attach the authoritative temporal
 // view state selected from the frame index.
 [[nodiscard]] RaygenPushConstants makeRaygenPushConstants(
     const CameraPushConstants& camera,
-    std::uint32_t frameIndex);
+    std::uint32_t frameIndex,
+    std::uint32_t samplesPerPixel = DefaultSamplesPerPixel);
 }

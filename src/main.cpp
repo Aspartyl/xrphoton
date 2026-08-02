@@ -661,6 +661,8 @@ int main(int argumentCount, char** arguments)
     double lastTime = glfwGetTime();
     uint32_t currentFrame = 0;
     uint32_t frameCounter = 0;
+    std::uint32_t samplesPerPixel = commandLine.samplesPerPixel;
+    bool samplesPerPixelToggleDown = false;
     if (referenceMode) {
         if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
             std::cerr << "Failed to disable the player character for reference mode.\n";
@@ -671,6 +673,7 @@ int main(int argumentCount, char** arguments)
         std::cout << "Reference start: extent="
                   << referenceExtent.width << 'x' << referenceExtent.height
                   << " requestedSamples=" << commandLine.referenceSampleCount
+                  << " spp=" << samplesPerPixel
                   << " scene=" << (furnaceMode ? "furnace" : "yard");
         if (!furnaceMode) {
             std::cout << " time=" << timeOfDayHours;
@@ -713,7 +716,8 @@ int main(int argumentCount, char** arguments)
                 submittedSlot,
                 makeRaygenPushConstants(
                     makeCameraPushConstants(captureCamera, aspect),
-                    frameCounter),
+                    frameCounter,
+                    samplesPerPixel),
                 frameLighting);
             if (frameResult != VK_SUCCESS) {
                 std::cerr << "Failed to draw Vulkan reference sample: "
@@ -831,6 +835,7 @@ int main(int argumentCount, char** arguments)
         std::cout << "Reference complete: extent="
                   << referenceExtent.width << 'x' << referenceExtent.height
                   << " samples=" << accumulator.sampleCount
+                  << " spp=" << samplesPerPixel
                   << " time=" << timeOfDayHours
                   << " estimator=" << estimatorModeName(commandLine.estimator)
                   << " traceMedianMs=" << std::fixed << std::setprecision(3)
@@ -851,6 +856,7 @@ int main(int argumentCount, char** arguments)
         std::cout << "Capture start: extent="
                   << captureExtent.width << 'x' << captureExtent.height
                   << " requestedFrames=" << commandLine.captureFrameCount
+                  << " spp=" << samplesPerPixel
                   << " time=" << timeOfDayHours
                   << '\n';
 
@@ -907,7 +913,8 @@ int main(int argumentCount, char** arguments)
                 submittedSlot,
                 makeRaygenPushConstants(
                     makeCameraPushConstants(captureCamera, aspect),
-                    submittedFrameIndex),
+                    submittedFrameIndex,
+                    samplesPerPixel),
                 frameLighting);
 
             if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
@@ -994,6 +1001,7 @@ int main(int argumentCount, char** arguments)
                   << readback.width << 'x' << readback.height
                   << " successfulFrames=" << successfulFrameCount
                   << " frameIndex=" << lastRenderedFrameIndex
+                  << " spp=" << samplesPerPixel
                   << " hash=0x"
                   << std::hex << std::nouppercase
                   << std::setw(16) << std::setfill('0') << hash
@@ -1009,8 +1017,10 @@ int main(int argumentCount, char** arguments)
 
     std::cout << "Player: WASD run, Left Shift sprint, Left Ctrl crouch, Space jump.\n"
                  "Free camera: WASD move, Left Shift boost, Space/Ctrl up/down.\n"
-                 "Shared: F1 switch view, Escape release mouse, left click recapture.\n";
-    std::cout << "Entering GLFW event loop in player mode.\n";
+                 "Shared: F1 switch view, F5 cycle 1/2/4/8/16 SPP, "
+                 "Escape release mouse, left click recapture.\n";
+    std::cout << "Entering GLFW event loop in player mode at "
+              << samplesPerPixel << " SPP.\n";
 
     glfwSetInputMode(ctx.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
@@ -1019,6 +1029,14 @@ int main(int argumentCount, char** arguments)
 
     while (!glfwWindowShouldClose(ctx.window)) {
         glfwPollEvents();
+
+        const bool samplesPerPixelToggleIsDown =
+            glfwGetKey(ctx.window, GLFW_KEY_F5) == GLFW_PRESS;
+        if (samplesPerPixelToggleIsDown && !samplesPerPixelToggleDown) {
+            samplesPerPixel = nextSamplesPerPixel(samplesPerPixel);
+            std::cout << "Samples per pixel: " << samplesPerPixel << ".\n";
+        }
+        samplesPerPixelToggleDown = samplesPerPixelToggleIsDown;
 
         const double now = glfwGetTime();
         const float dt = static_cast<float>(std::min(
@@ -1124,7 +1142,8 @@ int main(int argumentCount, char** arguments)
                 currentFrame,
                 makeRaygenPushConstants(
                     makeCameraPushConstants(renderCamera, aspect),
-                    frameCounter),
+                    frameCounter,
+                    samplesPerPixel),
                 frameLighting);
             currentFrame = (currentFrame + 1) % MaxFramesInFlight;
             ++frameCounter;

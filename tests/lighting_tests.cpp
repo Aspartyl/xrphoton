@@ -39,7 +39,7 @@ void testPayloadLayout()
             && offsetof(xrphoton::RaygenPushConstants, frameIndex) == 64
             && offsetof(xrphoton::RaygenPushConstants, cameraJitterX) == 68
             && offsetof(xrphoton::RaygenPushConstants, cameraJitterY) == 72
-            && offsetof(xrphoton::RaygenPushConstants, reserved0) == 76,
+            && offsetof(xrphoton::RaygenPushConstants, samplesPerPixel) == 76,
         "raygen payload fields have the pinned shader offsets");
 }
 
@@ -66,8 +66,26 @@ void testPushConstantConstruction()
         result.frameIndex == FrameIndex
             && nearly(result.cameraJitterX, 0.125f)
             && nearly(result.cameraJitterY, 0.125f)
-            && result.reserved0 == 0,
-        "the frame selects authoritative jitter and leaves the reserved word zero");
+            && result.samplesPerPixel == 1,
+        "the frame selects authoritative jitter and defaults to one sample per pixel");
+
+    const xrphoton::RaygenPushConstants fourSampleResult =
+        xrphoton::makeRaygenPushConstants(camera, FrameIndex, 4);
+    const xrphoton::CameraJitter fourSampleJitter =
+        xrphoton::cameraJitterForSample(FrameIndex, 4, 0);
+    expect(
+        fourSampleResult.samplesPerPixel == 4
+            && nearly(fourSampleResult.cameraJitterX, fourSampleJitter.x)
+            && nearly(fourSampleResult.cameraJitterY, fourSampleJitter.y),
+        "the push payload selects a supported multi-sample sequence");
+
+    const xrphoton::RaygenPushConstants rejectedResult =
+        xrphoton::makeRaygenPushConstants(camera, FrameIndex, 3);
+    expect(
+        rejectedResult.samplesPerPixel == xrphoton::DefaultSamplesPerPixel
+            && nearly(rejectedResult.cameraJitterX, result.cameraJitterX)
+            && nearly(rejectedResult.cameraJitterY, result.cameraJitterY),
+        "unsupported programmatic SPP values fall back to the safe default");
 }
 
 void testCameraJitterSchedule()
@@ -110,6 +128,57 @@ void testCameraJitterSchedule()
         expect(
             first.x == repeated.x && first.y == repeated.y,
             "camera jitter repeats after exactly sixteen frames");
+    }
+}
+
+void testSamplesPerPixelControls()
+{
+    expect(
+        xrphoton::isSupportedSamplesPerPixel(1)
+            && xrphoton::isSupportedSamplesPerPixel(2)
+            && xrphoton::isSupportedSamplesPerPixel(4)
+            && xrphoton::isSupportedSamplesPerPixel(8)
+            && xrphoton::isSupportedSamplesPerPixel(16)
+            && !xrphoton::isSupportedSamplesPerPixel(0)
+            && !xrphoton::isSupportedSamplesPerPixel(3)
+            && !xrphoton::isSupportedSamplesPerPixel(32),
+        "SPP accepts exactly the five public graphics settings");
+    expect(
+        xrphoton::nextSamplesPerPixel(1) == 2
+            && xrphoton::nextSamplesPerPixel(2) == 4
+            && xrphoton::nextSamplesPerPixel(4) == 8
+            && xrphoton::nextSamplesPerPixel(8) == 16
+            && xrphoton::nextSamplesPerPixel(16) == 1,
+        "the interactive SPP control cycles through every setting");
+
+    for (std::uint32_t samplesPerPixel : {2u, 4u, 8u, 16u}) {
+        std::array<bool, xrphoton::CameraJitterPeriod> visited{};
+        for (std::uint32_t sampleIndex = 0;
+             sampleIndex < samplesPerPixel;
+             ++sampleIndex) {
+            const std::uint32_t sequenceIndex = sampleIndex;
+            const std::uint8_t cell = xrphoton::CameraJitterCellPermutation[
+                sequenceIndex % xrphoton::CameraJitterPeriod];
+            visited[cell] = true;
+            const xrphoton::CameraJitter jitter =
+                xrphoton::cameraJitterForSample(
+                    0,
+                    samplesPerPixel,
+                    sampleIndex);
+            expect(
+                nearly(jitter.x,
+                    (static_cast<float>(cell % 4u) + 0.5f) / 4.0f - 0.5f)
+                    && nearly(jitter.y,
+                        (static_cast<float>(cell / 4u) + 0.5f) / 4.0f - 0.5f),
+                "the CPU reference identifies each global jitter-sequence cell");
+        }
+        std::size_t visitedCount = 0;
+        for (bool wasVisited : visited) {
+            visitedCount += wasVisited ? 1u : 0u;
+        }
+        expect(
+            visitedCount == samplesPerPixel,
+            "samples within one frame occupy distinct subpixel cells");
     }
 }
 
@@ -179,6 +248,7 @@ int main()
     testPayloadLayout();
     testPushConstantConstruction();
     testCameraJitterSchedule();
+    testSamplesPerPixelControls();
     testPcgHash();
     testRngSequence();
 

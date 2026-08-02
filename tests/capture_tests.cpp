@@ -53,6 +53,7 @@ void testCommandLine()
             && options.captureFrameCount == 0
             && options.captureOutputPath.empty()
             && options.referenceSampleCount == 0
+            && options.samplesPerPixel == 1
             && options.estimator == xrphoton::EstimatorMode::Mis
             && !options.timeOfDayHours.has_value()
             && !options.furnaceRequested
@@ -61,7 +62,7 @@ void testCommandLine()
         "no arguments select interactive mode");
 
     options = parse(
-        {"xrPhoton", "--capture", "8", "result.ppm"},
+        {"xrPhoton", "--capture", "8", "result.ppm", "--spp", "16"},
         &succeeded,
         &error);
     expect(
@@ -69,18 +70,20 @@ void testCommandLine()
             && options.mode == xrphoton::CommandLineMode::Capture
             && options.captureFrameCount == 8
             && options.captureOutputPath == "result.ppm"
+            && options.samplesPerPixel == 16
             && error.empty(),
-        "a positive count and output path select capture mode");
+        "capture selects a fixed supported samples-per-pixel setting");
 
     options = parse(
-        {"xrPhoton", "--validation", "--time", "0"},
+        {"xrPhoton", "--validation", "--time", "0", "--spp", "2"},
         &succeeded,
         &error);
     expect(
         succeeded && options.mode == xrphoton::CommandLineMode::Interactive
             && options.timeOfDayHours == 0.0f
+            && options.samplesPerPixel == 2
             && options.validationRequested,
-        "interactive mode accepts validation and a midnight starting time");
+        "interactive mode accepts validation, time, and an initial SPP setting");
 
     options = parse(
         {"xrPhoton", "--time", "5.75", "--capture", "4", "dawn.ppm"},
@@ -93,12 +96,13 @@ void testCommandLine()
 
     options = parse(
         {"xrPhoton", "--reference", "64", "--estimator", "nee",
-         "--time", "23.999"},
+         "--time", "23.999", "--spp", "4"},
         &succeeded,
         &error);
     expect(
         succeeded && options.mode == xrphoton::CommandLineMode::Reference
             && options.referenceSampleCount == 64
+            && options.samplesPerPixel == 4
             && options.estimator == xrphoton::EstimatorMode::Nee
             && options.timeOfDayHours.has_value()
             && std::abs(*options.timeOfDayHours - 23.999f) < 1.0e-6f,
@@ -150,6 +154,12 @@ void testCommandLine()
         {"xrPhoton", "--time", "nan"},
         {"xrPhoton", "--time", "noon"},
         {"xrPhoton", "--time", "12", "--time", "13"},
+        {"xrPhoton", "--spp"},
+        {"xrPhoton", "--spp", "0"},
+        {"xrPhoton", "--spp", "3"},
+        {"xrPhoton", "--spp", "32"},
+        {"xrPhoton", "--spp", "two"},
+        {"xrPhoton", "--spp", "2", "--spp", "4"},
         {"xrPhoton", "--furnace"},
         {"xrPhoton", "--capture", "8", "result.ppm", "--furnace"},
         {"xrPhoton", "--reference", "8", "--estimator", "mis", "--furnace"},

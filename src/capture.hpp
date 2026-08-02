@@ -30,6 +30,7 @@ struct CommandLineOptions
     std::uint32_t captureFrameCount = 0;
     std::string captureOutputPath;
     std::uint32_t referenceSampleCount = 0;
+    std::uint32_t samplesPerPixel = 1;
     EstimatorMode estimator = EstimatorMode::Mis;
     std::optional<float> timeOfDayHours;
     bool furnaceRequested = false;
@@ -63,10 +64,10 @@ struct ReferenceRegionSummary
 };
 
 // Accept interactive/capture or reference mode for the single test yard:
-//   [--validation] [--capture <positive-frame-count> <output.ppm>]
-//       [--time <hours>]
+//   [--validation] [--spp <1|2|4|8|16>]
+//       [--capture <positive-frame-count> <output.ppm>] [--time <hours>]
 //   [--validation] --reference <positive-sample-count>
-//       --estimator <mis|nee|bsdf> [--time <hours>]
+//       --estimator <mis|nee|bsdf> [--spp <1|2|4|8|16>] [--time <hours>]
 //   [--validation] --reference <positive-sample-count>
 //       --estimator bsdf --furnace
 // Parsing is deliberately independent of GLFW/Vulkan so malformed capture requests

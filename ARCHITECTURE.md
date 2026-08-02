@@ -76,8 +76,14 @@ After consolidating day/night into the one permanent-emitter yard, the determini
 noon capture proof records frame-7 hash `0x011e175c7a0e3d63`; the midnight
 MIS/NEE/BSDF proof still agrees in every pinned region.
 P5 gives the existing view-state scalars their final meaning: a pinned fixed-seed
-permutation visits every 4×4 subpixel-cell center once per 16 frames, globally shared
-by all pixels and separate from the per-pixel PCG path stream. The BSDFs now add a
+permutation visits every 4×4 subpixel cell once per 16 global sample entries—16 frames
+at the default 1 SPP—shared by all pixels and separate from the per-pixel PCG path
+stream. The push block's final
+word now selects 1, 2, 4, 8, or 16 independent full paths per pixel. Raygen assigns them
+consecutive entries in that same global jitter sequence, seeds each path independently,
+and averages linear radiance before tonemapping; F5 changes the setting interactively
+and `--spp` fixes it for interactive, capture, or reference runs. One SPP preserves
+P5's original jitter and RNG sequence. The BSDFs now add a
 sampled multiple-scattering return lobe from pinned roughness-energy fits,
 closing the energy lost by masked rough GGX microfacets. A reference-only `--furnace`
 scene places white Dielectric, Metal, and Glass boxes at low/medium/high roughness in
@@ -87,6 +93,24 @@ errors; all nine ratios measured 0.999–1.009. The same run retained yard estim
 agreement. Two independent fixed-protocol noon captures produced the byte-identical
 P5 frame-287 hash `0x422e208234fcf994` and 4.225/4.171 ms trace medians on the RTX
 5070 Ti / 595.71.05 system, so the lighting/path-tracing roadmap slice is complete.
+The later runtime-SPP control was measured on the same 1920×1080 fully configured noon
+yard, RTX 5070 Ti, and 595.71.05 driver with MangoHud disabled. Each entry uses the
+fixed 32-warm-up + 256-measured trace-only protocol:
+
+| SPP | Median trace time | Cost versus 1 SPP |
+|-----|------------------:|------------------:|
+| 1 | 4.143 ms | 1.00× |
+| 2 | 11.763 ms | 2.84× |
+| 4 | 27.668 ms | 6.68× |
+| 8 | 48.350 ms | 11.67× |
+| 16 | 102.336 ms | 24.70× |
+
+Two independent 1-SPP runs produced the byte-identical frame-287 hash
+`0xfee2ecea8b9a05ea`. Repeated higher-SPP runs can differ at a sparse set of
+one-LDR-step pixels despite their fixed schedules, so the byte-exact deterministic
+runtime proof deliberately remains pinned to the default
+1-SPP path; the selectable modes are currently a visual/performance control rather
+than a widened byte-exact acceptance contract.
 The fixed 32-warm-up + 256-measured validation capture on an RTX 5070 Ti with NVIDIA
 595.71.05 at 1920×1080 recorded 1.131 ms for P3b's original suspended-panel Glass
 acceptance view versus 0.907 ms for the identical P3a-equivalent opaque-panel view
@@ -282,15 +306,15 @@ the renderer layering.)
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` and 48-byte emission/class-capable `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
-| [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free 80-byte view-only `RaygenPushConstants`, its fixed-seed 4×4 frame-global jitter schedule, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain per-dispatch state composed by `main()`; lighting does not ride this path |
+| [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free 80-byte view-only `RaygenPushConstants`, its fixed-seed 4×4 global jitter/sample schedule, the 1/2/4/8/16-SPP setting contract, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain per-dispatch state composed by `main()`; lighting does not ride this path |
 | [src/scene_lighting.hpp](src/scene_lighting.hpp) / [.cpp](src/scene_lighting.cpp) and [src/frame_lighting_layout.hpp](src/frame_lighting_layout.hpp) | Vulkan-free mutable time-of-day/sun/Preetham-sky authority plus the constant full-sphere furnace environment; static-emitter extraction into the exact 64-byte `LightRecord`, power CDF, and 16-byte reverse-lookup records; exact 192-byte `FrameLighting` ABI and flags; selector packing; CPU sky/sun evaluation/sample/PDF/MIS references; and checked dynamic-slot arithmetic | Plain scene state plus immutable emitter tables and per-frame publications; tested inside the canonical build |
 | [src/gpu_lighting.hpp](src/gpu_lighting.hpp) / [.cpp](src/gpu_lighting.cpp) | `GpuLighting` RAII owner for the persistently mapped, host-coherent dynamic uniform buffer, checked per-slot publication, and device-local light/CDF/lookup buffers uploaded through the common staged path | Program lifetime — one aligned uniform subrange per frame in flight plus three immutable static-light allocations |
-| [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) and [tools/reference_compare.cpp](tools/reference_compare.cpp) | Vulkan-free interactive/capture/reference CLI parsing, checked raw RGBA8 hashing, linear-to-sRGB PPM publication, binary16 conversion, double-precision fixed-region HDR statistics, pairwise estimator gate, furnace energy gate, and fixed-protocol trace-timing median policy | One-shot capture/reference policy used by `main()` after renderer readback; owns no GPU state |
+| [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) and [tools/reference_compare.cpp](tools/reference_compare.cpp) | Vulkan-free interactive/capture/reference CLI parsing including fixed SPP selection, checked raw RGBA8 hashing, linear-to-sRGB PPM publication, binary16 conversion, double-precision fixed-region HDR statistics, pairwise estimator gate, furnace energy gate, and fixed-protocol trace-timing median policy | One-shot capture/reference policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (nine-binding descriptor set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, and the render/scene/lighting descriptor writers | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/tonemap.hpp](src/tonemap.hpp) / [src/tonemap_pipeline.hpp](src/tonemap_pipeline.hpp) / [.cpp](src/tonemap_pipeline.cpp) | Fixed exposure/dispatch ABI plus `TonemapPipeline`, its two-image descriptor set, compute pipeline, and resize rewrite | Program lifetime pipeline over resize-bound HDR/LDR images |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene plus GPU-lighting and acceleration-structure owners), `drawFrame` with its post-fence lighting/instance slot writes, trace-only timestamp readback, `prepareRtForSwapchain`, terminal LDR readback, repeatable HDR reference readback, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
-| [src/main.cpp](src/main.cpp) | `main()` orchestration, reference-estimator selection, interactive player/free-camera operation, the time-cycling yard, ordinary capture, and frozen-scene HDR reference sampling | Program lifetime |
+| [src/main.cpp](src/main.cpp) | `main()` orchestration, reference-estimator selection, interactive player/free-camera and F5 SPP control, the time-cycling yard, ordinary capture, and frozen-scene HDR reference sampling | Program lifetime |
 
 ### Header dependency rule
 
@@ -734,7 +758,8 @@ swapchain image:
    what makes the frame payload race-free across frames in flight by construction),
    when timing is supported, write timestamps immediately around
    `vkCmdTraceRaysKHR` with the owner's four SBT regions and the swapchain
-   extent — one path of up to eight surface vertices per pixel (the isolated
+   extent — 1, 2, 4, 8, or 16 independently seeded paths of up to eight surface vertices
+   per pixel, averaged in linear HDR (the isolated
    full-sphere furnace raises its truncation cap to 32 for closed rough Glass). The immediately preceding rebuild's post-build
    barrier makes the fresh TLAS visible to this traversal.
 4. Keep HDR in `GENERAL` while making ray-tracing shader writes visible to compute
@@ -1414,13 +1439,14 @@ Decisions and contracts worth preserving:
   owner in `acceleration_structure.cpp`.
 - **Frame-constant ABI.** The 80-byte raygen block begins with the stable camera
   prefix: four `float3` fields at 16-byte offsets (0/16/32/48). The CPU structs pin
-  that prefix plus frame index at 64, camera jitter at 68/72, and one zero reserved
-  word at 76 with `static_assert`s on `sizeof` and every `offsetof`. P5 fills the two
-  jitter scalars from a fixed-seed permutation of the sixteen 4×4 cell centers using
-  `frameIndex % 16`; every pixel shares that offset, and neighboring UV-footprint rays
-  shift with it. The separately hashed per-pixel path RNG consumes no extra draw.
-  Raygen hashes the frame index with the launch pixel to decorrelate its diffuse
-  sample between interactive frames while keeping fixed-index captures repeatable.
+  that prefix plus frame index at 64, camera jitter at 68/72, and the validated
+  1/2/4/8/16 sample count at 76 with `static_assert`s on `sizeof` and every `offsetof`.
+  P5 fills the jitter scalars for the first sample from a fixed-seed permutation of
+  the sixteen 4×4 cell centers; higher modes continue through consecutive cells inside
+  the dispatch. Every pixel shares each sample's offset, and neighboring UV-footprint
+  rays shift with it. Camera sampling consumes no per-pixel path RNG draw. Raygen
+  hashes the global sample sequence with the launch pixel to decorrelate paths while
+  keeping fixed-index, fixed-SPP captures repeatable.
   `float3` rounds up to 16-byte alignment under every relevant GPU layout rule, so
   the offsets are unconditional. Keep the shader and CPU structs field-for-field
   identical.
@@ -1443,7 +1469,8 @@ Decisions and contracts worth preserving:
   sprinting; Left Ctrl holds a 1.2-m crouched capsule and lowers the eye from 1.7 m
   to 1.1 m. In free mode, WASD retains the full look-relative movement and
   Space/LeftCtrl move along ±world-up. Both paths normalize summed directions so
-  diagonals are not faster. F1 is edge-detected so holding it cannot oscillate modes.
+  diagonals are not faster. F1 is edge-detected so holding it cannot oscillate modes;
+  F5 independently cycles the per-frame sample budget through 1, 2, 4, 8, and 16.
   Mouse look polls `glfwGetCursorPos`
   deltas against an anchor stored in `Camera`; the anchor is invalidated on
   every capture transition and re-anchored one frame before deltas apply —
@@ -1593,7 +1620,8 @@ Decisions and contracts worth preserving:
    uniform-cone solar disc with NEE/BSDF MIS while preserving the zero-angle delta
    compatibility path. The one noon-default yard keeps a flat power-weighted CDF over
    42 emitter triangles resident and fades their common intensity with civil twilight.
-   P5 adds deterministic 4×4 frame-global camera jitter and a sampled
+   P5 adds deterministic 4×4 frame-global camera jitter, runtime-selectable
+   1/2/4/8/16-SPP full-path averaging, and a sampled
    multiple-scattering closure for masked rough GGX energy. The frozen midnight
    linear-HDR proof independently runs MIS, NEE-only, and BSDF-only to guard against
    double-counted or missing energy; its companion nine-case white furnace proves all

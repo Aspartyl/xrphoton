@@ -24,17 +24,20 @@ Right now it renders a compact test yard you can explore with a collision-aware
 capsule character. WASD walks, Left Shift sprints, Space jumps, Left Ctrl
 crouches, and F1 toggles a collision-free fly camera that suspends the player
 and starts from their current position and view. Escape releases the captured
-mouse and left click recaptures it. Every build assembles the yard from
+mouse, left click recaptures it, and F5 cycles 1, 2, 4, 8, and 16 samples per pixel.
+Every build assembles the yard from
 generated ground, wall, and box models into walls, a platform, a staircase and
 crates, alongside an indexed quad and a two-geometry wedge kept as regression
 probes. The same yard always contains 21 lamp/anomaly placements (42 emitting
 triangles); their light fades off with daylight and back on through evening civil
 twilight, so changing time never swaps scenes or geometry.
 
-Each frame traces a ray per pixel through one BLAS per mesh and a real
+Each frame traces 1, 2, 4, 8, or 16 independent full paths per pixel through one BLAS per
+mesh and a real
 multi-instance TLAS, from a perspective camera fed to the shader through push
-constants. A pinned frame-global 4×4 jitter cycle covers the full pixel footprint
-without consuming the per-pixel path RNG. Raygen follows paths of up to eight surface
+constants. One pinned frame-global 4×4 jitter sequence covers the full pixel footprint
+across frames and in-frame samples without consuming the per-pixel path RNG. Raygen
+averages the selected samples in linear HDR and follows each path through up to eight surface
 vertices, evaluating an energy-aware Lambert diffuse plus isotropic GGX dielectric,
 conductor, or rough-glass BSDF under a
 finite 0.27-degree solar disc, tracing alpha/Glass-aware visibility rays for soft
@@ -130,17 +133,22 @@ write the final tonemapped result as an sRGB PPM:
 ./build/xrPhoton --capture 8 capture.ppm
 ./build/xrPhoton --capture 8 night.ppm --time 0
 ./build/xrPhoton --capture 8 dawn.ppm --time 3.8
+./build/xrPhoton --capture 8 high-spp.ppm --spp 16
 ./build/xrPhoton --validation --capture 8 checked.ppm
 ```
 
 Capture mode fixes the camera and extent, advances physics by exactly 1/60
 second per successful frame, freezes the selected time of day, and reads back the
 last submitted image. `--time <hours>` accepts a value in `[0, 24)`; without it the
-single yard starts at noon. Capture prints
-the extent, the final frame index and a hash of the raw bytes, and two runs of
-the same binary on the same machine and driver are expected to match. A resize,
-window close, or out-of-date swapchain fails the capture instead of silently
-changing the sampled frame.
+single yard starts at noon. `--spp <1|2|4|8|16>` fixes the number of independent full
+paths averaged per pixel in interactive, capture, or reference mode; it defaults to
+one, and interactive F5 cycling changes the same runtime setting without recreating
+the pipeline. Capture prints
+the extent, SPP, the final frame index and a hash of the raw bytes. Two default 1-SPP
+runs of the same binary on the same machine and driver are expected to match; higher
+SPP modes are not yet part of that byte-exact acceptance contract. A resize, window
+close, or out-of-date swapchain fails the capture instead of silently changing the
+sampled frame.
 
 P2c also provides an acceptance-only linear-HDR reference mode. It freezes the scene,
 reads every untouched HDR sample back to the CPU, and exposes MIS, NEE-only, and
