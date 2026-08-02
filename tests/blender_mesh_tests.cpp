@@ -47,6 +47,10 @@ constexpr std::size_t MaterialRoughnessOffsetV3 = 128;
 constexpr std::size_t MaterialDielectricF0OffsetV3 = 132;
 constexpr std::size_t MaterialReserved0OffsetV3 = 136;
 constexpr std::size_t MaterialReserved1OffsetV3 = 140;
+constexpr std::size_t PhysicsShapeOffsetV4 = 144;
+constexpr std::size_t PhysicsMassOffsetV4 = 148;
+constexpr std::size_t PhysicsRadiusOffsetV4 = 152;
+constexpr std::size_t PhysicsCenterOffsetV4 = 160;
 constexpr std::size_t FirstCornerOffset = 96;
 constexpr std::size_t PositionOffsetInCorner = 0;
 constexpr std::size_t NormalOffsetInCorner = 12;
@@ -274,6 +278,29 @@ std::vector<std::uint8_t> makeMetalStream(
     }
     expect(bytes.size() == expectedSize,
         "synthetic Metal XRBM builder emits its declared byte size");
+    return bytes;
+}
+
+std::vector<std::uint8_t> makeDynamicGlassSphereStream(
+    const std::vector<Triangle>& triangles)
+{
+    std::vector<std::uint8_t> bytes = makeMetalStream(triangles);
+    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion4);
+    writeU32(&bytes, HeaderSizeOffset, xrphoton::blender_mesh::StreamHeaderSizeV4);
+    writeU32(
+        &bytes,
+        MaterialClassOffsetV3,
+        static_cast<std::uint32_t>(xrphoton::ogfx::MaterialClass::Glass));
+    bytes.insert(bytes.begin() + xrphoton::blender_mesh::StreamHeaderSizeV3, 32, 0);
+    writeU32(
+        &bytes,
+        PhysicsShapeOffsetV4,
+        xrphoton::blender_mesh::PhysicsShapeSphere);
+    writeF32(&bytes, PhysicsMassOffsetV4, 18.0f);
+    writeF32(&bytes, PhysicsRadiusOffsetV4, 0.75f);
+    writeF32(&bytes, PhysicsCenterOffsetV4, 1.0f);
+    writeF32(&bytes, PhysicsCenterOffsetV4 + 4, 2.0f);
+    writeF32(&bytes, PhysicsCenterOffsetV4 + 8, 3.0f);
     return bytes;
 }
 
@@ -786,6 +813,49 @@ void testMetalMaterialProfile()
     expectRejected(malformed, "material reserved words");
 }
 
+void testDynamicGlassSphereProfile()
+{
+    const std::vector<std::uint8_t> bytes =
+        makeDynamicGlassSphereStream(makeQuadTriangles());
+    const DecodeResult decoded = decodeStaticMesh(
+        bytes,
+        "dynamic-glass-sphere.blend::sphere");
+    expect(static_cast<bool>(decoded), "XRBM v4 dynamic Glass sphere decodes");
+    if (!decoded) {
+        std::cerr << decoded.error << '\n';
+        return;
+    }
+    expect(decoded.model.materials.size() == 1
+            && decoded.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Glass,
+        "XRBM v4 preserves the Glass material profile");
+    expect(decoded.model.physicsBodies.size() == 1
+            && decoded.model.physicsBodies[0].mass == 18.0f
+            && decoded.model.physicsBodies[0].centerOfMass.x == 1.0f
+            && decoded.model.physicsBodies[0].centerOfMass.y == 3.0f
+            && decoded.model.physicsBodies[0].centerOfMass.z == 2.0f,
+        "XRBM v4 converts the Blender sphere center into engine coordinates");
+    expect(decoded.model.physicsColliders.size() == 1
+            && decoded.model.physicsColliders[0].shapeType
+                == xrphoton::ogfx::PhysicsShapeType::Sphere
+            && decoded.model.physicsColliders[0].radius == 0.75f,
+        "XRBM v4 preserves the spherical collider radius");
+
+    const SerializeResult serialized = xrphoton::ogfx::serializeModel(
+        decoded.model,
+        "dynamic-glass-sphere.ogfx");
+    const DecodeResult runtime = serialized
+        ? xrphoton::ogfx::decodeModel(
+            serialized.bytes,
+            "dynamic-glass-sphere.ogfx")
+        : DecodeResult{};
+    expect(serialized && runtime
+            && runtime.model.physicsColliders.size() == 1
+            && runtime.model.physicsColliders[0].shapeType
+                == xrphoton::ogfx::PhysicsShapeType::Sphere,
+        "Blender dynamic sphere survives canonical OGFx serialization and runtime decode");
+}
+
 void testNonuniformTransformAndUnitScale()
 {
     constexpr float inverseSqrt2 = 0.7071067690849304f;
@@ -939,7 +1009,7 @@ void testFramingAndHeaderRejections()
     expectRejected(bytes, "magic");
 
     bytes = valid;
-    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion3 + 1);
+    writeU32(&bytes, VersionOffset, xrphoton::blender_mesh::StreamVersion4 + 1);
     expectRejected(bytes, "version");
 
     bytes = valid;
@@ -2315,6 +2385,7 @@ int main(int argumentCount, char** arguments)
     testAlphaTestedMaterialAndTextureVNormalization();
     testOpaqueTexturedMaterialAndTextureVNormalization();
     testMetalMaterialProfile();
+    testDynamicGlassSphereProfile();
     testNonuniformTransformAndUnitScale();
     testNegativeDeterminantKeepsSourceOrder();
     testShearedTransformUsesFullInverseTranspose();

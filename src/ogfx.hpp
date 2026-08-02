@@ -49,9 +49,10 @@ inline constexpr std::uint32_t RigidPhysicsHeaderSize = 32;
 inline constexpr std::uint32_t PhysicsBodyRecordSize = 32;
 inline constexpr std::uint32_t RigidPhysicsChunkVersion1 = 1;
 inline constexpr std::uint32_t RigidPhysicsChunkVersion2 = 2;
+inline constexpr std::uint32_t RigidPhysicsChunkVersion3 = 3;
 inline constexpr std::uint32_t PhysicsColliderRecordSize = 64;
 inline constexpr std::uint32_t PhysicsColliderRecordSizeV2 = 80;
-// Both supported versions reserve the collider flag word. Source-specific flag
+// All supported versions reserve the collider flag word. Source-specific flag
 // meanings must be mapped deliberately rather than copied through.
 inline constexpr std::uint32_t PhysicsColliderAllowedFlags = 0;
 
@@ -140,6 +141,7 @@ enum class PhysicsShapeType : std::uint32_t
 {
     Cylinder = 1,
     Box = 2,
+    Sphere = 3,
 };
 
 struct Orientation

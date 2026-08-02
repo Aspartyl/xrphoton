@@ -308,6 +308,27 @@ Model makeBoxPhysicsQuad()
     return model;
 }
 
+Model makeSpherePhysicsQuad()
+{
+    Model model = makeQuad();
+    model.physicsBodies.push_back(PhysicsBody{
+        .firstCollider = 0,
+        .colliderCount = 1,
+        .mass = 18.0f,
+        .centerOfMass = {0.0f, 0.75f, 0.0f},
+    });
+    model.physicsColliders.push_back(PhysicsCollider{
+        .shapeType = PhysicsShapeType::Sphere,
+        .material = {},
+        .sourceNode = {},
+        .center = {0.0f, 0.75f, 0.0f},
+        .radius = 0.75f,
+        .mass = 18.0f,
+        .centerOfMass = {0.0f, 0.75f, 0.0f},
+    });
+    return model;
+}
+
 std::size_t chunkHeaderOffset(
     const std::vector<std::uint8_t>& bytes,
     ChunkId id)
@@ -1072,6 +1093,49 @@ void testBoxPhysicsChunkVersion2()
     }
 }
 
+void testSpherePhysicsChunkVersion3()
+{
+    const Model model = makeSpherePhysicsQuad();
+    const SerializeResult serialized = xrphoton::ogfx::serializeModel(
+        model,
+        "sphere-physics.ogfx");
+    expect(static_cast<bool>(serialized), "a sphere rigid body serializes");
+    if (!serialized) {
+        std::cerr << serialized.error << '\n';
+        return;
+    }
+    const std::size_t header = chunkHeaderOffset(
+        serialized.bytes,
+        ChunkId::RigidPhysics);
+    expect(readU32(serialized.bytes, header + 8)
+            == xrphoton::ogfx::RigidPhysicsChunkVersion3,
+        "a sphere selects rigid-physics chunk version 3");
+    const std::size_t collider = header + xrphoton::ogfx::ChunkHeaderSize
+        + xrphoton::ogfx::RigidPhysicsHeaderSize
+        + xrphoton::ogfx::PhysicsBodyRecordSize;
+    expect(readU32(serialized.bytes, collider)
+            == static_cast<std::uint32_t>(PhysicsShapeType::Sphere)
+            && readF32(serialized.bytes, collider + 28) == 0.75f
+            && readF32(serialized.bytes, collider + 56) == 18.0f,
+        "the version-3 record preserves sphere type, radius, and mass");
+    const xrphoton::ogfx::DecodeResult decoded = xrphoton::ogfx::decodeModelSchema(
+        serialized.bytes,
+        "sphere-physics-schema.ogfx");
+    expect(decoded
+            && decoded.model.physicsColliders.size() == 1
+            && decoded.model.physicsColliders[0].shapeType
+                == PhysicsShapeType::Sphere
+            && decoded.model.physicsColliders[0].radius == 0.75f,
+        "the schema decoder reconstructs version-3 sphere physics");
+    if (decoded) {
+        const SerializeResult roundTrip = xrphoton::ogfx::serializeModel(
+            decoded.model,
+            "sphere-physics-round-trip.ogfx");
+        expect(roundTrip && roundTrip.bytes == serialized.bytes,
+            "writer-decoder-writer preserves every version-3 sphere byte");
+    }
+}
+
 void testValidation()
 {
     {
@@ -1377,6 +1441,7 @@ int main()
     testMaterialChunkVersions();
     testRigidPhysicsChunk();
     testBoxPhysicsChunkVersion2();
+    testSpherePhysicsChunkVersion3();
     testValidation();
 
     if (failureCount != 0) {

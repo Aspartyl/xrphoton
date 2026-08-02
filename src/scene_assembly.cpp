@@ -244,11 +244,12 @@ bool validatePhysicsRecipes(const SceneData& scene, std::string* error)
     for (std::size_t index = 0; index < scene.physicsColliders.size(); ++index) {
         const ScenePhysicsCollider& collider = scene.physicsColliders[index];
         if (collider.shape != ScenePhysicsShape::Cylinder
-            && collider.shape != ScenePhysicsShape::Box) {
+            && collider.shape != ScenePhysicsShape::Box
+            && collider.shape != ScenePhysicsShape::Sphere) {
             return reject(
                 error,
                 "scene assembly: physicsColliders[" + std::to_string(index)
-                    + "].shape must be cylinder or box");
+                    + "].shape must be cylinder, box, or sphere");
         }
         if (!finiteVec3(collider.center)) {
             return reject(
@@ -299,7 +300,7 @@ bool validatePhysicsRecipes(const SceneData& scene, std::string* error)
                     "scene assembly: physicsColliders[" + std::to_string(index)
                         + "].radius must be finite and positive");
             }
-        } else {
+        } else if (collider.shape == ScenePhysicsShape::Box) {
             const glm::quat& orientation = collider.orientation;
             const double orientationLengthSquared =
                 static_cast<double>(orientation.x) * orientation.x
@@ -322,6 +323,11 @@ bool validatePhysicsRecipes(const SceneData& scene, std::string* error)
                     "scene assembly: physicsColliders[" + std::to_string(index)
                         + "].halfExtents must contain finite positive values");
             }
+        } else if (!finitePositive(collider.radius)) {
+            return reject(
+                error,
+                "scene assembly: physicsColliders[" + std::to_string(index)
+                    + "].radius must be finite and positive");
         }
     }
     return true;

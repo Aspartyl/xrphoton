@@ -27,6 +27,7 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/ShapeFilter.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
@@ -538,6 +539,13 @@ bool validateCollider(const ScenePhysicsCollider& collider, std::size_t index)
         }
         return true;
     }
+    case ScenePhysicsShape::Sphere:
+        if (!finite(collider.radius) || collider.radius <= 0.0f) {
+            std::cerr << "Physics: sphere collider[" << index
+                      << "] has an invalid radius.\n";
+            return false;
+        }
+        return true;
     default:
         std::cerr << "Physics: collider[" << index << "] has an unknown shape.\n";
         return false;
@@ -760,6 +768,10 @@ bool createPrimitiveShape(
         JPH::BoxShapeSettings settings{toJoltVec3(collider.halfExtents), convexRadius};
         result = settings.Create();
         *orientation = normalizedJoltQuat(collider.orientation);
+    } else if (collider.shape == ScenePhysicsShape::Sphere) {
+        JPH::SphereShapeSettings settings{collider.radius};
+        result = settings.Create();
+        *orientation = JPH::Quat::sIdentity();
     } else {
         JPH::Vec3 axis;
         if (!normalizedCylinderAxis(collider.axis, &axis)) {

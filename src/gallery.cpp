@@ -51,6 +51,7 @@ enum GalleryAssetIndex : uint32_t
     BlenderSphereAsset,
     BlenderSmoothSphereAsset,
     BlenderShinySphereAsset,
+    BlenderDynamicGlassSphereAsset,
     BlenderLeafCardAsset,
     BarrelAsset,
     RemadeBarrelAsset,
@@ -141,6 +142,12 @@ constexpr std::array GalleryAssets{
         .ogfxPath = XRPHOTON_GALLERY_BLENDER_SHINY_SPHERE_OGFX,
         .optional = true,
         .configurationName = "XRPHOTON_GALLERY_BLENDER_SHINY_SPHERE_OGFX",
+    },
+    GalleryAsset{
+        .name = "dynamic_glass_sphere",
+        .ogfxPath = XRPHOTON_GALLERY_BLENDER_DYNAMIC_GLASS_SPHERE_OGFX,
+        .optional = true,
+        .configurationName = "XRPHOTON_GALLERY_BLENDER_DYNAMIC_GLASS_SPHERE_OGFX",
     },
     GalleryAsset{
         .name = "test_leaf_card",
@@ -324,6 +331,16 @@ const std::array GalleryPlacements{
             * glm::scale(
                 glm::mat4{1.0f},
                 glm::vec3{2.5f}),
+    },
+    GalleryPlacement{
+        .assetIndex = BlenderDynamicGlassSphereAsset,
+        // The asset is authored with its bottom at local Y=0. This open west-side
+        // patch gives the player room to push and roll it without intersecting the
+        // glass-panel row, static probes, spawn, or night-only lights.
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{-5.5f, 0.0f, -0.5f}),
+        .dynamic = true,
     },
     GalleryPlacement{
         .assetIndex = BlenderLeafCardAsset,

@@ -130,10 +130,12 @@ OgfxLoadResult decodeOgfxScene(
 
         scene.physicsColliders.reserve(decoded.model.physicsColliders.size());
         for (const ogfx::PhysicsCollider& collider : decoded.model.physicsColliders) {
-            const ScenePhysicsShape shape =
-                collider.shapeType == ogfx::PhysicsShapeType::Box
-                ? ScenePhysicsShape::Box
-                : ScenePhysicsShape::Cylinder;
+            ScenePhysicsShape shape = ScenePhysicsShape::Cylinder;
+            if (collider.shapeType == ogfx::PhysicsShapeType::Box) {
+                shape = ScenePhysicsShape::Box;
+            } else if (collider.shapeType == ogfx::PhysicsShapeType::Sphere) {
+                shape = ScenePhysicsShape::Sphere;
+            }
             scene.physicsColliders.push_back({
                 .shape = shape,
                 .center = {collider.center.x, collider.center.y, collider.center.z},

@@ -246,6 +246,27 @@ void addCylinderRecipe(
     });
 }
 
+void addSphereRecipe(
+    xrphoton::SceneData* scene,
+    std::uint32_t meshIndex,
+    float radius,
+    float mass = 18.0f)
+{
+    const std::uint32_t firstCollider =
+        static_cast<std::uint32_t>(scene->physicsColliders.size());
+    xrphoton::ScenePhysicsCollider collider{};
+    collider.shape = xrphoton::ScenePhysicsShape::Sphere;
+    collider.radius = radius;
+    collider.mass = mass;
+    scene->physicsColliders.push_back(collider);
+    scene->physicsBodies.push_back({
+        .meshIndex = meshIndex,
+        .firstCollider = firstCollider,
+        .colliderCount = 1,
+        .mass = mass,
+    });
+}
+
 xrphoton::ScenePhysicsCollider cylinderCollider(
     glm::vec3 center,
     glm::vec3 axis,
@@ -319,6 +340,21 @@ DynamicScene makeCylinderScene(glm::vec3 axis, float height, float radius)
         &result.scene,
         dynamicMesh,
         translation({0.0f, 1.5f, 0.0f}));
+    return result;
+}
+
+DynamicScene makeSphereScene()
+{
+    DynamicScene result{};
+    const std::uint32_t ground = addGroundMesh(&result.scene);
+    const std::uint32_t dynamicMesh =
+        addClosedBoxMesh(&result.scene, glm::vec3{0.75f});
+    addSphereRecipe(&result.scene, dynamicMesh, 0.75f);
+    addInstance(&result.scene, ground, glm::mat4{1.0f});
+    result.dynamicIndex = addInstance(
+        &result.scene,
+        dynamicMesh,
+        translation({0.0f, 2.5f, 0.0f}));
     return result;
 }
 
@@ -724,6 +760,36 @@ void testSettleAndSleep()
         xrphoton::queryPhysicsBodyActive(&world, fixture.dynamicIndex, &active)
             && active,
         "setting velocity explicitly wakes a sleeping body");
+}
+
+void testSphereSettlesAndRolls()
+{
+    DynamicScene fixture = makeSphereScene();
+    xrphoton::PhysicsWorld world;
+    expect(createSingleDynamicWorld(&world, &fixture),
+        "sphere world is created with the native spherical collider");
+    if (world.state == nullptr) {
+        return;
+    }
+    expect(stepFrames(&world, 300), "sphere settles on the ground");
+    const float settledY =
+        fixture.scene.instances[fixture.dynamicIndex].transform[3][1];
+    expect(std::abs(settledY - 0.75f) <= 0.025f,
+        "sphere settles at its radius above the ground (found "
+            + std::to_string(settledY) + ")");
+    expect(xrphoton::setPhysicsBodyLinearVelocity(
+               &world,
+               fixture.dynamicIndex,
+               {2.0f, 0.0f, 0.0f}),
+        "sphere receives a horizontal push velocity");
+    expect(stepFrames(&world, 60), "pushed sphere advances for one second");
+    const glm::mat4& transform =
+        fixture.scene.instances[fixture.dynamicIndex].transform;
+    expect(transform[3][0] > 0.5f,
+        "pushed sphere travels horizontally");
+    expect(std::abs(transform[0][1]) > 1.0e-3f
+            || std::abs(transform[1][0]) > 1.0e-3f,
+        "ground friction turns the translating sphere so it visibly rolls");
 }
 
 xrphoton::SceneData makeDegenerateStaticScene()
@@ -1825,6 +1891,7 @@ int main()
     testCharacterCrouchAndBlockedStand();
     testCharacterPushStrength();
     testSettleAndSleep();
+    testSphereSettlesAndRolls();
     testLifecycleEpochs();
     testNullAndUninitializedContracts();
     testCreationInputContracts();

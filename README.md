@@ -148,38 +148,41 @@ The OGFx writer, decoder, scene-lighting policy and their tests need only the
 C++ toolchain and header-only GLM, with no Vulkan, GLFW, Slang, Jolt or GPU:
 
 ```sh
-cmake --preset ogfx-core
-cmake --build --preset ogfx-core
-ctest --preset ogfx-core
+cmake --preset default
+cmake --build --preset default
+ctest --preset default
 ```
 
 That configuration also builds the asset compiler, which converts legacy models
 and receives the Blender exporter's stream:
 
 ```sh
-./build/ogfx-core/xrPhotonAssetCompiler convert-ogf input.ogf output.ogfx
+./build/xrPhotonAssetCompiler convert-ogf input.ogf output.ogfx
 ```
 
 The converter deliberately handles two documented profiles, the M4a flat-static
 slice and the narrow SoC rigid-compound slice, and is not general skeletal
 support. The Blender side runs headless through
 [`tools/blender/export_ogfx.py`](tools/blender/export_ogfx.py) with Blender
-5.1.x, extracting one explicitly named static mesh and sending a private `XRBM`
+5.1.x, extracting one explicitly named mesh (optionally with the supported active
+sphere rigid-body recipe) and sending a private `XRBM`
 stream to `convert-blender` rather than writing OGFx itself:
 
 ```sh
 /path/to/blender --background --factory-startup --disable-autoexec \
   --python-exit-code 1 blender/test_pyramid.blend \
   --python tools/blender/export_ogfx.py -- \
-  --compiler "$PWD/build/ogfx-core/xrPhotonAssetCompiler" \
-  --output "$PWD/build/ogfx-core/assets/blender/test_pyramid.ogfx" \
+  --compiler "$PWD/build/xrPhotonAssetCompiler" \
+  --output "$PWD/build/assets/blender/test_pyramid.ogfx" \
   --object test_pyramid
 ```
 
 Accepted inputs are narrow on purpose: no modifiers, animation, shape keys,
 constraints or parenting, and at most one simple material whose texture is a
 lowercase `.dds` under the supplied texture root, or one explicit untextured
-Principled Metal material. Anything more elaborate fails loudly.
+Principled Metal/Glass material. The supported dynamic extension is one active
+spherical rigid body with an explicit radius and positive mass. Anything more
+elaborate fails loudly.
 [FORMATS.md](FORMATS.md) documents the full contract, and each
 converted asset has an opt-in CMake proof target there that runs the real tools
 twice and pins the output.
@@ -196,6 +199,7 @@ cmake --preset default \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=".../test_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SMOOTH_SPHERE_OGFX=".../test_smooth_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SHINY_SPHERE_OGFX=".../yard_shiny_sphere.ogfx" \
+  -DXRPHOTON_GALLERY_BLENDER_DYNAMIC_GLASS_SPHERE_OGFX=".../dynamic_glass_sphere.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_LEAF_CARD_OGFX=".../test_leaf_card.ogfx" \
   -DXRPHOTON_GALLERY_BARREL_OGFX=".../bochka_close_1.ogfx" \
   -DXRPHOTON_GALLERY_REMADE_BARREL_OGFX=".../remade_bochka_close_1.ogfx" \

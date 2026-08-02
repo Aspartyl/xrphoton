@@ -350,7 +350,8 @@ private:
                 const bool supportedRigidPhysicsVersion =
                     id == static_cast<std::uint32_t>(ChunkId::RigidPhysics)
                     && (version == RigidPhysicsChunkVersion1
-                        || version == RigidPhysicsChunkVersion2);
+                        || version == RigidPhysicsChunkVersion2
+                        || version == RigidPhysicsChunkVersion3);
                 if (!supportedRigidPhysicsVersion) {
                     // The header and framing are still validated, but an older
                     // reader must not interpret an optional payload using the
@@ -1046,6 +1047,7 @@ private:
         sourceNodeOffsets.reserve(colliderCount);
         model_.physicsColliders.reserve(colliderCount);
         bool hasBoxCollider = false;
+        bool hasSphereCollider = false;
         for (std::uint32_t index = 0; index < colliderCount; ++index) {
             const std::size_t recordOffset = colliderArrayOffset
                 + static_cast<std::size_t>(index) * colliderRecordSize;
@@ -1054,14 +1056,19 @@ private:
                 == static_cast<std::uint32_t>(PhysicsShapeType::Cylinder);
             const bool box = rawShapeType
                 == static_cast<std::uint32_t>(PhysicsShapeType::Box);
+            const bool sphere = rawShapeType
+                == static_cast<std::uint32_t>(PhysicsShapeType::Sphere);
             if (!cylinder
-                && !(box && chunk.version == RigidPhysicsChunkVersion2)) {
+                && !(box && chunk.version != RigidPhysicsChunkVersion1)
+                && !(sphere && chunk.version == RigidPhysicsChunkVersion3)) {
                 return reject(
                     chunk.id,
                     indexedField("colliders", index, "shapeType"),
                     chunk.version == RigidPhysicsChunkVersion1
                         ? "1 (cylinder)"
-                        : "1 (cylinder) or 2 (box)",
+                        : chunk.version == RigidPhysicsChunkVersion2
+                            ? "1 (cylinder) or 2 (box)"
+                            : "1 (cylinder), 2 (box), or 3 (sphere)",
                     std::to_string(rawShapeType));
             }
             const std::uint32_t flags = readU32(bytes_, recordOffset + 4);
@@ -1112,7 +1119,7 @@ private:
             PhysicsCollider collider{
                 .shapeType = cylinder
                     ? PhysicsShapeType::Cylinder
-                    : PhysicsShapeType::Box,
+                    : box ? PhysicsShapeType::Box : PhysicsShapeType::Sphere,
                 .flags = flags,
                 .material = {},
                 .sourceNode = {},
@@ -1147,7 +1154,7 @@ private:
                     || !requirePositive(collider.radius, "radius")) {
                     return false;
                 }
-                if (chunk.version == RigidPhysicsChunkVersion2
+                if (chunk.version != RigidPhysicsChunkVersion1
                     && (readU32(bytes_, recordOffset + 48) != 0
                         || readU32(bytes_, recordOffset + 52) != 0)) {
                     return reject(
@@ -1156,7 +1163,7 @@ private:
                         "0",
                         "a nonzero value");
                 }
-            } else {
+            } else if (box) {
                 hasBoxCollider = true;
                 collider.orientation = {
                     readF32(bytes_, recordOffset + 28),
@@ -1190,8 +1197,23 @@ private:
                     || !requirePositive(collider.halfExtents.z, "halfExtents.z")) {
                     return false;
                 }
+            } else {
+                hasSphereCollider = true;
+                collider.radius = readF32(bytes_, recordOffset + 28);
+                if (!requirePositive(collider.radius, "radius")) {
+                    return false;
+                }
+                for (std::size_t reserved = 0; reserved < 6; ++reserved) {
+                    if (readU32(bytes_, recordOffset + 32 + reserved * 4) != 0) {
+                        return reject(
+                            chunk.id,
+                            indexedField("colliders", index, "shape reserved"),
+                            "0",
+                            "a nonzero value");
+                    }
+                }
             }
-            if (chunk.version == RigidPhysicsChunkVersion2
+            if (chunk.version != RigidPhysicsChunkVersion1
                 && (readU32(bytes_, recordOffset + 72) != 0
                     || readU32(bytes_, recordOffset + 76) != 0)) {
                 return reject(
@@ -1208,6 +1230,13 @@ private:
                 "collider shape composition",
                 "at least one box collider in canonical version 2",
                 "cylinders only");
+        }
+        if (chunk.version == RigidPhysicsChunkVersion3 && !hasSphereCollider) {
+            return reject(
+                chunk.id,
+                "collider shape composition",
+                "at least one sphere collider in canonical version 3",
+                "no sphere colliders");
         }
 
         std::vector<std::uint32_t> requestedOffsets;

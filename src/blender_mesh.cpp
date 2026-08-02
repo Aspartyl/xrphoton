@@ -331,19 +331,23 @@ ogfx::DecodeResult decodeStaticMesh(
     const std::uint32_t version = reader.readU32();
     if (version != StreamVersion1
         && version != StreamVersion2
-        && version != StreamVersion3) {
+        && version != StreamVersion3
+        && version != StreamVersion4) {
         return failure(
             diagnosticName,
             "version",
             std::to_string(StreamVersion1) + " or "
                 + std::to_string(StreamVersion2) + " or "
-                + std::to_string(StreamVersion3),
+                + std::to_string(StreamVersion3) + " or "
+                + std::to_string(StreamVersion4),
             std::to_string(version));
     }
     const std::uint32_t headerSize = reader.readU32();
     const std::uint32_t expectedHeaderSize = version == StreamVersion1
         ? StreamHeaderSizeV1
-        : version == StreamVersion2 ? StreamHeaderSizeV2 : StreamHeaderSizeV3;
+        : version == StreamVersion2 ? StreamHeaderSizeV2
+        : version == StreamVersion3 ? StreamHeaderSizeV3
+                                    : StreamHeaderSizeV4;
     if (headerSize != expectedHeaderSize) {
         return failure(
             diagnosticName,
@@ -423,6 +427,9 @@ ogfx::DecodeResult decodeStaticMesh(
     float perceptualRoughness = ogfx::DefaultPerceptualRoughness;
     float dielectricF0 = ogfx::DefaultDielectricF0;
     ogfx::MaterialClass materialClass = ogfx::MaterialClass::Dielectric;
+    float physicsMass = 0.0f;
+    float sphereRadius = 0.0f;
+    Vec3 sphereCenter{};
     if (hasMaterial) {
         const std::uint32_t materialFlags = reader.readU32();
         if ((materialFlags & ~MaterialFlagAlphaTested) != 0) {
@@ -548,6 +555,50 @@ ogfx::DecodeResult decodeStaticMesh(
         }
     }
 
+    if (version == StreamVersion4) {
+        const std::uint32_t shape = reader.readU32();
+        physicsMass = reader.readF32();
+        sphereRadius = reader.readF32();
+        const std::uint32_t reserved0 = reader.readU32();
+        sphereCenter = reader.readVec3();
+        const std::uint32_t reserved1 = reader.readU32();
+        if (shape != PhysicsShapeSphere) {
+            return failure(
+                diagnosticName,
+                "physics shape",
+                "Sphere (3)",
+                std::to_string(shape));
+        }
+        if (!std::isfinite(physicsMass) || physicsMass <= 0.0f) {
+            return failure(
+                diagnosticName,
+                "physics mass",
+                "a finite positive f32",
+                std::to_string(physicsMass));
+        }
+        if (!std::isfinite(sphereRadius) || sphereRadius <= 0.0f) {
+            return failure(
+                diagnosticName,
+                "sphere radius",
+                "a finite positive f32",
+                std::to_string(sphereRadius));
+        }
+        if (!finite(sphereCenter)) {
+            return failure(
+                diagnosticName,
+                "sphere center",
+                "three finite f32 values",
+                "a non-finite value");
+        }
+        if (reserved0 != 0 || reserved1 != 0) {
+            return failure(
+                diagnosticName,
+                "physics reserved words",
+                "both zero",
+                "a nonzero value");
+        }
+    }
+
     constexpr std::uint64_t TriangleRecordSize =
         static_cast<std::uint64_t>(CornersPerTriangle) * CornerRecordSize;
     const std::uint64_t sizeLimitedTriangleCount =
@@ -596,6 +647,40 @@ ogfx::DecodeResult decodeStaticMesh(
             std::to_string(transformDeterminant));
     }
     const double inverseDeterminant = 1.0 / transformDeterminant;
+    float convertedSphereRadius = 0.0f;
+    Vec3 convertedSphereCenter{};
+    if (version == StreamVersion4) {
+        const auto& m = matrix.values;
+        const std::array<double, 3> basisLengths{
+            std::sqrt(m[0] * m[0] + m[4] * m[4] + m[8] * m[8]),
+            std::sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]),
+            std::sqrt(m[2] * m[2] + m[6] * m[6] + m[10] * m[10]),
+        };
+        const double scale = basisLengths[0];
+        const double tolerance = std::max(1.0, scale) * 1.0e-5;
+        if (!std::isfinite(scale) || scale <= 0.0
+            || std::abs(basisLengths[1] - scale) > tolerance
+            || std::abs(basisLengths[2] - scale) > tolerance) {
+            return failure(
+                diagnosticName,
+                "sphere object scale",
+                "finite uniform scale",
+                "nonuniform or unrepresentable scale");
+        }
+        const double radius = static_cast<double>(sphereRadius) * unitScale * scale;
+        convertedSphereRadius = toCanonicalF32(radius);
+        convertedSphereCenter = transformPosition(
+            matrix, unitScale, sphereCenter);
+        if (!std::isfinite(convertedSphereRadius)
+            || convertedSphereRadius <= 0.0f
+            || !finite(convertedSphereCenter)) {
+            return failure(
+                diagnosticName,
+                "converted sphere collider",
+                "a finite positive radius and finite center",
+                "an unrepresentable value");
+        }
+    }
     // The Blender-to-engine axis swap has determinant -1. Reverse exactly when
     // the complete transform reflects orientation.
     const bool reverseWinding = transformDeterminant > 0.0;
@@ -739,6 +824,28 @@ ogfx::DecodeResult decodeStaticMesh(
     material.alphaCutoff = alphaCutoff;
     material.baseColorTexture = std::move(textureReference);
     model.materials.push_back(std::move(material));
+    if (version == StreamVersion4) {
+        const ogfx::Position center{
+            toCanonicalF32(convertedSphereCenter.x),
+            toCanonicalF32(convertedSphereCenter.y),
+            toCanonicalF32(convertedSphereCenter.z),
+        };
+        model.physicsBodies.push_back({
+            .firstCollider = 0,
+            .colliderCount = 1,
+            .mass = physicsMass,
+            .centerOfMass = center,
+        });
+        model.physicsColliders.push_back({
+            .shapeType = ogfx::PhysicsShapeType::Sphere,
+            .material = {},
+            .sourceNode = {},
+            .center = center,
+            .radius = convertedSphereRadius,
+            .mass = physicsMass,
+            .centerOfMass = center,
+        });
+    }
     return {.model = std::move(model), .error = {}};
 }
 }

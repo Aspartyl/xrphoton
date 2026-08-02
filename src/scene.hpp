@@ -79,6 +79,7 @@ enum class ScenePhysicsShape : uint32_t
 {
     Cylinder = 1,
     Box = 2,
+    Sphere = 3,
 };
 
 struct ScenePhysicsCollider

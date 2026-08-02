@@ -397,7 +397,7 @@ rather than smuggling serialized records into runtime structs.
 | `0x0020` | `OGFX_POSITIONS` | yes | tightly packed `f32×3` positions, 12-byte stride |
 | `0x0021` | `OGFX_ATTRIBUTES` | yes | 20-byte all-scalar attribute records: `nx, ny, nz, u, v` |
 | `0x0022` | `OGFX_INDICES` | yes | `u32` indices, geometry-local |
-| `0x0030` | `OGFX_RIGID_PHYSICS` | optional | backend-neutral compound-body records: contiguous collider ranges, masses/centers of mass, cylinder or oriented-box shapes, source material, and source-node names |
+| `0x0030` | `OGFX_RIGID_PHYSICS` | optional | backend-neutral compound-body records: contiguous collider ranges, masses/centers of mass, cylinder, oriented-box, or sphere shapes, source material, and source-node names |
 | `0x0040` | `OGFX_DESC` | optional | provenance (the `OGF_S_DESC` heritage: source asset, converting tool + version, stable source-provided timestamps) plus the complete-input hash the compiler used |
 
 Required chunks set the required flag and occur exactly once. Six use chunk version
@@ -519,9 +519,11 @@ references and geometry classes as `decodeModelSchema`.
 always uses `flags == 0` (optional). The writer retains version `1` for
 cylinder-only models so the pinned barrel remains byte-identical. A model with
 any oriented box selects version `2`, whose wider collider record can represent
-both shapes. This choice is canonical: a version-`2` chunk with no box collider
+both shapes. A model with any sphere selects version `3`, reusing the 80-byte
+record with a spherical shape-union member. These choices are canonical: a
+version-`2` chunk with no box collider
 is rejected instead of being accepted and normalized back to version `1` on
-rewrite. The shared header and body record are:
+rewrite, and version `3` requires at least one sphere. The shared header and body record are:
 
 ```text
 payload header — 32 bytes
@@ -599,9 +601,18 @@ shape union, oriented box:
 76  u32 reserved1           (zero)
 ```
 
+Version `3` retains that 80-byte record and permits all version-2 shapes plus:
+
+```text
+shape union, sphere:
+28  f32 radius              (finite and positive)
+32  u32 reserved[6]         (all zero)
+```
+
 The body ranges form one ordered, gap-free partition of every collider exactly
 once. Centers and centers of mass are finite; cylinder axes are nonzero, and
-box quaternions are unit length within `1e-4`. Material and source-node
+box quaternions are unit length within `1e-4`, and sphere radii are positive.
+Material and source-node
 references use the same interned length-prefixed UTF-8 arena discipline as
 material texture references, including the 4096-byte per-string and 64 MiB
 reconstructed-string caps. Both physics arrays must be empty or both nonempty.
@@ -881,7 +892,7 @@ extractor, stdin payload, deduplication table, and compiler model's combined
 working set. This slice does not flatten hierarchy, apply modifiers, support
 blended transparency, or infer which object the user intended.
 
-Three strict XRBM profiles now share that geometry path:
+Four strict XRBM profiles now share that geometry path:
 
 - **Version 1, 96-byte header:** no material slots or evaluated materials,
   zero or one UV layer, and one emitted opaque geometry/default untextured
@@ -919,14 +930,21 @@ Three strict XRBM profiles now share that geometry path:
   untextured Glass profile requires `xrphoton_material_class = glass`, Transmission
   Weight 1, IOR 1.5, metallic 0, no alpha test, and finite unlinked base tint and
   roughness; every unsupported node or parameter fails conversion.
+- **Version 4, 176-byte header:** extends v3 with exactly one active Blender
+  rigid body using a spherical collider. The profile requires a finite positive
+  mass and numeric positive `xrphoton_physics_radius`; the C++ adapter applies
+  the same object transform, scene-unit scale, and Blender-to-engine axis map to
+  the collider as it applies to the mesh, and rejects nonuniform sphere scale.
+  It emits one OGFx body and one sphere collider, so runtime instances are
+  ordinary Jolt dynamic bodies rather than render-only props.
 
 The little-endian exchange layout is deliberately small and closed:
 
 | Offset | Bytes | XRBM field |
 |---:|---:|---|
 | 0 | 4 | magic `XRBM` |
-| 4 | 4 | version (`1`, `2`, or `3`) |
-| 8 | 4 | exact header size (`96`, `112`, or `144`) |
+| 4 | 4 | version (`1`, `2`, `3`, or `4`) |
+| 8 | 4 | exact header size (`96`, `112`, `144`, or `176`) |
 | 12 | 4 | flags; bit 0 means UVs, all other bits zero |
 | 16 | 4 | triangle count |
 | 20 | 12 | Blender major/minor/patch as three `u32` values |
@@ -935,17 +953,18 @@ The little-endian exchange layout is deliberately small and closed:
 | 40 | 48 | row-major object affine 3×4 matrix (12 `f32` values) |
 | 88 | 8 | two reserved-zero `u32` values |
 | 96 | 16 | v2 only: material flags (bit 0 = alpha-tested), cutoff, texture-reference byte count, reserved zero |
-| 96 | 16 | v3 only: material flags, cutoff, optional texture-reference byte count, material class |
-| 112 | 16 | v3 only: base-color factor RGBA |
-| 128 | 16 | v3 only: perceptual roughness, dielectric F0, two reserved-zero words |
+| 96 | 16 | v3/v4: material flags, cutoff, optional texture-reference byte count, material class |
+| 112 | 16 | v3/v4: base-color factor RGBA |
+| 128 | 16 | v3/v4: perceptual roughness, dielectric F0, two reserved-zero words |
+| 144 | 32 | v4 only: sphere shape word, mass, radius, reserved zero, local center XYZ, reserved zero |
 
-In v1, triangle-corner records begin at byte 96. In v2/v3, the exact-length ASCII
+In v1, triangle-corner records begin at byte 96. In v2/v3/v4, the exact-length ASCII
 texture reference follows the declared header when nonempty, then the records begin. Every triangle has
 three 32-byte corner records: position `(x,y,z)`, normal `(x,y,z)`, and UV
 `(u,v)`, all `f32`. Exact file size, reserved fields, flags, string grammar,
 finite values, and semantic ranges are validated before a compiler model is
 accepted. XRBM's exchange version is independent of the persistent format:
-all three XRBM versions are compiled into canonical OGFx container version 1.
+all four XRBM versions are compiled into canonical OGFx container version 1.
 
 **UV convention at this boundary.** XRBM v1 preserves authored Blender
 `(u, v)` values exactly for backward compatibility. Textured v2 performs the
@@ -986,7 +1005,7 @@ asset only and carries no physics bodies or colliders. The separate opt-in
 `xrPhotonRemadeBarrelOfflineProof` runs the ignored `.blend` through real Blender
 twice, verifies deterministic canonical reconstruction and source-scale bounds,
 pins the complete 12-level DDS chain, and publishes
-`build/ogfx-core/assets/blender/remade_bochka_close_1.ogfx`. Its PNG and DDS live
+`build/assets/blender/remade_bochka_close_1.ogfx`. Its PNG and DDS live
 under `blender/textures/xrphoton/`; the texture files, `.blend`, and generated
 OGFx remain ignored local/build inputs.
 
@@ -1006,7 +1025,7 @@ bung assemblies, weld seam, inspection plate, rivets, and warning bars—is
 geometry rather than an image feature requiring alignment. The opt-in
 `xrPhotonCustomBarrelOfflineProof` runs real Blender twice, verifies exact OGFx
 reconstruction and DDS structure, and publishes
-`build/ogfx-core/assets/blender/custom_stalker_barrel.ogfx`.
+`build/assets/blender/custom_stalker_barrel.ogfx`.
 
 Third-party assets — free path-tracing test models included — normally enter
 the same way: Blender imports them, then an xrPhoton export front end feeds the

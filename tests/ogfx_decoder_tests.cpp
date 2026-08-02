@@ -882,7 +882,7 @@ void testRigidPhysicsSchemaAndValidation()
     chunkById(&chunks, ChunkId::RigidPhysics).flags = 1;
     expectRejected(assembleFile(chunks), "OGFX_RIGID_PHYSICS", "flags");
     chunks = freshChunks();
-    chunkById(&chunks, ChunkId::RigidPhysics).version = 3;
+    chunkById(&chunks, ChunkId::RigidPhysics).version = 4;
     Model renderOnly = source;
     renderOnly.physicsBodies.clear();
     renderOnly.physicsColliders.clear();

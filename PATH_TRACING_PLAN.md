@@ -147,7 +147,7 @@ sample per eligible surface and power-heuristic MIS against subsequent BSDF sky 
 the miss stage returns only its marker and the delta sun remains independent. The new
 graphics-free `scene_lighting` suite covers selectors, evaluation/sample/PDF round
 trips and normalization, MIS edge cases, both ABIs/flags, and alignment/overflow math.
-All 21 debug tests and all 7 `ogfx-core` tests pass; emitted SPIR-V validates and pins
+All 21 canonical-build tests pass; emitted SPIR-V validates and pins
 the planned member offsets. Plain, GPU-assisted, and synchronization validation are
 clean across both frame slots. Radiance and sky-visibility rays share the same infinite
 horizon, and the environment's undefined lower hemisphere is explicitly black. The
@@ -663,9 +663,8 @@ and step 5's budget have a baseline that predates the work they measure.
 
 ### 9.5 Standing validation for every phase
 
-- `ctest --preset ogfx-core` for the graphics-free suites and `ctest --preset
-  default` for the full set; every new suite is registered in both the list and
-  `ARCHITECTURE.md`.
+- `ctest --preset default` for the full set, including graphics-free suites;
+  every new suite is registered in both the list and `ARCHITECTURE.md`.
 - Plain, GPU-assisted, and synchronization validation clean over live motion, resize,
   camera-mode switching, and teardown — run with `DISABLE_MANGOHUD=1`.
 - Capture hashes re-pinned deliberately at each phase that changes the image, with the

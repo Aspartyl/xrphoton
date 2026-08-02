@@ -514,6 +514,14 @@ SerializeResult prepareModel(
             model.physicsColliders.begin(),
             model.physicsColliders.end(),
             [](const PhysicsCollider& collider) {
+                return collider.shapeType == PhysicsShapeType::Sphere;
+            })) {
+        prepared->physicsChunkVersion = RigidPhysicsChunkVersion3;
+        prepared->physicsColliderRecordSize = PhysicsColliderRecordSizeV2;
+    } else if (std::any_of(
+            model.physicsColliders.begin(),
+            model.physicsColliders.end(),
+            [](const PhysicsCollider& collider) {
                 return collider.shapeType == PhysicsShapeType::Box;
             })) {
         prepared->physicsChunkVersion = RigidPhysicsChunkVersion2;
@@ -523,12 +531,13 @@ SerializeResult prepareModel(
     for (std::size_t index = 0; index < model.physicsColliders.size(); ++index) {
         const PhysicsCollider& collider = model.physicsColliders[index];
         if (collider.shapeType != PhysicsShapeType::Cylinder
-            && collider.shapeType != PhysicsShapeType::Box) {
+            && collider.shapeType != PhysicsShapeType::Box
+            && collider.shapeType != PhysicsShapeType::Sphere) {
             return failure(
                 diagnosticName,
                 ChunkId::RigidPhysics,
                 indexedField("colliders", index, "shapeType"),
-                "1 (cylinder) or 2 (box)",
+                "1 (cylinder), 2 (box), or 3 (sphere)",
                 std::to_string(static_cast<std::uint32_t>(collider.shapeType)));
         }
         if ((collider.flags & ~PhysicsColliderAllowedFlags) != 0) {
@@ -588,7 +597,7 @@ SerializeResult prepareModel(
                 || !requirePositive(collider.radius, "radius")) {
                 return physicsStringFailure;
             }
-        } else {
+        } else if (collider.shapeType == PhysicsShapeType::Box) {
             const Orientation& orientation = collider.orientation;
             const double orientationLengthSquared =
                 static_cast<double>(orientation.x) * orientation.x
@@ -618,6 +627,8 @@ SerializeResult prepareModel(
                     "finite positive f32 values",
                     "a non-finite value");
             }
+        } else if (!requirePositive(collider.radius, "radius")) {
+            return physicsStringFailure;
         }
         if (!positionIsFinite(collider.centerOfMass)) {
             return failure(
@@ -1118,12 +1129,17 @@ SerializeResult serializeModel(const Model& model, std::string_view diagnosticNa
                     appendF32(&result.bytes, collider.radius);
                     appendU32(&result.bytes, 0);
                     appendU32(&result.bytes, 0);
-                } else {
+                } else if (collider.shapeType == PhysicsShapeType::Box) {
                     appendF32(&result.bytes, collider.orientation.x);
                     appendF32(&result.bytes, collider.orientation.y);
                     appendF32(&result.bytes, collider.orientation.z);
                     appendF32(&result.bytes, collider.orientation.w);
                     appendPosition(&result.bytes, collider.halfExtents);
+                } else {
+                    appendF32(&result.bytes, collider.radius);
+                    for (std::size_t reserved = 0; reserved < 6; ++reserved) {
+                        appendU32(&result.bytes, 0);
+                    }
                 }
                 appendF32(&result.bytes, collider.mass);
                 appendPosition(&result.bytes, collider.centerOfMass);

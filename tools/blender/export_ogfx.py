@@ -1,4 +1,4 @@
-"""Extract one static Blender mesh and compile it through xrPhoton's OGFx writer.
+"""Extract one Blender mesh and compile it through xrPhoton's OGFx writer.
 
 Run this file with Blender, not a system Python interpreter. The script emits a
 private XRBM stream to xrPhotonAssetCompiler over stdin; it never writes OGFx.
@@ -24,14 +24,17 @@ STREAM_MAGIC = b"XRBM"
 STREAM_VERSION_1 = 1
 STREAM_VERSION_2 = 2
 STREAM_VERSION_3 = 3
+STREAM_VERSION_4 = 4
 STREAM_HEADER_SIZE_V1 = 96
 STREAM_HEADER_SIZE_V2 = 112
 STREAM_HEADER_SIZE_V3 = 144
+STREAM_HEADER_SIZE_V4 = 176
 CORNER_RECORD_SIZE = 32
 MAXIMUM_TRIANGLE_COUNT = 1_000_000
 MAXIMUM_TEXTURE_REFERENCE_BYTES = 4096
 FLAG_HAS_UVS = 1
 MATERIAL_FLAG_ALPHA_TESTED = 1
+PHYSICS_SHAPE_SPHERE = 3
 
 
 class ExportError(RuntimeError):
@@ -48,6 +51,13 @@ class MaterialProfile:
     base_color_factor: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
     perceptual_roughness: float = 1.0
     dielectric_f0: float = 0.04
+
+
+@dataclass(frozen=True)
+class PhysicsProfile:
+    mass: float
+    radius: float
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 def source_name(object_name: str) -> str:
@@ -71,7 +81,7 @@ def parse_arguments() -> argparse.Namespace:
         ) from error
 
     parser = argparse.ArgumentParser(
-        description="Compile one static Blender mesh to OGFx"
+        description="Compile one Blender mesh to OGFx"
     )
     parser.add_argument("--compiler", required=True, help="xrPhotonAssetCompiler path")
     parser.add_argument("--output", required=True, help="destination .ogfx path")
@@ -170,6 +180,47 @@ def validate_source_object(object_name: str) -> bpy.types.Object:
 
 def finite_values(values: tuple[float, ...] | list[float]) -> bool:
     return all(math.isfinite(value) for value in values)
+
+
+def validate_physics_profile(obj: bpy.types.Object) -> PhysicsProfile | None:
+    rigid_body = obj.rigid_body
+    if rigid_body is None:
+        return None
+    object_name = obj.name
+    reject(
+        rigid_body.type != "ACTIVE",
+        object_name,
+        "rigid-body type",
+        "only an Active dynamic rigid body is supported",
+    )
+    reject(
+        rigid_body.collision_shape != "SPHERE",
+        object_name,
+        "rigid-body collision shape",
+        "only Sphere is supported by this Blender export profile",
+    )
+    mass = float(rigid_body.mass)
+    reject(
+        not math.isfinite(mass) or mass <= 0.0,
+        object_name,
+        "rigid-body mass",
+        "expected a finite positive value",
+    )
+    radius_value = obj.get("xrphoton_physics_radius")
+    reject(
+        type(radius_value) not in {int, float},
+        object_name,
+        "xrphoton_physics_radius",
+        "set the collider radius as a numeric custom property",
+    )
+    radius = float(radius_value)
+    reject(
+        not math.isfinite(radius) or radius <= 0.0,
+        object_name,
+        "xrphoton_physics_radius",
+        "expected a finite positive value",
+    )
+    return PhysicsProfile(mass=mass, radius=radius)
 
 
 def canonical_texture_reference(relative_path: Path, object_name: str) -> str:
@@ -573,7 +624,9 @@ def validate_material_profile(
 
 
 def extract_stream(
-    obj: bpy.types.Object, material_profile: MaterialProfile | None
+    obj: bpy.types.Object,
+    material_profile: MaterialProfile | None,
+    physics_profile: PhysicsProfile | None = None,
 ) -> bytes:
     object_name = obj.name
     unit_scale = float(bpy.context.scene.unit_settings.scale_length)
@@ -685,8 +738,16 @@ def extract_stream(
             if material_profile is not None
             else b""
         )
+        reject(
+            physics_profile is not None and material_profile is None,
+            object_name,
+            "rigid-body material",
+            "the dynamic sphere profile requires one explicit material",
+        )
         stream_version = (
-            STREAM_VERSION_1
+            STREAM_VERSION_4
+            if physics_profile is not None
+            else STREAM_VERSION_1
             if material_profile is None
             else STREAM_VERSION_3
             if material_profile.material_class != 0
@@ -698,6 +759,8 @@ def extract_stream(
             else STREAM_HEADER_SIZE_V2
             if stream_version == STREAM_VERSION_2
             else STREAM_HEADER_SIZE_V3
+            if stream_version == STREAM_VERSION_3
+            else STREAM_HEADER_SIZE_V4
         )
         stream_size = (
             stream_header_size
@@ -754,6 +817,18 @@ def extract_stream(
                         0,
                     )
                 )
+        if physics_profile is not None:
+            payload.extend(
+                struct.pack(
+                    "<IffI3fI",
+                    PHYSICS_SHAPE_SPHERE,
+                    physics_profile.mass,
+                    physics_profile.radius,
+                    0,
+                    *physics_profile.center,
+                    0,
+                )
+            )
         if len(payload) != stream_header_size:
             raise ExportError("Blender extractor internal XRBM header-size mismatch")
         payload.extend(texture_reference_bytes)
@@ -816,6 +891,7 @@ def run() -> int:
         Path(arguments.texture_root) if arguments.texture_root is not None else None
     )
     material_profile = validate_material_profile(obj, texture_root)
+    physics_profile = validate_physics_profile(obj)
     if (material_profile is not None
         and material_profile.image_path is not None
         and paths_alias(output, material_profile.image_path)):
@@ -823,7 +899,7 @@ def run() -> int:
             "output path must not identify the material image: "
             f"{material_profile.image_path}"
         )
-    payload = extract_stream(obj, material_profile)
+    payload = extract_stream(obj, material_profile, physics_profile)
     diagnostic_name = source_name(obj.name)
     result = subprocess.run(
         [str(compiler), "convert-blender", diagnostic_name, str(output)],
