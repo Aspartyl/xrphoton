@@ -86,6 +86,25 @@ bool parsePositiveU32(std::string_view text, std::uint32_t* value)
     *value = parsed;
     return true;
 }
+
+bool parseTimeOfDayHours(std::string_view text, float* value)
+{
+    if (value == nullptr || text.empty()) {
+        return false;
+    }
+    float parsed = 0.0f;
+    const std::from_chars_result result = std::from_chars(
+        text.data(),
+        text.data() + text.size(),
+        parsed,
+        std::chars_format::general);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()
+        || !std::isfinite(parsed) || parsed < 0.0f || parsed >= 24.0f) {
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
 }
 
 bool parseCommandLine(
@@ -113,11 +132,11 @@ bool parseCommandLine(
     try {
         constexpr const char* Usage =
             "Usage: xrPhoton [--validation] [--capture <count> <output.ppm>] "
-            "[--scene <yard|night>] | [--validation] --reference <count> "
-            "--scene <yard|night> --estimator <mis|nee|bsdf>";
+            "[--time <hours>] | [--validation] --reference <count> "
+            "--estimator <mis|nee|bsdf> [--time <hours>]";
         bool modeSeen = false;
-        bool sceneSeen = false;
         bool estimatorSeen = false;
+        bool timeSeen = false;
         bool validationSeen = false;
         CommandLineOptions candidate;
         for (int index = 1; index < argumentCount;) {
@@ -170,23 +189,6 @@ bool parseCommandLine(
                 candidate.referenceSampleCount = count;
                 modeSeen = true;
                 index += 2;
-            } else if (option == "--scene") {
-                if (sceneSeen || index + 1 >= argumentCount
-                    || arguments[index + 1] == nullptr) {
-                    *error = Usage;
-                    return false;
-                }
-                const std::string_view value(arguments[index + 1]);
-                if (value == "yard") {
-                    candidate.scenePreset = ScenePreset::Yard;
-                } else if (value == "night") {
-                    candidate.scenePreset = ScenePreset::Night;
-                } else {
-                    *error = "Scene must be 'yard' or 'night'.";
-                    return false;
-                }
-                sceneSeen = true;
-                index += 2;
             } else if (option == "--estimator") {
                 if (estimatorSeen || index + 1 >= argumentCount
                     || arguments[index + 1] == nullptr) {
@@ -206,14 +208,27 @@ bool parseCommandLine(
                 }
                 estimatorSeen = true;
                 index += 2;
+            } else if (option == "--time") {
+                if (timeSeen || index + 1 >= argumentCount
+                    || arguments[index + 1] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                float hours = 0.0f;
+                if (!parseTimeOfDayHours(arguments[index + 1], &hours)) {
+                    *error = "Time of day must be a finite number in [0, 24).";
+                    return false;
+                }
+                candidate.timeOfDayHours = hours;
+                timeSeen = true;
+                index += 2;
             } else {
                 *error = Usage;
                 return false;
             }
         }
-        if (candidate.mode == CommandLineMode::Reference
-            && (!sceneSeen || !estimatorSeen)) {
-            *error = "Reference mode requires --scene and --estimator.";
+        if (candidate.mode == CommandLineMode::Reference && !estimatorSeen) {
+            *error = "Reference mode requires --estimator.";
             return false;
         }
         if (candidate.mode != CommandLineMode::Reference && estimatorSeen) {

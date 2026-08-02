@@ -68,7 +68,7 @@ struct FrameLighting
     float4 skyPerezE;
     float4 nightZenith;
     float daylightBlend;
-    uint reserved0;
+    float emitterScale;
     uint reserved1;
     uint reserved2;
 };

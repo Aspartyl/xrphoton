@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -36,11 +37,34 @@ namespace
 constexpr int WindowWidth = 1920;
 constexpr int WindowHeight = 1080;
 constexpr const char* WindowTitle = "xrPhoton";
+constexpr float InteractiveDayCycleHoursPerSecond = 1.0f / 60.0f;
 bool framebufferResized = false;
 
 void markFramebufferResized(GLFWwindow*, int, int)
 {
     framebufferResized = true;
+}
+
+bool packPublishedFrameLighting(
+    const SceneLighting& sceneLighting,
+    std::uint32_t instanceCount,
+    bool referenceMode,
+    EstimatorMode estimator,
+    FrameLighting* frameLighting)
+{
+    if (!makeFrameLighting(sceneLighting, instanceCount, frameLighting)) {
+        return false;
+    }
+    // Glass transport is a permanent pipeline capability. Keep the published feature
+    // bit stable for capture/debug consumers without deriving renderer behavior from
+    // the current scene's material inventory.
+    frameLighting->flags |= FrameLightingGlassBit;
+    if (referenceMode) {
+        frameLighting->flags =
+            (frameLighting->flags & ~FrameLightingEstimatorMask)
+            | estimatorFlags(estimator);
+    }
+    return hasValidFrameLightingFlags(frameLighting->flags);
 }
 
 } // namespace
@@ -388,7 +412,10 @@ int main(int argumentCount, char** arguments)
     }
     std::cout << ".\n";
 
-    GalleryLoadResult loadedGallery = loadGalleryScene(commandLine.scenePreset);
+    GalleryLoadResult loadedGallery = loadGalleryScene(
+        referenceMode
+            ? GallerySceneProfile::EstimatorReference
+            : GallerySceneProfile::Complete);
     if (!loadedGallery) {
         std::cerr << loadedGallery.error << '\n';
         return 1;
@@ -399,7 +426,13 @@ int main(int argumentCount, char** arguments)
         std::cerr << "Scene instance count exceeds the FrameLighting ABI.\n";
         return 1;
     }
-    SceneLighting sceneLighting = makeSceneLightingPreset(commandLine.scenePreset);
+    float timeOfDayHours = commandLine.timeOfDayHours.value_or(
+        DefaultTimeOfDayHours);
+    SceneLighting sceneLighting = DefaultSceneLighting;
+    if (!updateSceneLightingTimeOfDay(timeOfDayHours, &sceneLighting)) {
+        std::cerr << "Failed to configure scene time of day.\n";
+        return 1;
+    }
     std::string sceneLightingError;
     if (!buildSceneLighting(
             sceneData,
@@ -411,25 +444,14 @@ int main(int argumentCount, char** arguments)
         return 1;
     }
     FrameLighting frameLighting;
-    if (!makeFrameLighting(
+    if (!packPublishedFrameLighting(
             sceneLighting,
             static_cast<std::uint32_t>(sceneData.instances.size()),
+            referenceMode,
+            commandLine.estimator,
             &frameLighting)) {
         std::cerr << "Failed to pack scene lighting.\n";
         return 1;
-    }
-    // Glass transport is a permanent pipeline capability. Keep the published feature
-    // bit stable for capture/debug consumers without deriving renderer behavior from
-    // the current scene's material inventory.
-    frameLighting.flags |= FrameLightingGlassBit;
-    if (referenceMode) {
-        frameLighting.flags =
-            (frameLighting.flags & ~FrameLightingEstimatorMask)
-            | estimatorFlags(commandLine.estimator);
-        if (!hasValidFrameLightingFlags(frameLighting.flags)) {
-            std::cerr << "Reference estimator produced invalid FrameLighting flags.\n";
-            return 1;
-        }
     }
 
     // Declared after the borrowed scene so reverse destruction tears physics down
@@ -643,7 +665,7 @@ int main(int argumentCount, char** arguments)
         std::cout << "Reference start: extent="
                   << referenceExtent.width << 'x' << referenceExtent.height
                   << " requestedSamples=" << commandLine.referenceSampleCount
-                  << " scene=" << scenePresetName(commandLine.scenePreset)
+                  << " time=" << timeOfDayHours
                   << " estimator=" << estimatorModeName(commandLine.estimator)
                   << '\n';
         ReferenceAccumulator accumulator;
@@ -745,7 +767,7 @@ int main(int argumentCount, char** arguments)
         std::cout << "Reference complete: extent="
                   << referenceExtent.width << 'x' << referenceExtent.height
                   << " samples=" << accumulator.sampleCount
-                  << " scene=" << scenePresetName(commandLine.scenePreset)
+                  << " time=" << timeOfDayHours
                   << " estimator=" << estimatorModeName(commandLine.estimator)
                   << " traceMedianMs=" << std::fixed << std::setprecision(3)
                   << timingSummary.medianMilliseconds
@@ -765,6 +787,7 @@ int main(int argumentCount, char** arguments)
         std::cout << "Capture start: extent="
                   << captureExtent.width << 'x' << captureExtent.height
                   << " requestedFrames=" << commandLine.captureFrameCount
+                  << " time=" << timeOfDayHours
                   << '\n';
 
         std::uint32_t successfulFrameCount = 0;
@@ -1009,6 +1032,20 @@ int main(int argumentCount, char** arguments)
                 : PlayerEyeHeight),
             characterPosition[2],
         };
+
+        timeOfDayHours = std::fmod(
+            timeOfDayHours + dt * InteractiveDayCycleHoursPerSecond,
+            24.0f);
+        if (!updateSceneLightingTimeOfDay(timeOfDayHours, &sceneLighting)
+            || !packPublishedFrameLighting(
+                sceneLighting,
+                static_cast<std::uint32_t>(sceneData.instances.size()),
+                false,
+                EstimatorMode::Mis,
+                &frameLighting)) {
+            std::cerr << "Failed to update time-varying scene lighting.\n";
+            return 1;
+        }
 
         const float aspect = static_cast<float>(swap.extent.width)
             / static_cast<float>(swap.extent.height);

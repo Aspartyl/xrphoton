@@ -32,7 +32,7 @@ file(MAKE_DIRECTORY "${TEST_DIR}")
 foreach(estimator IN ITEMS mis nee bsdf)
     execute_process(
         COMMAND "${ENGINE}" --reference "${SAMPLE_COUNT}"
-            --scene night --estimator "${estimator}"
+            --estimator "${estimator}" --time 0
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr

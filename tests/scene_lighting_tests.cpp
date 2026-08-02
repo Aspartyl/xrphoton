@@ -18,6 +18,7 @@
 namespace
 {
 int failureCount = 0;
+constexpr float TestPi = 3.14159265358979323846f;
 
 void expect(bool condition, std::string_view description)
 {
@@ -195,6 +196,7 @@ void testEmitterLookupAndSelectors()
         !xrphoton::validateEmitterLookup(malformed, 2, 2),
         "truncated lookup range table is rejected");
 
+    lighting.emitterScale = 1.0f;
     xrphoton::FrameLighting packed;
     expect(
         xrphoton::makeFrameLighting(lighting, 2, &packed)
@@ -329,7 +331,8 @@ void testFrameAbiAndFlags()
             && offsetof(xrphoton::FrameLighting, lightCount) == 64
             && offsetof(xrphoton::FrameLighting, skyPerezA) == 80
             && offsetof(xrphoton::FrameLighting, nightZenith) == 160
-            && offsetof(xrphoton::FrameLighting, daylightBlend) == 176,
+            && offsetof(xrphoton::FrameLighting, daylightBlend) == 176
+            && offsetof(xrphoton::FrameLighting, emitterScale) == 180,
         "FrameLighting member groups have their exact std140 offsets");
 
     expect(xrphoton::hasValidFrameLightingFlags(0), "MIS flags are valid");
@@ -368,26 +371,39 @@ void testSelectorPacking()
                 == xrphoton::DefaultSceneLighting.sun.irradiance,
         "default sun is normalized and published as irradiance");
     expect(
-        packed.sunCosineHalfAngle == 1.0f
-            && packed.sunSolidAngle == 0.0f,
-        "Phase 1 publishes the sun as a delta light");
+        nearly(
+            packed.sunCosineHalfAngle,
+            std::cos(xrphoton::SunAngularRadiusRadians))
+            && nearly(
+                packed.sunSolidAngle,
+                2.0f * TestPi
+                    * (1.0f - packed.sunCosineHalfAngle),
+                1.0e-7f)
+            && packed.sunSolidAngle > 0.0f,
+        "P4 publishes the authored finite solar disc and exact solid angle");
     expect(
         packed.pSky == 1.0f && packed.pEmitters == 0.0f
             && packed.lightCount == 0 && packed.instanceCount == 37u
-            && packed.flags == 0,
+            && packed.flags == xrphoton::FrameLightingPerezSkyBit,
         "the enabled sky is the sole non-delta selector branch");
     expect(
-        packed.skyPerezA == glm::vec4{}
-            && packed.skyPerezB == glm::vec4{}
-            && packed.skyPerezC == glm::vec4{}
-            && packed.skyPerezD == glm::vec4{}
-            && packed.skyPerezE == glm::vec4{}
-            && packed.nightZenith == glm::vec4{}
-            && packed.daylightBlend == 0.0f
-            && packed.reserved0 == 0
+        packed.skyPerezA != glm::vec4{}
+            && packed.skyPerezB != glm::vec4{}
+            && packed.skyPerezC != glm::vec4{}
+            && packed.skyPerezD != glm::vec4{}
+            && packed.skyPerezE != glm::vec4{}
+            && packed.skyPerezA.w == 0.0f
+            && packed.skyPerezB.w == 0.0f
+            && packed.skyPerezC.w == 0.0f
+            && packed.skyPerezD.w == 0.0f
+            && packed.skyPerezE.w == 0.0f
+            && packed.nightZenith != glm::vec4{}
+            && packed.nightZenith.w == 0.0f
+            && packed.daylightBlend == 1.0f
+            && packed.emitterScale == 0.0f
             && packed.reserved1 == 0
             && packed.reserved2 == 0,
-        "all later-phase coefficients and reserved words are zero in Phase 1");
+        "noon fills the Perez lanes, switches emitters off, and preserves zero words");
 
     xrphoton::SceneLighting brighterSun = xrphoton::DefaultSceneLighting;
     brighterSun.sun.irradiance *= 1000.0f;
@@ -404,12 +420,14 @@ void testSelectorPacking()
         xrphoton::makeFrameLighting(disabled, 0u, &packed)
             && packed.pSky == 0.0f && packed.pEmitters == 0.0f
             && packed.skyZenith == glm::vec3{}
-            && packed.skyHorizon == glm::vec3{},
+            && packed.skyHorizon == glm::vec3{}
+            && (packed.flags & xrphoton::FrameLightingPerezSkyBit) == 0,
         "an explicitly disabled sky removes its branch and radiance");
 
     xrphoton::SceneLighting zeroPower = xrphoton::DefaultSceneLighting;
-    zeroPower.sky.zenithRadiance = {};
+    zeroPower.sky.zenithRadiance.z = 0.0f;
     zeroPower.sky.horizonRadiance = {};
+    zeroPower.sky.nightZenithRadiance = {};
     expect(
         xrphoton::makeFrameLighting(zeroPower, 0u, &packed)
             && packed.pSky == 0.0f && packed.pEmitters == 0.0f,
@@ -428,6 +446,25 @@ void testSelectorPacking()
         !xrphoton::makeFrameLighting(invalid, 0u, &packed)
             && packed.instanceCount == 91u,
         "negative radiance is rejected without modifying output");
+    invalid = xrphoton::DefaultSceneLighting;
+    invalid.sky.perezCoefficients[2].y =
+        std::numeric_limits<float>::quiet_NaN();
+    expect(
+        !xrphoton::makeFrameLighting(invalid, 0u, &packed)
+            && packed.instanceCount == 91u,
+        "non-finite Perez coefficients are rejected transactionally");
+    invalid = xrphoton::DefaultSceneLighting;
+    invalid.sun.angularRadiusRadians = 1.6f;
+    expect(
+        !xrphoton::makeFrameLighting(invalid, 0u, &packed)
+            && packed.instanceCount == 91u,
+        "an invalid solar angular radius is rejected transactionally");
+    invalid = xrphoton::DefaultSceneLighting;
+    invalid.emitterScale = 1.01f;
+    expect(
+        !xrphoton::makeFrameLighting(invalid, 0u, &packed)
+            && packed.instanceCount == 91u,
+        "an invalid time-driven emitter scale is rejected transactionally");
 }
 
 void testSkyEvaluationSamplingAndPdf()
@@ -439,19 +476,47 @@ void testSkyEvaluationSamplingAndPdf()
             0u,
             &lighting),
         "sky test lighting packs");
+    const glm::vec3 perezZenith = xrphoton::evaluateSkyRadiance(
+        lighting,
+        {0.0f, 1.0f, 0.0f});
+    const glm::vec3 perezHorizon = xrphoton::evaluateSkyRadiance(
+        lighting,
+        {1.0f, 0.0f, 0.0f});
     expect(
-        nearly(
-            xrphoton::evaluateSkyRadiance(lighting, {0.0f, 1.0f, 0.0f}),
-            lighting.skyZenith)
-            && nearly(
-                xrphoton::evaluateSkyRadiance(lighting, {1.0f, 0.0f, 0.0f}),
-                lighting.skyHorizon)
+        perezZenith.x >= 0.0f && perezZenith.y >= 0.0f
+            && perezZenith.z >= 0.0f && perezHorizon.x >= 0.0f
+            && perezHorizon.y >= 0.0f && perezHorizon.z >= 0.0f
+            && perezZenith != perezHorizon
             && xrphoton::evaluateSkyRadiance(lighting, {0.0f, -0.5f, 0.0f})
-                == glm::vec3{}
+                == glm::vec3{},
+        "Perez evaluation is finite/nonnegative and retains the black ground hemisphere");
+
+    xrphoton::SceneLighting fallback;
+    fallback.sky = {
+        .zenithRadiance = {0.055f, 0.12f, 0.28f},
+        .horizonRadiance = {0.32f, 0.38f, 0.46f},
+        .enabled = true,
+    };
+    xrphoton::FrameLighting fallbackFrame;
+    expect(
+        xrphoton::makeFrameLighting(fallback, 0u, &fallbackFrame)
+            && fallbackFrame.flags == 0
             && nearly(
-                xrphoton::evaluateSkyRadiance(lighting, {0.0f, 0.5f, 0.0f}),
-                (lighting.skyZenith + lighting.skyHorizon) * 0.5f),
-        "sky evaluation reproduces the black ground hemisphere and upper gradient");
+                xrphoton::evaluateSkyRadiance(
+                    fallbackFrame,
+                    {0.0f, 1.0f, 0.0f}),
+                fallbackFrame.skyZenith)
+            && nearly(
+                xrphoton::evaluateSkyRadiance(
+                    fallbackFrame,
+                    {1.0f, 0.0f, 0.0f}),
+                fallbackFrame.skyHorizon)
+            && nearly(
+                xrphoton::evaluateSkyRadiance(
+                    fallbackFrame,
+                    {0.0f, 0.5f, 0.0f}),
+                (fallbackFrame.skyZenith + fallbackFrame.skyHorizon) * 0.5f),
+        "the one sky entry point preserves the explicit pre-P4 gradient fallback");
 
     const glm::vec3 normal = glm::normalize(glm::vec3{0.3f, 0.9f, -0.2f});
     constexpr glm::vec2 Samples[] = {
@@ -510,6 +575,211 @@ void testSkyEvaluationSamplingAndPdf()
     expect(
         std::abs(integral - 1.0) < 5.0e-5,
         "fixed-seed sky-PDF quadrature integrates to one");
+}
+
+void testTimeOfDayAndPerezKnownAnswers()
+{
+    xrphoton::SceneLighting lighting = xrphoton::DefaultSceneLighting;
+    expect(
+        xrphoton::updateSceneLightingTimeOfDay(12.0f, &lighting),
+        "solar noon configures the time-of-day authority");
+    xrphoton::FrameLighting noon;
+    expect(
+        xrphoton::makeFrameLighting(lighting, 0u, &noon)
+            && (noon.flags & xrphoton::FrameLightingPerezSkyBit) != 0
+            && noon.daylightBlend == 1.0f
+            && noon.sunDirection.y > 0.9f
+            && noon.sunSolidAngle > 0.0f,
+        "solar noon publishes a powered disc and full Perez daylight");
+    expect(
+        nearly(glm::vec3{noon.skyPerezA}, {-0.3171f, -0.3109f, -0.9269f})
+            && nearly(glm::vec3{noon.skyPerezB}, {-0.1987f, -0.2758f, -0.6387f})
+            && nearly(glm::vec3{noon.skyPerezC}, {0.2113f, 0.1865f, 5.2570f})
+            && nearly(glm::vec3{noon.skyPerezD}, {-1.0912f, -1.7860f, -2.2153f})
+            && nearly(glm::vec3{noon.skyPerezE}, {0.0353f, 0.0202f, 0.1693f}),
+        "turbidity-three Perez coefficients match the published Preetham fits");
+    expect(
+        nearly(noon.sunDirection, {0.0f, 0.92009521f, -0.39169487f})
+            && nearly(noon.skyZenith, {0.25801855f, 0.26523608f, 0.49829715f})
+            && nearly(
+                xrphoton::evaluateSkyRadiance(noon, {0.0f, 1.0f, 0.0f}),
+                {0.35828340f, 0.50221324f, 0.87205797f})
+            && nearly(
+                xrphoton::evaluateSkyRadiance(noon, {1.0f, 0.0f, 0.0f}),
+                {0.36114889f, 0.33534327f, 0.37611270f})
+            && nearly(
+                xrphoton::evaluateSkyRadiance(
+                    noon,
+                    {0.0f, 0.5f, 0.8660254f}),
+                {0.15202090f, 0.27763247f, 0.49231640f}),
+        "solar-noon xyY and linear-RGB evaluations match pinned known answers");
+
+    xrphoton::FrameLighting midnight;
+    expect(
+        xrphoton::updateSceneLightingTimeOfDay(0.0f, &lighting)
+            && xrphoton::makeFrameLighting(lighting, 0u, &midnight)
+            && midnight.daylightBlend == 0.0f
+            && midnight.emitterScale == 1.0f
+            && midnight.sunIrradiance == glm::vec3{}
+            && midnight.sunSolidAngle == 0.0f
+            && nearly(
+                xrphoton::evaluateSkyRadiance(
+                    midnight,
+                    {0.0f, 1.0f, 0.0f}),
+                glm::vec3{midnight.nightZenith})
+            && nearly(
+                xrphoton::evaluateSkyRadiance(
+                    midnight,
+                    {1.0f, 0.0f, 0.0f}),
+                midnight.skyHorizon),
+        "midnight disables the sun and evaluates only the authored night gradient");
+
+    xrphoton::FrameLighting twilight;
+    expect(
+        xrphoton::updateSceneLightingTimeOfDay(3.8f, &lighting)
+            && xrphoton::makeFrameLighting(lighting, 0u, &twilight)
+            && twilight.daylightBlend > 0.0f
+            && twilight.daylightBlend < 1.0f
+            && nearly(
+                twilight.emitterScale,
+                1.0f - twilight.daylightBlend)
+            && twilight.sunIrradiance == glm::vec3{}
+            && nearly(twilight.sunDirection.y, 0.0f, 1.0e-5f),
+        "civil twilight crossfades the daylight sky and permanent yard emitters");
+
+    constexpr float SweepHours[] = {
+        0.0f, 3.4f, 3.8f, 4.2f, 6.0f, 12.0f,
+        18.0f, 19.8f, 20.6f, 23.0f,
+    };
+    for (float hours : SweepHours) {
+        xrphoton::FrameLighting frame;
+        expect(
+            xrphoton::updateSceneLightingTimeOfDay(hours, &lighting)
+                && xrphoton::makeFrameLighting(lighting, 0u, &frame),
+            "the dawn-to-night sweep packs every time sample");
+        constexpr glm::vec3 Directions[] = {
+            {0.0f, 1.0f, 0.0f},
+            {1.0f, 0.0f, 0.0f},
+            {0.0f, 0.5f, 0.8660254f},
+        };
+        for (const glm::vec3& direction : Directions) {
+            const glm::vec3 radiance = xrphoton::evaluateSkyRadiance(
+                frame,
+                direction);
+            expect(
+                std::isfinite(radiance.x) && std::isfinite(radiance.y)
+                    && std::isfinite(radiance.z) && radiance.x >= 0.0f
+                    && radiance.y >= 0.0f && radiance.z >= 0.0f,
+                "the time sweep keeps every sky known direction finite/nonnegative");
+        }
+    }
+
+    xrphoton::SceneData scene = triangleScene();
+    lighting = xrphoton::DefaultSceneLighting;
+    std::string error;
+    expect(
+        xrphoton::buildSceneLighting(scene, {}, &lighting, &error),
+        "time-of-day preservation fixture builds one emitter");
+    const float lightArea = lighting.lights[0].area;
+    const float finalCdf = lighting.lightCdf.back();
+    const std::size_t lookupSize = lighting.emitterLookup.size();
+    expect(
+        xrphoton::updateSceneLightingTimeOfDay(0.0f, &lighting)
+            && lighting.lights.size() == 1
+            && lighting.lights[0].area == lightArea
+            && lighting.lightCdf.back() == finalCdf
+            && lighting.emitterLookup.size() == lookupSize
+            && lighting.emitterScale == 1.0f,
+        "per-frame time updates preserve tables while changing emitter intensity");
+
+    const xrphoton::SceneLighting unchanged = lighting;
+    expect(
+        !xrphoton::updateSceneLightingTimeOfDay(-0.01f, &lighting)
+            && !xrphoton::updateSceneLightingTimeOfDay(24.0f, &lighting)
+            && !xrphoton::updateSceneLightingTimeOfDay(
+                std::numeric_limits<float>::infinity(),
+                &lighting)
+            && !xrphoton::updateSceneLightingTimeOfDay(12.0f, nullptr)
+            && lighting.sun.direction == unchanged.sun.direction
+            && lighting.lights.size() == unchanged.lights.size(),
+        "invalid time input is rejected without mutating the lighting authority");
+}
+
+void testFiniteSunSamplingAndEnergy()
+{
+    xrphoton::FrameLighting lighting;
+    expect(
+        xrphoton::makeFrameLighting(
+            xrphoton::DefaultSceneLighting,
+            0u,
+            &lighting),
+        "finite-sun test lighting packs");
+    constexpr glm::vec2 Samples[] = {
+        {0.0f, 0.0f},
+        {0.25f, 0.125f},
+        {0.5f, 0.75f},
+        {0.999f, 0.999f},
+    };
+    for (const glm::vec2& randomSample : Samples) {
+        xrphoton::SunSample sampled;
+        expect(
+            xrphoton::sampleSun(lighting, randomSample, &sampled)
+                && !sampled.delta
+                && nearly(glm::length(sampled.direction), 1.0f)
+                && glm::dot(lighting.sunDirection, sampled.direction)
+                    >= lighting.sunCosineHalfAngle - 1.0e-6f
+                && nearly(sampled.pdf, 1.0f / lighting.sunSolidAngle, 1.0e-2f)
+                && nearly(
+                    sampled.radiance * lighting.sunSolidAngle,
+                    lighting.sunIrradiance,
+                    1.0e-4f)
+                && nearly(
+                    sampled.pdf,
+                    xrphoton::sunPdf(lighting, sampled.direction),
+                    1.0e-2f)
+                && nearly(
+                    sampled.radiance,
+                    xrphoton::evaluateSunRadiance(
+                        lighting,
+                        sampled.direction),
+                    1.0e-3f),
+            "uniform-cone sun samples round-trip evaluation/PDF and preserve energy");
+    }
+    expect(
+        xrphoton::sunPdf(lighting, -lighting.sunDirection) == 0.0f
+            && xrphoton::evaluateSunRadiance(
+                lighting,
+                -lighting.sunDirection) == glm::vec3{},
+        "directions outside the solar disc have no sun density or radiance");
+
+    xrphoton::SceneLighting wideSun = xrphoton::DefaultSceneLighting;
+    wideSun.sun.angularRadiusRadians = 2.0f * TestPi / 180.0f;
+    xrphoton::FrameLighting wideFrame;
+    xrphoton::SunSample wideSample;
+    expect(
+        xrphoton::makeFrameLighting(wideSun, 0u, &wideFrame)
+            && xrphoton::sampleSun(wideFrame, {0.5f, 0.5f}, &wideSample)
+            && wideFrame.sunSolidAngle > lighting.sunSolidAngle
+            && nearly(
+                wideSample.radiance * wideFrame.sunSolidAngle,
+                wideFrame.sunIrradiance,
+                1.0e-4f),
+        "widening the disc lowers radiance while preserving mean incident sun energy");
+
+    xrphoton::SceneLighting deltaSun = xrphoton::DefaultSceneLighting;
+    deltaSun.sun.angularRadiusRadians = 0.0f;
+    xrphoton::FrameLighting deltaFrame;
+    xrphoton::SunSample deltaSample;
+    expect(
+        xrphoton::makeFrameLighting(deltaSun, 0u, &deltaFrame)
+            && deltaFrame.sunCosineHalfAngle == 1.0f
+            && deltaFrame.sunSolidAngle == 0.0f
+            && xrphoton::sampleSun(deltaFrame, {0.75f, 0.25f}, &deltaSample)
+            && deltaSample.delta && deltaSample.pdf == 1.0f
+            && deltaSample.direction == deltaFrame.sunDirection
+            && deltaSample.radiance == deltaFrame.sunIrradiance
+            && xrphoton::sunPdf(deltaFrame, deltaFrame.sunDirection) == 0.0f,
+        "zero angular radius retains the exact delta-sun compatibility contract");
 }
 
 void testGlassSamplingAndShadowApproximation()
@@ -654,6 +924,8 @@ int main()
     testFrameAbiAndFlags();
     testSelectorPacking();
     testSkyEvaluationSamplingAndPdf();
+    testTimeOfDayAndPerezKnownAnswers();
+    testFiniteSunSamplingAndEnergy();
     testGlassSamplingAndShadowApproximation();
     testMisWeights();
     testEmitterPdfAndEstimatorFlags();

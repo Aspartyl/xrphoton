@@ -405,14 +405,38 @@ void rayGenMain()
         if (hit.hitT < 0.0)
         {
             uint estimator = estimatorMode();
-            float missWeight = pathVertex == 0 || estimator == EstimatorBsdf
+            float skyMissWeight = pathVertex == 0 || estimator == EstimatorBsdf
                 ? 1.0
                 : estimator == EstimatorNee
                     ? 0.0
                     : powerHeuristic(previousBsdfPdf, previousSkyPdf);
             radiance += throughput
                 * skyRadiance(frameLighting, ray.Direction)
-                * missWeight;
+                * skyMissWeight;
+
+            // The finite solar disc is a separate source layered over the analytic
+            // sky. A delta sun has zero BSDF-hit measure and therefore contributes
+            // only through its legacy direct estimator below.
+            float3 missedSunRadiance = sunRadiance(
+                frameLighting,
+                ray.Direction);
+            float maximumMissedSun = max(
+                missedSunRadiance.x,
+                max(missedSunRadiance.y, missedSunRadiance.z));
+            if (maximumMissedSun > 0.0)
+            {
+                float sunMissWeight = pathVertex == 0
+                    || estimator == EstimatorBsdf
+                    ? 1.0
+                    : estimator == EstimatorNee
+                        ? 0.0
+                        : powerHeuristic(
+                            previousBsdfPdf,
+                            sunPdf(frameLighting, ray.Direction));
+                radiance += throughput
+                    * missedSunRadiance
+                    * sunMissWeight;
+            }
             break;
         }
 
@@ -433,9 +457,10 @@ void rayGenMain()
             etaT = enteringGlass ? GlassIor : 1.0;
         }
         uint estimator = estimatorMode();
+        float3 hitEmission = hit.emission * frameLighting.emitterScale;
         float maximumEmission = max(
-            hit.emission.x,
-            max(hit.emission.y, hit.emission.z));
+            hitEmission.x,
+            max(hitEmission.y, hitEmission.z));
         if (maximumEmission > 0.0)
         {
             float emissionWeight = 1.0;
@@ -458,65 +483,99 @@ void rayGenMain()
                     emissionWeight = powerHeuristic(previousBsdfPdf, lightPdf);
                 }
             }
-            radiance += throughput * hit.emission * emissionWeight;
+            radiance += throughput * hitEmission * emissionWeight;
         }
-        float shadingCosine = surfaceCosine(
-            isGlass,
-            normals.shading,
-            frameLighting.sunDirection);
         float maximumSunIrradiance = max(
             frameLighting.sunIrradiance.x,
             max(frameLighting.sunIrradiance.y, frameLighting.sunIrradiance.z));
-        if (maximumSunIrradiance > 0.0
-            && validSurfaceDirection(
-                isGlass,
-                normals,
-                frameLighting.sunDirection))
+        bool deltaSun = frameLighting.sunSolidAngle <= 0.0;
+        bool sampleSunAtVertex = deltaSun
+            || (pathVertex + 1 < MaxPathVertices
+                && estimator != EstimatorBsdf);
+        if (maximumSunIrradiance > 0.0 && sampleSunAtVertex)
         {
-            ShadowPayload shadow;
-            shadow.visibility = 0.0;
-            shadow.attenuation = float3(1.0);
-
-            RayDesc shadowRay;
-            shadowRay.Origin = offsetSurfaceRay(
-                worldPosition,
-                normals.geometric,
-                frameLighting.sunDirection,
-                isGlass);
-            shadowRay.Direction = frameLighting.sunDirection;
-            shadowRay.TMin = 0.0;
-            shadowRay.TMax = InfiniteRayTMax;
-
-            TraceRay(
-                topLevelAS,
-                shadowRayFlags,
-                0xFF,
-                ShadowRayType,
-                XRPHOTON_RAY_TYPE_COUNT,
-                ShadowRayType,
-                shadowRay,
-                shadow);
-
-            float3 sunBrdf = evaluateBsdf(
-                material.materialClass,
-                hit.albedo,
-                material.perceptualRoughness,
-                material.dielectricF0,
-                etaI,
-                etaT,
+            // Do not consume path-stream draws on the zero-angle compatibility path.
+            float2 sunRandom = deltaSun
+                ? float2(0.0)
+                : float2(rngNextFloat(rngState), rngNextFloat(rngState));
+            SunSample lightSample = sampleSun(frameLighting, sunRandom);
+            float shadingCosine = surfaceCosine(
+                isGlass,
                 normals.shading,
-                wo,
-                frameLighting.sunDirection);
-            radiance += throughput
-                * sunBrdf
-                * frameLighting.sunIrradiance
-                * shadingCosine
-                * shadow.visibility
-                * shadow.attenuation;
+                lightSample.direction);
+            if (lightSample.pdf > 0.0
+                && validSurfaceDirection(
+                    isGlass,
+                    normals,
+                    lightSample.direction))
+            {
+                ShadowPayload shadow;
+                shadow.visibility = 0.0;
+                shadow.attenuation = float3(1.0);
+
+                RayDesc shadowRay;
+                shadowRay.Origin = offsetSurfaceRay(
+                    worldPosition,
+                    normals.geometric,
+                    lightSample.direction,
+                    isGlass);
+                shadowRay.Direction = lightSample.direction;
+                shadowRay.TMin = 0.0;
+                shadowRay.TMax = InfiniteRayTMax;
+
+                TraceRay(
+                    topLevelAS,
+                    shadowRayFlags,
+                    0xFF,
+                    ShadowRayType,
+                    XRPHOTON_RAY_TYPE_COUNT,
+                    ShadowRayType,
+                    shadowRay,
+                    shadow);
+
+                float sunBsdfPdf = bsdfPdf(
+                    material.materialClass,
+                    hit.albedo,
+                    material.perceptualRoughness,
+                    material.dielectricF0,
+                    etaI,
+                    etaT,
+                    normals.shading,
+                    wo,
+                    lightSample.direction);
+                float3 sunBrdf = evaluateBsdf(
+                    material.materialClass,
+                    hit.albedo,
+                    material.perceptualRoughness,
+                    material.dielectricF0,
+                    etaI,
+                    etaT,
+                    normals.shading,
+                    wo,
+                    lightSample.direction);
+                float neeWeight = (lightSample.delta
+                    || estimator == EstimatorNee)
+                    ? 1.0
+                    : powerHeuristic(
+                        lightSample.pdf,
+                        bsdfTechniquePdfAfterRoulette(
+                            pathVertex,
+                            throughput,
+                            sunBrdf,
+                            shadingCosine,
+                            sunBsdfPdf));
+                radiance += throughput
+                    * sunBrdf
+                    * lightSample.radiance
+                    * shadingCosine
+                    * shadow.visibility
+                    * shadow.attenuation
+                    * (neeWeight / lightSample.pdf);
+            }
         }
 
-        // Draw exactly one non-delta branch. The delta sun stays separate and cannot
-        // perturb the sky/emitter probabilities or enter their MIS balances.
+        // Draw exactly one sky/emitter branch. The separately sampled sun cannot
+        // perturb these probabilities or enter their selector MIS balances.
         float selectableProbability = frameLighting.pSky + frameLighting.pEmitters;
         // A light connection adds the source endpoint to the path. Do not add it at
         // the terminal surface where the matching BSDF technique has no remaining
@@ -713,6 +772,7 @@ void rayGenMain()
                             radiance += throughput
                                 * lightBrdf
                                 * light.emission
+                                * frameLighting.emitterScale
                                 * shadingLightCosine
                                 * shadow.visibility
                                 * shadow.attenuation

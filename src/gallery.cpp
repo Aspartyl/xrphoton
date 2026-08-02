@@ -476,7 +476,7 @@ std::size_t resolvedTextureCount(
     return count;
 }
 
-bool appendNightEmitterModel(
+bool appendYardEmitterModel(
     SceneData* scene,
     std::uint32_t* firstMesh,
     std::string* error)
@@ -542,10 +542,10 @@ bool appendNightEmitterModel(
     return appendSceneModel(scene, std::move(model), error);
 }
 
-bool appendNightEmitters(SceneData* scene, std::string* error)
+bool appendYardEmitters(SceneData* scene, std::string* error)
 {
     std::uint32_t firstMesh = 0;
-    if (!appendNightEmitterModel(scene, &firstMesh, error)) {
+    if (!appendYardEmitterModel(scene, &firstMesh, error)) {
         return false;
     }
 
@@ -609,7 +609,8 @@ bool appendNightEmitters(SceneData* scene, std::string* error)
 }
 }
 
-GalleryLoadResult loadGalleryScene(ScenePreset preset)
+GalleryLoadResult loadGalleryScene(
+    GallerySceneProfile profile)
 {
     try {
         SceneData scene{};
@@ -620,6 +621,12 @@ GalleryLoadResult loadGalleryScene(ScenePreset preset)
              assetIndex < GalleryAssets.size();
              ++assetIndex) {
             const GalleryAsset& asset = GalleryAssets[assetIndex];
+            if (profile == GallerySceneProfile::EstimatorReference
+                && asset.optional) {
+                std::cout << "Gallery entry '" << asset.name
+                          << "': skipped (estimator-reference profile).\n";
+                continue;
+            }
             if (asset.ogfxPath == nullptr || asset.ogfxPath[0] == u8'\0') {
                 if (asset.optional) {
                     std::cout << "Gallery entry '" << asset.name
@@ -677,6 +684,28 @@ GalleryLoadResult loadGalleryScene(ScenePreset preset)
             if (!asset.loaded) {
                 continue;
             }
+            if (profile == GallerySceneProfile::EstimatorReference) {
+                bool usesApproximateGlassVisibility = false;
+                for (std::uint64_t materialOffset = 0;
+                     materialOffset < asset.materialCount;
+                     ++materialOffset) {
+                    const std::uint64_t materialIndex =
+                        static_cast<std::uint64_t>(asset.firstMaterial)
+                        + materialOffset;
+                    if (materialIndex < scene.materials.size()
+                        && scene.materials[static_cast<std::size_t>(materialIndex)]
+                               .materialClass == SceneMaterialClass::Glass) {
+                        usesApproximateGlassVisibility = true;
+                        break;
+                    }
+                }
+                // P3's straight-line visibility through intervening Glass is a
+                // deliberate production approximation. Omitting Glass placements
+                // keeps the MIS/NEE/BSDF acceptance profiles on one exact integrand.
+                if (usesApproximateGlassVisibility) {
+                    continue;
+                }
+            }
             if (placement.dynamic) {
                 if (asset.meshCount != 1) {
                     return fail(
@@ -717,9 +746,8 @@ GalleryLoadResult loadGalleryScene(ScenePreset preset)
             return fail("Gallery yard did not produce a dynamic scene instance");
         }
 
-        if (preset == ScenePreset::Night
-            && !appendNightEmitters(&scene, &assemblyError)) {
-            return fail("Gallery night emitters failed: " + assemblyError);
+        if (!appendYardEmitters(&scene, &assemblyError)) {
+            return fail("Gallery emitters failed: " + assemblyError);
         }
 
         if (!validateAssembledScene(scene, &assemblyError)) {

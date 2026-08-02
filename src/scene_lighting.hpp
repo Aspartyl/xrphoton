@@ -1,7 +1,8 @@
 #pragma once
 
-#include "scene_preset.hpp"
+#include "estimator_mode.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -20,15 +21,25 @@ struct SceneData;
 struct DirectionalSun
 {
     // Direction points from a surface toward the sun. Irradiance is the incident
-    // delta-light coefficient; an all-zero value disables the sun.
+    // direct-normal coefficient; an all-zero value disables the sun. A zero angular
+    // radius preserves the original delta-light estimator exactly.
     glm::vec3 direction{};
     glm::vec3 irradiance{};
+    float angularRadiusRadians = 0.0f;
 };
 
 struct AnalyticSky
 {
+    // The fallback sky interprets these as linear-RGB zenith/horizon radiance. The
+    // Perez sky interprets zenithRadiance as (x, y, Y) and horizonRadiance as the
+    // authored linear-RGB night horizon. This dual meaning preserves the pre-P4
+    // gradient as an explicit fallback without adding a second shader entry point.
     glm::vec3 zenithRadiance{};
     glm::vec3 horizonRadiance{};
+    std::array<glm::vec3, 5> perezCoefficients{};
+    glm::vec3 nightZenithRadiance{};
+    float daylightBlend = 0.0f;
+    bool perezEnabled = false;
     bool enabled = true;
 };
 
@@ -79,11 +90,23 @@ struct SceneLighting
     std::vector<float> lightCdf;
     std::vector<EmitterLookupRecord> emitterLookup;
     float totalLightPower = 0.0f;
+    float emitterScale = 1.0f;
     std::uint32_t instanceCount = 0;
 };
 
 extern const SceneLighting DefaultSceneLighting;
-[[nodiscard]] SceneLighting makeSceneLightingPreset(ScenePreset preset);
+
+inline constexpr float DefaultTimeOfDayHours = 12.0f;
+inline constexpr float SunAngularRadiusRadians = 0.00471238898f; // 0.27 degrees
+
+// Update the mutable analytic environment and its inverse daylight emitter scale. The
+// fixed latitude/date/turbidity constants live in the implementation until level
+// weather data has a real owner; emitter records and their immutable distributions
+// are preserved byte-for-byte.
+// Hours use [0, 24), making bad external/CLI state fail rather than wrap silently.
+[[nodiscard]] bool updateSceneLightingTimeOfDay(
+    float timeOfDayHours,
+    SceneLighting* lighting);
 
 // Preserve lighting's analytic configuration and transactionally rebuild all derived
 // emitter state. Dynamic and alpha-tested emitters are deliberately rejected because
@@ -130,7 +153,7 @@ struct alignas(16) FrameLighting
     glm::vec4 skyPerezE{};
     glm::vec4 nightZenith{};
     float daylightBlend = 0.0f;
-    std::uint32_t reserved0 = 0;
+    float emitterScale = 0.0f;
     std::uint32_t reserved1 = 0;
     std::uint32_t reserved2 = 0;
 };
@@ -156,7 +179,7 @@ static_assert(offsetof(FrameLighting, sunDirection) == 0
     && offsetof(FrameLighting, skyPerezE) == 144
     && offsetof(FrameLighting, nightZenith) == 160
     && offsetof(FrameLighting, daylightBlend) == 176
-    && offsetof(FrameLighting, reserved0) == 180
+    && offsetof(FrameLighting, emitterScale) == 180
     && offsetof(FrameLighting, reserved1) == 184
     && offsetof(FrameLighting, reserved2) == 188);
 
@@ -185,6 +208,14 @@ struct SkySample
     float pdf = 0.0f;
 };
 
+struct SunSample
+{
+    glm::vec3 direction{};
+    glm::vec3 radiance{};
+    float pdf = 0.0f;
+    bool delta = false;
+};
+
 [[nodiscard]] glm::vec3 evaluateSkyRadiance(
     const FrameLighting& lighting,
     const glm::vec3& direction);
@@ -198,6 +229,16 @@ struct SkySample
     const glm::vec2& sample,
     SkySample* output,
     bool twoSided = false);
+[[nodiscard]] glm::vec3 evaluateSunRadiance(
+    const FrameLighting& lighting,
+    const glm::vec3& direction);
+[[nodiscard]] float sunPdf(
+    const FrameLighting& lighting,
+    const glm::vec3& direction);
+[[nodiscard]] bool sampleSun(
+    const FrameLighting& lighting,
+    const glm::vec2& sample,
+    SunSample* output);
 
 inline constexpr float GlassIor = 1.5f;
 [[nodiscard]] float dielectricFresnel(

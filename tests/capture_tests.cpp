@@ -53,8 +53,8 @@ void testCommandLine()
             && options.captureFrameCount == 0
             && options.captureOutputPath.empty()
             && options.referenceSampleCount == 0
-            && options.scenePreset == xrphoton::ScenePreset::Yard
             && options.estimator == xrphoton::EstimatorMode::Mis
+            && !options.timeOfDayHours.has_value()
             && !options.validationRequested
             && error.empty(),
         "no arguments select interactive mode");
@@ -72,45 +72,36 @@ void testCommandLine()
         "a positive count and output path select capture mode");
 
     options = parse(
-        {"xrPhoton", "--scene", "night", "--capture", "4", "night.ppm"},
+        {"xrPhoton", "--validation", "--time", "0"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded && options.mode == xrphoton::CommandLineMode::Interactive
+            && options.timeOfDayHours == 0.0f
+            && options.validationRequested,
+        "interactive mode accepts validation and a midnight starting time");
+
+    options = parse(
+        {"xrPhoton", "--time", "5.75", "--capture", "4", "dawn.ppm"},
         &succeeded,
         &error);
     expect(
         succeeded && options.mode == xrphoton::CommandLineMode::Capture
-            && options.captureFrameCount == 4
-            && options.scenePreset == xrphoton::ScenePreset::Night,
-        "capture accepts the shared night scene selector in either option order");
+            && options.timeOfDayHours == 5.75f,
+        "capture accepts a fixed fractional time of day in either option order");
 
     options = parse(
-        {"xrPhoton", "--scene", "night"},
-        &succeeded,
-        &error);
-    expect(
-        succeeded && options.mode == xrphoton::CommandLineMode::Interactive
-            && options.scenePreset == xrphoton::ScenePreset::Night,
-        "interactive mode accepts the night scene selector");
-
-    options = parse(
-        {"xrPhoton", "--validation", "--scene", "night"},
-        &succeeded,
-        &error);
-    expect(
-        succeeded && options.mode == xrphoton::CommandLineMode::Interactive
-            && options.scenePreset == xrphoton::ScenePreset::Night
-            && options.validationRequested,
-        "the canonical engine accepts runtime validation in interactive mode");
-
-    options = parse(
-        {"xrPhoton", "--reference", "64", "--scene", "night",
-         "--estimator", "nee"},
+        {"xrPhoton", "--reference", "64", "--estimator", "nee",
+         "--time", "23.999"},
         &succeeded,
         &error);
     expect(
         succeeded && options.mode == xrphoton::CommandLineMode::Reference
             && options.referenceSampleCount == 64
-            && options.scenePreset == xrphoton::ScenePreset::Night
-            && options.estimator == xrphoton::EstimatorMode::Nee,
-        "reference mode requires and retains its scene and estimator controls");
+            && options.estimator == xrphoton::EstimatorMode::Nee
+            && options.timeOfDayHours.has_value()
+            && std::abs(*options.timeOfDayHours - 23.999f) < 1.0e-6f,
+        "reference mode retains its estimator and frozen-time controls");
 
     options = parse(
         {"xrPhoton", "--capture", "4294967295", "result.ppm"},
@@ -133,14 +124,19 @@ void testCommandLine()
         {"xrPhoton", "--capture", "8x", "result.ppm"},
         {"xrPhoton", "--capture", "4294967296", "result.ppm"},
         {"xrPhoton", "--capture", "8", ""},
-        {"xrPhoton", "--scene", "furnace"},
-        {"xrPhoton", "--scene", "glass"},
+        {"xrPhoton", "--scene", "yard"},
+        {"xrPhoton", "--scene", "night"},
         {"xrPhoton", "--validation", "--validation"},
-        {"xrPhoton", "--reference", "8", "--scene", "night"},
-        {"xrPhoton", "--reference", "8", "--estimator", "mis"},
-        {"xrPhoton", "--reference", "0", "--scene", "night", "--estimator", "mis"},
-        {"xrPhoton", "--reference", "8", "--scene", "night", "--estimator", "both"},
+        {"xrPhoton", "--reference", "8"},
+        {"xrPhoton", "--reference", "0", "--estimator", "mis"},
+        {"xrPhoton", "--reference", "8", "--estimator", "both"},
         {"xrPhoton", "--estimator", "mis"},
+        {"xrPhoton", "--time"},
+        {"xrPhoton", "--time", "-0.1"},
+        {"xrPhoton", "--time", "24"},
+        {"xrPhoton", "--time", "nan"},
+        {"xrPhoton", "--time", "noon"},
+        {"xrPhoton", "--time", "12", "--time", "13"},
     };
 
     for (const auto& arguments : invalidArguments) {

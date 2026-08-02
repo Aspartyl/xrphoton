@@ -27,16 +27,20 @@ and starts from their current position and view. Escape releases the captured
 mouse and left click recaptures it. Every build assembles the yard from
 generated ground, wall, and box models into walls, a platform, a staircase and
 crates, alongside an indexed quad and a two-geometry wedge kept as regression
-probes.
+probes. The same yard always contains 21 lamp/anomaly placements (42 emitting
+triangles); their light fades off with daylight and back on through evening civil
+twilight, so changing time never swaps scenes or geometry.
 
 Each frame traces a ray per pixel through one BLAS per mesh and a real
 multi-instance TLAS, from a perspective camera fed to the shader through push
 constants. Raygen follows paths of up to eight surface vertices, evaluating an
 energy-aware Lambert diffuse plus isotropic GGX dielectric, conductor, or rough-glass BSDF under a
-directional sun, tracing hard visibility rays for shadows, and sampling
+finite 0.27-degree solar disc, tracing alpha/Glass-aware visibility rays for soft
+shadows, and sampling
 matching lobes for indirect transport. GGX uses visible-normal sampling and
 Russian roulette starts after the third vertex, so bounces gather the
-procedural sky or sunlit surfaces, fill occluded regions, bleed color and carry
+Preetham/Perez daylight, the civil-twilight/night gradient, or sunlit surfaces,
+fill occluded regions, bleed color and carry
 rough or sharp reflections. The result is written as linear radiance to an
 `R16G16B16A16_SFLOAT` image, compute-tonemapped with fixed-exposure Reinhard,
 and blitted to the swapchain, with two frames in flight and proper resize
@@ -71,8 +75,10 @@ shared TLAS in place before every trace while all BLAS geometry stays static.
 Plain, GPU-assisted and synchronization validation are clean over live motion,
 resize and teardown.
 
-Deformable skinning and BLAS refits, a time-varying
-sun/sky, and temporal accumulation and denoising follow later.
+The yard starts at noon by default. Its fixed latitude/date sky advances at one
+in-game minute per real second during interactive play, producing a 24-minute day.
+`--time` can choose any starting hour. Deformable skinning and BLAS refits, plus
+temporal accumulation and denoising, follow later.
 [ARCHITECTURE.md](ARCHITECTURE.md) has the module map and the roadmap.
 
 ## Building
@@ -119,12 +125,15 @@ write the final tonemapped result as an sRGB PPM:
 
 ```sh
 ./build/xrPhoton --capture 8 capture.ppm
-./build/xrPhoton --capture 8 night.ppm --scene night
+./build/xrPhoton --capture 8 night.ppm --time 0
+./build/xrPhoton --capture 8 dawn.ppm --time 3.8
 ./build/xrPhoton --validation --capture 8 checked.ppm
 ```
 
 Capture mode fixes the camera and extent, advances physics by exactly 1/60
-second per successful frame, and reads back the last submitted image. It prints
+second per successful frame, freezes the selected time of day, and reads back the
+last submitted image. `--time <hours>` accepts a value in `[0, 24)`; without it the
+single yard starts at noon. Capture prints
 the extent, the final frame index and a hash of the raw bytes, and two runs of
 the same binary on the same machine and driver are expected to match. A resize,
 window close, or out-of-date swapchain fails the capture instead of silently
@@ -135,12 +144,16 @@ reads every untouched HDR sample back to the CPU, and exposes MIS, NEE-only, and
 BSDF-only controls for estimator checks:
 
 ```sh
-./build/xrPhoton --reference 256 --scene night --estimator mis
+./build/xrPhoton --reference 256 --estimator mis --time 0
 cmake --build --preset default --target xrPhotonReferenceProof
 ```
 
 The proof target runs all three estimators and requires their means to agree in each
-pinned image region; reference mode is offline measurement, not render accumulation.
+pinned image region. Its scene profile uses only required generated placements and
+omits Glass, because local optional props and P3's deliberately approximate
+straight-line visibility through intervening Glass would change the pinned integrand.
+Interactive and ordinary capture still load the complete configured gallery.
+Reference mode is offline measurement, not render accumulation.
 
 ### Offline tools
 

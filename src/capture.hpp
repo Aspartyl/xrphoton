@@ -1,10 +1,11 @@
 #pragma once
 
-#include "scene_preset.hpp"
+#include "estimator_mode.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -28,8 +29,8 @@ struct CommandLineOptions
     std::uint32_t captureFrameCount = 0;
     std::string captureOutputPath;
     std::uint32_t referenceSampleCount = 0;
-    ScenePreset scenePreset = ScenePreset::Yard;
     EstimatorMode estimator = EstimatorMode::Mis;
+    std::optional<float> timeOfDayHours;
     bool validationRequested = false;
 };
 
@@ -56,11 +57,11 @@ struct ReferenceRegionSummary
     std::array<double, 3> standardError{};
 };
 
-// Accept interactive/capture with an optional scene selector, or reference mode:
+// Accept interactive/capture or reference mode for the single test yard:
 //   [--validation] [--capture <positive-frame-count> <output.ppm>]
-//       [--scene <yard|night>]
-//   [--validation] --reference <positive-sample-count> --scene <yard|night>
-//       --estimator <mis|nee|bsdf>
+//       [--time <hours>]
+//   [--validation] --reference <positive-sample-count>
+//       --estimator <mis|nee|bsdf> [--time <hours>]
 // Parsing is deliberately independent of GLFW/Vulkan so malformed capture requests
 // fail before any window or GPU state is created.
 [[nodiscard]] bool parseCommandLine(
@@ -68,16 +69,6 @@ struct ReferenceRegionSummary
     const char* const* arguments,
     CommandLineOptions* options,
     std::string* error);
-
-[[nodiscard]] constexpr const char* scenePresetName(ScenePreset preset)
-{
-    switch (preset) {
-    case ScenePreset::Night:
-        return "night";
-    default:
-        return "yard";
-    }
-}
 
 [[nodiscard]] constexpr const char* estimatorModeName(EstimatorMode estimator)
 {

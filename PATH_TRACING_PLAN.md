@@ -13,30 +13,25 @@ presented as exact refractive transport.
 
 ## 1. Where the renderer actually is
 
-The frame already traces a real path: `rayGenMain` runs an eight-vertex loop
-with direct delta-sun evaluation and an alpha-aware shadow ray at every vertex,
+The frame traces a real path: `rayGenMain` runs an eight-vertex loop
+with finite-disc sun evaluation and an alpha/Glass-aware shadow ray at every vertex,
 Lambert + GGX dielectric BRDF evaluation, VNDF lobe sampling with a matching mixture
 PDF, and Russian roulette after vertex 3. P1 added one cosine-sampled sky NEE branch
 per eligible vertex and power-heuristic MIS against later BSDF sky misses; raygen owns
-the procedural gradient evaluation while the miss stage returns only a marker. Linear
+the P4 Preetham/civil-twilight/night evaluation while the miss stage returns only a marker. Linear
 radiance lands in an `R16G16B16A16_SFLOAT` image before compute tonemapping into the
 presented 8-bit image. Six stages and seven groups are wired, the routing ABI is fixed
 at radiance 0 / shadow 1 / `RayTypeCount = 2` (`src/ray_types.hpp`), descriptor
-bindings 0–5 are in use, and the pinned frame ABI is an 80-byte view push block plus a
+bindings 0–8 are in use, and the pinned frame ABI is an 80-byte view push block plus a
 192-byte dynamic `FrameLighting` uniform record.
 
-What is missing is everything that makes the transport *converge* and everything that
-makes the material set *complete*:
+P0–P4 have closed the light/material/time-of-day gaps this plan began with. What
+remains is P5's sampling-quality and whole-BSDF energy proof:
 
 | Gap | Consequence today |
 |---|---|
-| No emissive material channel at all | Emitting surfaces cannot be authored, so there is nothing to sample |
-| No emitter records or importance distribution | A lamp, a campfire, or an anomaly cannot join the landed sky/emitter selector |
-| Dielectric is the only material class | Metals and transmissive glass cannot be represented honestly |
-| Sun and gradient sky are static | Time of day, a finite sun disc, penumbrae, and a night gradient are unavailable |
-| One material class (opaque dielectric) | `models\mirror`, `models\window`, `models\selflight` classes have no target category (`LIGHTING_PLAN.md` §2.1 audit: 553 window, 74 selflight, 8 mirror references) |
-| A static, hard-coded sun and gradient sky | No time of day, no night, no sun disc |
 | Pixel-center sampling only | No anti-aliasing, and no jitter for step 5's reprojection to consume |
+| No white-furnace preset/proof | The complete dielectric/Metal/Glass BSDF set lacks its final whole-transport energy gate |
 
 ## 2. Definition of done
 
@@ -229,16 +224,16 @@ P1:
 |---|---|---|
 | 0 | `float3 sunDirection`, `float sunCosineHalfAngle` | Toward the sun; disc half-angle cosine (P4; 1.0 = delta until then) |
 | 16 | `float3 sunIrradiance`, `float sunSolidAngle` | Incident irradiance; all-zero RGB disables the sun. Solid angle is 0 for the P1 delta sun |
-| 32 | `float3 skyZenith`, `float pSky` | Gradient/Preetham zenith value and sky probability in the shared sky/emitter selector |
+| 32 | `float3 skyZenith`, `float pSky` | Gradient RGB or Preetham zenith `(x, y, Y)` and sky probability in the shared sky/emitter selector |
 | 48 | `float3 skyHorizon`, `float pEmitters` | P1 gradient/P4 night horizon and emitter probability; `pSky + pEmitters == 1` when that selector is enabled |
 | 64 | `uint lightCount`, `uint instanceCount`, `float totalLightPower`, `uint flags` | Published light/TLAS-instance counts and mode/debug bits |
-| 80 | `float4 skyPerezA` | P4 coefficient RGB in `.xyz`; `.w = 0` |
-| 96 | `float4 skyPerezB` | P4 coefficient RGB in `.xyz`; `.w = 0` |
-| 112 | `float4 skyPerezC` | P4 coefficient RGB in `.xyz`; `.w = 0` |
-| 128 | `float4 skyPerezD` | P4 coefficient RGB in `.xyz`; `.w = 0` |
-| 144 | `float4 skyPerezE` | P4 coefficient RGB in `.xyz`; `.w = 0` |
+| 80 | `float4 skyPerezA` | P4 coefficient `(x, y, Y)` in `.xyz`; `.w = 0` |
+| 96 | `float4 skyPerezB` | P4 coefficient `(x, y, Y)` in `.xyz`; `.w = 0` |
+| 112 | `float4 skyPerezC` | P4 coefficient `(x, y, Y)` in `.xyz`; `.w = 0` |
+| 128 | `float4 skyPerezD` | P4 coefficient `(x, y, Y)` in `.xyz`; `.w = 0` |
+| 144 | `float4 skyPerezE` | P4 coefficient `(x, y, Y)` in `.xyz`; `.w = 0` |
 | 160 | `float4 nightZenith` | P4 night-gradient zenith RGB in `.xyz`; `.w = 0` |
-| 176 | `float daylightBlend`, `uint reserved0`, `uint reserved1`, `uint reserved2` | P4 daylight weight in [0, 1]; reserved words are zero |
+| 176 | `float daylightBlend`, `float emitterScale`, `uint reserved1`, `uint reserved2` | P4 daylight weight and inverse time-driven yard-emitter intensity in [0, 1]; reserved words are zero |
 
 `flags` is also pinned: bit 0 = Perez daylight fields active, bit 1 = scene contains
 Glass, and bits 2–3 = estimator mode (`0` MIS, `1` NEE-only, `2` BSDF-only, `3`
@@ -303,8 +298,9 @@ validation-enabled frame-7 capture retains hash `0xd6550332dd29cf6c`.
 **P2c status: complete (2026-07-29).** Raygen now samples power-selected emitting
 triangles with finite one-sided visibility segments, closest-hit resolves BSDF-hit
 emission through the bounded instance/geometry lookup, and power-heuristic MIS combines
-the two techniques. The shared scene selector adds a 21-placement / 42-triangle night
-yard. Frozen-scene linear-HDR reference capture and its MIS, NEE-only, and BSDF-only
+the two techniques. The original shared scene selector added a 21-placement /
+42-triangle night-yard variant; P4 later consolidated those placements into the one
+time-driven yard. Frozen-scene linear-HDR reference capture and its MIS, NEE-only, and BSDF-only
 controls pass the pinned 256-sample pairwise agreement gate in every region/channel.
 All 7 graphics-free and 21 debug/release tests pass; SPIR-V and validation-enabled yard
 and night captures are clean. At 1920×1080 on the RTX 5070 Ti, fixed 32+256 trace-only
@@ -414,15 +410,15 @@ and MIS-weights the emission against the BSDF density it actually sampled. Back-
 or grazing emitters evaluate to zero emission and zero competing light density. The
 delta sun never enters any MIS balance.
 
-### 6.5 The night yard
+### 6.5 Time-driven yard emitters
 
-A code-owned night variant of the temporary gallery policy (`src/gallery.cpp`): the
-same yard geometry, sun irradiance zero, a dim night sky, and ~20 small emitters —
-lamps on the wall and platform, a campfire-scale emitter, and a cluster of
-anomaly-scale emitters — selected by a runtime option routed through the existing
-capture/gallery seam (§9.3). This is the standing many-light acceptance scene and,
-deliberately, the noisiest content in the project: step 5's denoiser must be built
-against it, so it exists before the denoiser does.
+The temporary gallery policy (`src/gallery.cpp`) always places the same 21 small
+emitters: lamps on the wall and platform, a campfire-scale emitter, and a cluster of
+anomaly-scale emitters. P4 removed the separate night preset. One per-frame
+`emitterScale = 1 - daylightBlend` multiplies both directly visible emission and NEE
+energy, leaving immutable geometry, light records, and the CDF resident while lamps
+fade on through evening civil twilight and off through dawn. This remains the standing
+many-light acceptance content and, deliberately, the noisiest part of the yard.
 
 ### 6.6 Acceptance
 
@@ -433,7 +429,7 @@ against it, so it exists before the denoiser does.
   repeated placements of a shared mesh, every sentinel/bounds failure, and zero-emitter
   scenes; sky-only/emitter-only/mixed selector normalization; the `pLight` formula as a
   pure function.
-- Runtime: night yard renders with all emitters visibly contributing at 1 spp; an
+- Runtime: the yard at midnight renders with all emitters visibly contributing at 1 spp; an
   emitter viewed directly and its illumination of a nearby surface are consistent
   (no double-count, no missing energy). P2c adds the linear-HDR reference-capture path
   specified in §9.2 and its `NEE-only`, `BSDF-only`, and `MIS` controls; double-precision
@@ -551,12 +547,33 @@ unsupported `alphaTested && Glass` combination.
 
 ## 8. Phase P4 — Time-varying sun and sky with a finite sun disc
 
+**Status: complete (2026-08-02).** `SceneLighting` now derives a fixed-latitude,
+summer-solstice sun direction, air-mass-tinted direct irradiance, turbidity-three
+Preetham `(x, y, Y)` zenith/Perez coefficients, and the civil-twilight/night blend
+from one `[0, 24)` float. The single yard defaults to noon; `main()` advances that
+value during interactive play and freezes the default or `--time` override for
+capture/reference. The inverse daylight blend drives its permanent emitter set.
+Slang mirrors
+the pinned CPU known answers and converts evaluated xyY to linear sRGB. The 0.27° sun
+uses uniform-cone NEE plus complementary BSDF-hit MIS, preserves incident energy as
+disc size changes, and retains an RNG/arithmetically identical delta branch at zero
+solid angle. All 21 tests and standalone SPIR-V validation pass. Pre-consolidation fully configured
+1920×1080 noon, civil-twilight, and night captures completed with hashes
+`0xa8e52f0e219eefe5`, `0x0077f2ff249581a7`, and `0x2a1e1b42543c08e5`;
+plain, GPU-assisted, and synchronization validation were clean over both frame slots.
+The pre-consolidation fixed 32+256 yard protocol at 13:30 recorded a 2.686 ms trace-only median and
+frame-287 hash `0xafaf09c991ceb373` on the RTX 5070 Ti / 595.71.05 system.
+The subsequent single-yard consolidation keeps all 42 emitter triangles resident,
+defaults to noon, and passes the deterministic capture proof with frame-7 hash
+`0x011e175c7a0e3d63`; its frozen-midnight MIS/NEE/BSDF proof agrees in every region.
+
 **Goal.** One model produces the sun direction, sun irradiance, sky radiance, and night
 — replacing `DefaultSceneLighting`'s constant analytic values and the fixed gradient.
 
 **Decisions.**
 
-- **Preetham analytic sky, coefficients computed on the CPU per frame.** Five
+- **[Preetham analytic sky](https://doi.org/10.1145/311535.311545), coefficients
+  computed on the CPU per frame.** Five
   coefficients per channel plus zenith terms are a closed form in turbidity and sun
   zenith and occupy the exact `skyPerezA`–`E`/`skyZenith` fields reserved in
   `FrameLighting` (§5.3); `skyHorizon`/`nightZenith` hold the night gradient and
@@ -615,8 +632,8 @@ stays correct. This is the one place this plan deliberately builds *for* the den
 ### 9.2 Linear-HDR reference capture and the furnace proof
 
 P2c adds an acceptance-only reference mode alongside ordinary capture:
-`--reference <sample-count> --scene <yard|night|furnace> --estimator
-<mis|nee|bsdf>`. After every successful frame it reads the untouched
+`--reference <sample-count> --estimator <mis|nee|bsdf> [--time <hours>]`. After every
+successful frame it reads the untouched
 `R16G16B16A16_SFLOAT` HDR image, converts half values to float, and accumulates each
 channel into double-precision CPU sums. It never feeds the sum back to the renderer, so
 this is offline measurement rather than roadmap-step-5 temporal accumulation. Ordinary
@@ -624,6 +641,11 @@ this is offline measurement rather than roadmap-step-5 temporal accumulation. Or
 pinned hash contract. Reference mode fixes camera, time of day, and scene transforms
 for the complete sample set; it increments only `frameIndex` and does not advance
 physics between samples, so all estimators measure the same integrand.
+Its gallery profile places only the required generated, non-Glass geometry: optional
+local props cannot move a pinned image region, and P3's explicitly biased
+straight-line visibility through intervening Glass cannot make NEE and BSDF measure
+different integrands. Ordinary capture and interactive play retain the complete
+configured gallery.
 
 Estimator controls are mode bits in `FrameLighting.flags`: `bsdf` disables non-delta
 NEE but keeps BSDF-hit/miss emission; `nee` keeps BSDF continuation for indirect paths
@@ -642,14 +664,13 @@ class/roughness case; reference mode requires every RGB ratio to satisfy
 `abs(mean / L - 1) <= max(0.02, 3 * standardError / L)` and reports a hard pass/fail.
 Tonemapped LDR values are never used for this proof.
 
-### 9.3 One selector for the code-owned scene presets
+### 9.3 Add a selector only when a second scene exists
 
-P2's night yard and P5's furnace scene are both temporary gallery policy, and they must
-not each grow their own entry point. P2 introduces one `--scene <yard|night>` option;
-P5 extends its validated enum to `<yard|night|furnace>`. The option is accepted by
-interactive, ordinary-capture, and reference modes and consumed by `loadGalleryScene`
-and `SceneLighting`; the default stays the current yard. The whole selector retires
-with the gallery when level data has a real owner.
+There is one test yard, so no scene selector exists. Day and night are times within
+that yard, selected with `--time`; its emitters are permanent geometry with
+time-driven intensity. P5 adds the furnace through the smallest explicit acceptance
+seam needed at that point rather than retaining a redundant yard/night enum. Any such
+temporary selector retires with the gallery when level data has a real owner.
 
 ### 9.4 Cost instrumentation
 
@@ -684,14 +705,15 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
    GPU record 32 → 48.
    No shading change yet (emission unreferenced).
 5. **P2b — complete.** Light builder, records, CDF, emitter lookup, bindings 6–8.
-6. **P2c — complete.** Emitter NEE + emitter MIS + the night yard preset + linear-HDR reference
-   capture and estimator controls.
+6. **P2c — complete.** Emitter NEE + emitter MIS + the original night-yard acceptance
+   content + linear-HDR reference capture and estimator controls.
 7. **P3a — complete.** `OGFX_MATERIALS` v4 class word + metal class + sharp/rough
    Blender sphere acceptance.
 8. **P3b — complete.** glass class + two-sided direct sampling + unified any-hit routing + explicit
    intervening-glass shadow approximation + perf measurement.
-9. **P4** Preetham sky, time of day, sun disc, cone sampling.
-10. **P5** frame-global pixel jitter, furnace preset/proof, scene selector, final
+9. **P4 — complete.** Preetham sky, time of day, sun disc, cone sampling, and
+   BSDF-hit solar MIS.
+10. **P5** frame-global pixel jitter, furnace preset/proof, minimal second-scene seam, final
     acceptance matrix.
 
 Documentation lands with the code it describes: `ARCHITECTURE.md` gains a **Lighting**

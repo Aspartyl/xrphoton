@@ -148,6 +148,37 @@ bool instanceClashes(const xrphoton::SceneData& scene, std::size_t instanceIndex
     return false;
 }
 
+#if XRPHOTON_GALLERY_TEST_EXPECTATION == 0
+bool instanceUsesGlass(
+    const xrphoton::SceneData& scene,
+    const xrphoton::SceneInstance& instance)
+{
+    if (instance.meshIndex >= scene.meshes.size()) {
+        return false;
+    }
+    const xrphoton::SceneMesh& mesh = scene.meshes[instance.meshIndex];
+    for (std::uint64_t geometryOffset = 0;
+         geometryOffset < mesh.geometryCount;
+         ++geometryOffset) {
+        const std::uint64_t geometryIndex =
+            static_cast<std::uint64_t>(mesh.firstGeometry) + geometryOffset;
+        if (geometryIndex >= scene.geometries.size()) {
+            return false;
+        }
+        const std::uint32_t materialIndex =
+            scene.geometries[static_cast<std::size_t>(geometryIndex)].materialIndex;
+        if (materialIndex >= scene.materials.size()) {
+            return false;
+        }
+        if (scene.materials[materialIndex].materialClass
+            == xrphoton::SceneMaterialClass::Glass) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 glm::mat4 translation(glm::vec3 offset)
 {
     return glm::translate(glm::mat4{1.0f}, offset);
@@ -297,16 +328,16 @@ void testGeneratedYardPolicy()
     const xrphoton::SceneData& scene = loaded.scene;
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1 \
     || XRPHOTON_GALLERY_TEST_EXPECTATION == 4
-    constexpr std::size_t ExpectedMeshCount = 10;
-    constexpr std::size_t ExpectedGeometryCount = 11;
-    constexpr std::size_t ExpectedInstanceCount = 18;
-    constexpr std::size_t ExpectedMaterialCount = 11;
+    constexpr std::size_t ExpectedMeshCount = 13;
+    constexpr std::size_t ExpectedGeometryCount = 14;
+    constexpr std::size_t ExpectedInstanceCount = 39;
+    constexpr std::size_t ExpectedMaterialCount = 14;
     constexpr std::size_t ExpectedPhysicsCount = 2;
 #else
-    constexpr std::size_t ExpectedMeshCount = 9;
-    constexpr std::size_t ExpectedGeometryCount = 10;
-    constexpr std::size_t ExpectedInstanceCount = 17;
-    constexpr std::size_t ExpectedMaterialCount = 10;
+    constexpr std::size_t ExpectedMeshCount = 12;
+    constexpr std::size_t ExpectedGeometryCount = 13;
+    constexpr std::size_t ExpectedInstanceCount = 38;
+    constexpr std::size_t ExpectedMaterialCount = 13;
     constexpr std::size_t ExpectedPhysicsCount = 1;
 #endif
     expect(scene.meshes.size() == ExpectedMeshCount, "yard loads the expected model set");
@@ -422,8 +453,8 @@ void testGeneratedYardPolicy()
     expectedMeshes.push_back(9);
 #endif
 
-    if (scene.instances.size() == expectedTransforms.size()) {
-        for (std::size_t index = 0; index < scene.instances.size(); ++index) {
+    if (scene.instances.size() >= expectedTransforms.size()) {
+        for (std::size_t index = 0; index < expectedTransforms.size(); ++index) {
             expect(
                 scene.instances[index].meshIndex == expectedMeshes[index],
                 "yard placement references its pinned shared mesh");
@@ -483,39 +514,38 @@ void testGeneratedYardPolicy()
     expect(nearly(loaded.spawn.pitch, glm::radians(-5.0f)), "yard spawn pitch stays pinned");
 }
 
-void testNightYardPolicy()
+void testTimeDrivenEmitterPolicy()
 {
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 0
-    xrphoton::GalleryLoadResult loaded = xrphoton::loadGalleryScene(
-        xrphoton::ScenePreset::Night);
-    expect(static_cast<bool>(loaded), "night yard loads successfully");
+    xrphoton::GalleryLoadResult loaded = xrphoton::loadGalleryScene();
+    expect(static_cast<bool>(loaded), "single yard loads successfully");
     if (!loaded) {
         std::cerr << loaded.error << '\n';
         return;
     }
-    bool nightGlassIsClear = xrphoton::sceneHasGlass(loaded.scene);
+    bool glassIsClear = xrphoton::sceneHasGlass(loaded.scene);
     for (std::size_t instanceIndex = 10;
-         instanceIndex < 14 && nightGlassIsClear;
+         instanceIndex < 14 && glassIsClear;
          ++instanceIndex) {
-        nightGlassIsClear = !instanceClashes(loaded.scene, instanceIndex);
+        glassIsClear = !instanceClashes(loaded.scene, instanceIndex);
     }
     expect(
         loaded.scene.meshes.size() == 12
             && loaded.scene.geometries.size() == 13
             && loaded.scene.materials.size() == 13
             && loaded.scene.instances.size() == 38
-            && nightGlassIsClear,
-        "night yard retains every non-overlapping Glass showcase panel and adds its emitter set");
-    xrphoton::SceneLighting lighting = xrphoton::makeSceneLightingPreset(
-        xrphoton::ScenePreset::Night);
+            && glassIsClear,
+        "single yard retains every Glass panel and its permanent emitter set");
+    xrphoton::SceneLighting lighting = xrphoton::DefaultSceneLighting;
     std::string error;
     expect(
-        xrphoton::buildSceneLighting(
-            loaded.scene,
-            loaded.dynamicInstances,
-            &lighting,
-            &error),
-        "night yard emitter tables build");
+        xrphoton::updateSceneLightingTimeOfDay(0.0f, &lighting)
+            && xrphoton::buildSceneLighting(
+                loaded.scene,
+                loaded.dynamicInstances,
+                &lighting,
+                &error),
+        "single-yard emitter tables build");
     xrphoton::FrameLighting packed;
     expect(
         error.empty() && lighting.lights.size() == 42
@@ -523,8 +553,38 @@ void testNightYardPolicy()
             && xrphoton::makeFrameLighting(lighting, 38, &packed)
             && packed.sunIrradiance == glm::vec3{}
             && packed.lightCount == 42
+            && packed.emitterScale == 1.0f
             && packed.pSky == 0.5f && packed.pEmitters == 0.5f,
-        "night lighting disables the sun and publishes forty-two emitter triangles");
+        "midnight enables all forty-two emitter triangles and disables the sun");
+
+    expect(
+        xrphoton::updateSceneLightingTimeOfDay(12.0f, &lighting)
+            && xrphoton::makeFrameLighting(lighting, 38, &packed)
+            && packed.emitterScale == 0.0f
+            && packed.lightCount == 42
+            && packed.pSky == 1.0f && packed.pEmitters == 0.0f,
+        "noon keeps emitter geometry resident while switching its light energy off");
+
+    expect(
+        xrphoton::updateSceneLightingTimeOfDay(3.8f, &lighting)
+            && xrphoton::makeFrameLighting(lighting, 38, &packed)
+            && packed.emitterScale > 0.0f && packed.emitterScale < 1.0f,
+        "civil twilight continuously fades the permanent emitter set");
+
+    xrphoton::GalleryLoadResult referenceLoaded = xrphoton::loadGalleryScene(
+        xrphoton::GallerySceneProfile::EstimatorReference);
+    bool referenceHasGlassPlacement = false;
+    if (referenceLoaded) {
+        for (const xrphoton::SceneInstance& instance : referenceLoaded.scene.instances) {
+            referenceHasGlassPlacement = referenceHasGlassPlacement
+                || instanceUsesGlass(referenceLoaded.scene, instance);
+        }
+    }
+    expect(
+        referenceLoaded && referenceLoaded.scene.instances.size() == 34
+            && referenceLoaded.dynamicInstances == std::vector<std::size_t>{9}
+            && !referenceHasGlassPlacement,
+        "estimator-reference yard omits placements with approximate Glass visibility");
 #endif
 }
 
@@ -533,7 +593,7 @@ void testNightYardPolicy()
 int main()
 {
     testGeneratedYardPolicy();
-    testNightYardPolicy();
+    testTimeDrivenEmitterPolicy();
 
     if (failureCount != 0) {
         std::cerr << failureCount << " gallery-policy test assertion(s) failed.\n";

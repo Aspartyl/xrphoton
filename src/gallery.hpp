@@ -1,8 +1,6 @@
 #pragma once
 
 #include "scene.hpp"
-#include "scene_preset.hpp"
-
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -34,9 +32,16 @@ struct GalleryLoadResult
     }
 };
 
-// Load every configured asset through the generic OGFx path, merge its model
-// records, and add the table-owned yard placements. The table is temporary scene
-// policy; callers receive ordinary SceneData plus the spawn and dynamic-body set.
+enum class GallerySceneProfile
+{
+    Complete,
+    EstimatorReference,
+};
+
+// Load every configured asset through the generic OGFx path, merge its model records,
+// and add the table-owned yard placements. EstimatorReference retains only required,
+// exact-transport placements so fixed statistical regions do not depend on local
+// optional assets or P3's approximate intervening-Glass visibility.
 [[nodiscard]] GalleryLoadResult loadGalleryScene(
-    ScenePreset preset = ScenePreset::Yard);
+    GallerySceneProfile profile = GallerySceneProfile::Complete);
 }

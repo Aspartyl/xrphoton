@@ -9,7 +9,8 @@ xrPhoton renders an interactive ray-traced OGFx test yard. It
 brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
 TLAS over every yard placement, then launches one path per pixel from either a basic
 collision-aware player view or the original perspective fly camera. The ray-tracing
-shader evaluates direct sun, hard alpha/Glass-aware visibility, a procedural sky, and up to
+shader evaluates a finite solar disc, alpha/Glass-aware visibility, a time-varying
+Preetham/Perez sky, and up to
 eight dielectric, metal, or rough-glass GGX surface vertices before it
 stores linear radiance in a device-local float HDR image. A compute pass applies
 fixed-exposure Reinhard tonemapping into an 8-bit linear image, which is blitted to
@@ -39,9 +40,10 @@ power-weighted CDF, and an instance/geometry reverse lookup. `GpuLighting` uploa
 three tables once and binds valid sentinels when a scene has no emitters. P2c consumes
 them: raygen samples one finite, one-sided emitter connection per selected vertex,
 closest-hit identifies BSDF-hit emitters through `InstanceIndex()`, and power-heuristic
-MIS combines the two techniques without double-counting. The shared scene selector now
-offers a code-owned night yard with 21 small emissive placements / 42 triangles, zero
-sun, and a dim sky. An acceptance-only linear-HDR reference mode freezes the scene,
+MIS combines the two techniques without double-counting. The single code-owned yard
+contains 21 small emissive placements / 42 triangles whose common intensity follows
+time of day: zero in daylight, full at night, and crossfaded through civil twilight.
+An acceptance-only linear-HDR reference mode freezes the scene,
 reads `R16G16B16A16_SFLOAT` after every sample, and proves MIS, NEE-only, and BSDF-only
 agreement in three pinned regions.
 P3a gives material offset 44 its v4 class meaning without changing the 48-byte
@@ -54,6 +56,25 @@ the shared GGX visible-normal sampler. Four generated closed Glass panels—clea
 aqua, amber, and frosted smoke—stand on the ground in a shared day/night material
 display; the optional Blender sphere proof retains its sharp/rough Metal and normal/UV
 regressions.
+P4 replaces the fixed sun/gradient with one time-of-day authority. A fixed
+46.5-degree latitude and summer-solstice declination produce the sun direction;
+turbidity-three Preetham xyY/Perez coefficients are computed on the CPU and mirrored
+in Slang, with a continuous fade through civil twilight into the authored night
+gradient. The sun is a uniform 0.27-degree cone whose radiance integrates back to the
+published direct-normal irradiance. NEE and BSDF hits of that disc use complementary
+power-heuristic weights while the exact zero-angle configuration retains the old
+delta estimator. The same daylight blend inversely drives the permanent yard emitter
+set, so both visible emission and NEE energy turn on together without changing scene
+geometry. The yard defaults to noon; `--time <hours>` freezes any acceptance time,
+and interactive play advances one in-game minute per real second without changing the
+192-byte frame-record size or bindings. The pre-consolidation fixed 32+256 fully
+configured yard capture at 13:30 recorded a 2.686 ms trace-only
+median on the RTX 5070 Ti / 595.71.05 system. Noon, civil-twilight, and full-night
+captures completed with distinct deterministic hashes; plain, GPU-assisted, and
+synchronization validation were clean across both frame slots.
+After consolidating day/night into the one permanent-emitter yard, the deterministic
+noon capture proof records frame-7 hash `0x011e175c7a0e3d63`; the midnight
+MIS/NEE/BSDF proof still agrees in every pinned region.
 The fixed 32-warm-up + 256-measured validation capture on an RTX 5070 Ti with NVIDIA
 595.71.05 at 1920×1080 recorded 1.131 ms for P3b's original suspended-panel Glass
 acceptance view versus 0.907 ms for the identical P3a-equivalent opaque-panel view
@@ -241,7 +262,8 @@ the renderer layering.)
 | [src/texture_loader.hpp](src/texture_loader.hpp) / [.cpp](src/texture_loader.cpp) and [src/texture_loader_detail.hpp](src/texture_loader_detail.hpp) | Canonical logical-name mapping, strict DDS DXT1/DXT5/canonical-RGBA8 framing and mip-0 decode, ordered texture-root overlays, deterministic scene-image deduplication, slot-0 fallback creation, and cumulative texture-byte gating | Vulkan-free runtime mechanism; resolves caller-owned `SceneData` after model assembly |
 | [src/ray_types.hpp](src/ray_types.hpp) | Build-owned radiance/shadow indices, `RayTypeCount`, and compile-time C++ side of the C++/Slang SBT-routing ABI | Shared by scene assembly, acceleration-structure construction, and pipeline/SBT construction; fixed at radiance 0, shadow 1, count 2 |
 | [shaders/raytrace.slang](shaders/raytrace.slang), [records.slang](shaders/records.slang), [sampling.slang](shaders/sampling.slang), [bsdf.slang](shaders/bsdf.slang), and [lighting.slang](shaders/lighting.slang) | Six RT entry points and the iterative path loop, with imported ABI records, RNG/sampling/MIS helpers, class-aware dielectric/Metal BSDF evaluation/sampling/PDF, and analytic-light evaluation | Build-time sources compiled and embedded as one SPIR-V module; Slang depfile tracks every import |
-| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) and [src/scene_preset.hpp](src/scene_preset.hpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, optionally adds the shared-mesh 21-placement night emitter set, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; `ScenePreset` is the shared CLI/gallery/lighting selector and retires with this policy when level data has a real owner |
+| [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) | File-private asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates the single yard plus its permanent shared-mesh 21-placement emitter set, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side yard policy called by `main()`; it retires when level data has a real owner |
+| [src/estimator_mode.hpp](src/estimator_mode.hpp) | Vulkan-free MIS/NEE-only/BSDF-only reference estimator enum | Shared by command-line policy and frame-lighting flag packing |
 | [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, the invisible `CharacterVirtual`, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
 | [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency in the sole canonical build |
 | [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, ground/wall/box test-yard, and four-mesh Glass-showcase front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the six uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
@@ -249,14 +271,14 @@ the renderer layering.)
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
 | [src/lighting.hpp](src/lighting.hpp) / [.cpp](src/lighting.cpp) | Vulkan/GLFW-free 80-byte view-only `RaygenPushConstants`, frame-payload construction, and the C++ known-answer reference for the shader's PCG stream | Plain per-dispatch state composed by `main()`; lighting does not ride this path |
-| [src/scene_lighting.hpp](src/scene_lighting.hpp) / [.cpp](src/scene_lighting.cpp) and [src/frame_lighting_layout.hpp](src/frame_lighting_layout.hpp) | Vulkan-free mutable sun/sky authority; static-emitter extraction into the exact 64-byte `LightRecord`, power CDF, and 16-byte reverse-lookup records; exact 192-byte `FrameLighting` ABI and flags; selector packing; CPU sky evaluation/sample/PDF/MIS references; and checked dynamic-slot arithmetic | Plain scene state plus immutable emitter tables and per-frame publications; tested inside the canonical build |
+| [src/scene_lighting.hpp](src/scene_lighting.hpp) / [.cpp](src/scene_lighting.cpp) and [src/frame_lighting_layout.hpp](src/frame_lighting_layout.hpp) | Vulkan-free mutable time-of-day/sun/Preetham-sky authority; static-emitter extraction into the exact 64-byte `LightRecord`, power CDF, and 16-byte reverse-lookup records; exact 192-byte `FrameLighting` ABI and flags; selector packing; CPU sky/sun evaluation/sample/PDF/MIS references; and checked dynamic-slot arithmetic | Plain scene state plus immutable emitter tables and per-frame publications; tested inside the canonical build |
 | [src/gpu_lighting.hpp](src/gpu_lighting.hpp) / [.cpp](src/gpu_lighting.cpp) | `GpuLighting` RAII owner for the persistently mapped, host-coherent dynamic uniform buffer, checked per-slot publication, and device-local light/CDF/lookup buffers uploaded through the common staged path | Program lifetime — one aligned uniform subrange per frame in flight plus three immutable static-light allocations |
 | [src/capture.hpp](src/capture.hpp) / [.cpp](src/capture.cpp) and [tools/reference_compare.cpp](tools/reference_compare.cpp) | Vulkan-free interactive/capture/reference CLI parsing, checked raw RGBA8 hashing, linear-to-sRGB PPM publication, binary16 conversion, double-precision fixed-region HDR statistics, pairwise estimator gate, and fixed-protocol trace-timing median policy | One-shot capture/reference policy used by `main()` after renderer readback; owns no GPU state |
 | [src/player.hpp](src/player.hpp) / [.cpp](src/player.cpp) | Vulkan/Jolt/GLFW-free player constants and pure yaw-relative run/sprint/crouch velocity calculation | Shared by camera input and headless player-control tests |
 | [src/rt_pipeline.hpp](src/rt_pipeline.hpp) / [.cpp](src/rt_pipeline.cpp) | `RtPipeline` (nine-binding descriptor set, pipeline layout with the raygen frame-constant range, six-stage/seven-group ray tracing pipeline, per-geometry/per-ray-type SBT buffer + the four trace regions), `createRtDescriptorSet`, `createRtPipeline`, `buildShaderBindingTable`, and the render/scene/lighting descriptor writers | Program lifetime — created once at startup; bindings 0–1 are *rewritten* on resize |
 | [src/tonemap.hpp](src/tonemap.hpp) / [src/tonemap_pipeline.hpp](src/tonemap_pipeline.hpp) / [.cpp](src/tonemap_pipeline.cpp) | Fixed exposure/dispatch ABI plus `TonemapPipeline`, its two-image descriptor set, compute pipeline, and resize rewrite | Program lifetime pipeline over resize-bound HDR/LDR images |
 | [src/renderer.hpp](src/renderer.hpp) / [.cpp](src/renderer.cpp) | `Renderer` (the non-owning view of everything the frame path uses, including CPU scene plus GPU-lighting and acceleration-structure owners), `drawFrame` with its post-fence lighting/instance slot writes, trace-only timestamp readback, `prepareRtForSwapchain`, terminal LDR readback, repeatable HDR reference readback, and the file-private command-recording helpers | Owns nothing — a parameter bundle over borrowed handles; readback returns CPU-owned bytes |
-| [src/main.cpp](src/main.cpp) | `main()` orchestration, scene/estimator selection, interactive player/free-camera operation, ordinary capture, and frozen-scene HDR reference sampling | Program lifetime |
+| [src/main.cpp](src/main.cpp) | `main()` orchestration, reference-estimator selection, interactive player/free-camera operation, the time-cycling yard, ordinary capture, and frozen-scene HDR reference sampling | Program lifetime |
 
 ### Header dependency rule
 
@@ -731,12 +753,16 @@ tightly packed linear RGBA8 bytes. `capture.cpp` hashes those raw bytes with the
 extent and writes an sRGB PPM; it owns no Vulkan state.
 
 Reference mode is a separate offline branch selected by
-`--reference <samples> --scene <yard|night> --estimator <mis|nee|bsdf>`. It disables
+`--reference <samples> --estimator <mis|nee|bsdf> [--time <hours>]`. It disables
 the player character, fixes the camera, extent, physics, and scene transforms for the
 entire run, and advances only the shader frame index. After each serialized frame,
 `readbackHdrImage` waits the submitted slot, copies the untouched
 `R16G16B16A16_SFLOAT` image to mapped host memory, invalidates non-coherent caches,
-and returns HDR to the `GENERAL` reuse contract. `capture.cpp` converts raw binary16
+and returns HDR to the `GENERAL` reuse contract. The estimator-reference gallery
+profile places only required generated non-Glass assets, keeping the pinned regions
+independent of optional local props and excluding P3's deliberately biased
+straight-line visibility through intervening Glass; ordinary capture and interactive
+play retain the complete configured gallery. `capture.cpp` converts raw binary16
 channels and accumulates per-frame RGB means for three normalized image regions into
 double sums. The `xrPhotonReferenceProof` target renders MIS, NEE-only, and BSDF-only
 with fixed seeds and 256 samples, then requires every estimator pair/channel/region to
@@ -1246,25 +1272,34 @@ Decisions and contracts worth preserving:
   power-heuristic weight against the saved sky or reconstructed emitter density.
   Closest-hit resolves emission through the bounded
   `InstanceIndex → GeometryIndex → PrimitiveIndex` lookup; camera-visible emission is
-  unweighted. The sun stays a separately evaluated delta estimator and is never in
-  this selector.
+  unweighted. The finite sun stays a separately sampled uniform-cone technique and is
+  never in this selector. Its radiance is `sunIrradiance / sunSolidAngle`; NEE and
+  BSDF-hit disc paths receive complementary power-heuristic weights. A zero solid
+  angle takes the original delta path without consuming RNG draws or dividing by zero.
   Secondary directions use a sign-stable Duff basis, are rejected rather than
   resampled when they fall below the geometric normal, and launch from the
   geometric-normal offset on the selected reflection or transmission side. The matching
   C++/Slang PCG permutation seeds each pixel from its coordinates and frame index;
   capture mode therefore reproduces a selected noisy frame without accumulation.
 - **One lighting authority and pinned ABI.** `SceneLighting` owns the mutable analytic
-  sun and sky without Vulkan state, validates finite nonnegative coefficients,
-  normalizes a powered sun, derives selector probabilities, and transactionally packs
-  `FrameLighting`. The `alignas(16)` record is exactly 192 bytes: sun lanes at 0/16,
+  sun and sky without Vulkan state, validates finite model state and nonnegative
+  radiance, normalizes a powered sun, derives selector probabilities, and
+  transactionally packs `FrameLighting`. The `alignas(16)` record is exactly 192
+  bytes: sun lanes at 0/16,
   sky lanes at 32/48, counts/power/flags at 64, five Perez `float4`s at 80–144,
-  `nightZenith` at 160, then daylight blend and reserved words at 176–188. Bit 1
+  `nightZenith` at 160, then daylight blend, emitter scale, and two reserved words at
+  176–188. Bit 1
   records the always-enabled Glass transport capability. The pipeline has one fixed
   configuration and dispatches transmissive behavior solely from each material class.
-  Perez remains zero; estimator bits select MIS, NEE-only, or BSDF-only for offline
+  Bit 0 selects the Perez-capable evaluator. The five coefficient lanes carry
+  Preetham `(x, y, Y)` fits, `skyZenith` carries the matching zenith xyY value, and
+  the night-gradient/daylight-blend lanes provide one continuous sky entry point.
+  `emitterScale = 1 - daylightBlend` drives both BSDF-hit and NEE emission from the
+  yard's permanent emitter records; a zero scale removes the emitter selector branch.
+  Estimator bits select MIS, NEE-only, or BSDF-only for offline
   reference capture, while interactive and ordinary capture always publish MIS. A
-  powered sky or a nonempty static-emitter table
-  is the sole selector branch; when both exist they receive equal branch probability,
+  powered sky or a positive-scale static-emitter table is a selector branch; when
+  both exist they receive equal branch probability,
   while triangle selection inside the emitter branch follows `area × luminance`.
   Sun power cannot change those probabilities. Each emitting triangle is a 64-byte
   world-space `LightRecord`; the float CDF and 16-byte instance/geometry lookup are
@@ -1521,22 +1556,26 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **Phases P0–P3b plus HDR, dielectric/metal/Glass
+4. **Lighting + path tracing.** **Phases P0–P4 plus HDR, dielectric/metal/Glass
    materials, emissive geometry, and multi-bounce transport landed** — the shader is
    split into
    depfile-tracked imported modules and trace-only GPU timing establishes the fixed
    32+256 cost protocol. `SceneLighting`/`GpuLighting` provide one per-frame light
    authority and an aligned dynamic uniform slot. Raygen owns an eight-vertex loop,
-   direct class-aware GGX delta-sun evaluation at every hit, hard alpha-aware shadow rays,
+   class-aware GGX finite-sun evaluation at every hit, alpha/Glass-aware shadow rays,
    sky and finite-emitter NEE with power-heuristic MIS against BSDF misses/hits,
    diffuse/GGX VNDF mixture sampling for dielectrics, reflection-only GGX VNDF
    sampling for metals, matched rough GGX reflection/refraction for Glass, and
    Russian roulette. OGFx material v2 carries
    roughness/F0, v3 carries emission, and v4 carries the explicit class; older versions map missing fields to
-   deliberate defaults. The night yard exercises a flat power-weighted CDF over 42
-   emitting triangles, and the frozen linear-HDR proof independently runs MIS,
+   deliberate defaults. P4 adds the CPU/Slang Preetham/Perez daylight model, a
+   fixed-latitude/date time-of-day driver, civil-twilight/night blending, and a
+   uniform-cone solar disc with NEE/BSDF MIS while preserving the zero-angle delta
+   compatibility path. The one noon-default yard keeps a flat power-weighted CDF over
+   42 emitter triangles resident and fades their common intensity with civil twilight.
+   The frozen midnight linear-HDR proof independently runs MIS,
    NEE-only, and BSDF-only to guard against double-counted or missing energy. The
-   renderer still needs a time-varying sun/sky model. Many-light sampling remains a first-class requirement, with a
+   Many-light sampling remains a first-class requirement, with a
    ReSTIR-class upgrade tracked once the flat selector is measurably limiting.
 5. **Temporal accumulation + denoising.** Pending — one coupled system, and the
    critical path for a playable image: at real-time budgets every visible pixel

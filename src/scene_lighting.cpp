@@ -18,15 +18,32 @@ namespace xrphoton
 namespace
 {
 constexpr float InversePi = 0.31830988618379067154f;
+constexpr float Pi = 3.14159265358979323846f;
 constexpr float TwoPi = 6.28318530717958647692f;
 constexpr float NormalizeEpsilonSquared = 1.0e-12f;
 constexpr glm::vec3 LuminanceWeights{0.2126f, 0.7152f, 0.0722f};
+constexpr float DegreesToRadians = Pi / 180.0f;
+constexpr float ModelLatitudeRadians = 46.5f * DegreesToRadians;
+constexpr float ModelSolarDeclinationRadians = 23.44f * DegreesToRadians;
+constexpr float ModelTurbidity = 3.0f;
+// Preetham returns zenith luminance in kcd/m^2; this exposure-independent conversion
+// maps it into the renderer's established relative-radiance scale.
+constexpr float SkyLuminanceScale = 0.04f;
+constexpr glm::vec3 ZenithSunIrradiance{2.5f, 2.25f, 1.9f};
+constexpr glm::vec3 NightZenithRadiance{0.0015f, 0.003f, 0.008f};
+constexpr glm::vec3 NightHorizonRadiance{0.006f, 0.008f, 0.014f};
 
 bool isFiniteNonnegative(const glm::vec3& value)
 {
     return std::isfinite(value.x) && std::isfinite(value.y)
         && std::isfinite(value.z) && value.x >= 0.0f && value.y >= 0.0f
         && value.z >= 0.0f;
+}
+
+bool isFinite(const glm::vec3& value)
+{
+    return std::isfinite(value.x) && std::isfinite(value.y)
+        && std::isfinite(value.z);
 }
 
 bool hasPower(const glm::vec3& value)
@@ -103,34 +120,243 @@ bool isUnitFinite(const glm::vec3& value)
     return std::isfinite(squaredLength)
         && std::abs(squaredLength - 1.0f) <= 1.0e-4f;
 }
+
+float smoothstep(float edge0, float edge1, float value)
+{
+    const float parameter = std::clamp(
+        (value - edge0) / (edge1 - edge0),
+        0.0f,
+        1.0f);
+    return parameter * parameter * (3.0f - 2.0f * parameter);
 }
 
-const SceneLighting DefaultSceneLighting{
-    .sun = {
-        .direction = {-0.35f, 0.9f, -0.25f},
-        .irradiance = {2.5f, 2.25f, 1.9f},
-    },
-    .sky = {
-        .zenithRadiance = {0.055f, 0.12f, 0.28f},
-        .horizonRadiance = {0.32f, 0.38f, 0.46f},
-        .enabled = true,
-    },
-    .lights = {},
-    .lightCdf = {},
-    .emitterLookup = {},
-    .totalLightPower = 0.0f,
-    .instanceCount = 0,
-};
-
-SceneLighting makeSceneLightingPreset(ScenePreset preset)
+glm::vec3 solarDirection(float timeOfDayHours)
 {
-    SceneLighting lighting = DefaultSceneLighting;
-    if (preset == ScenePreset::Night) {
-        lighting.sun.irradiance = {};
-        lighting.sky.zenithRadiance = {0.0015f, 0.003f, 0.008f};
-        lighting.sky.horizonRadiance = {0.006f, 0.008f, 0.014f};
+    // Fixed local ENU frame: +X east, +Y up, +Z north. The representative
+    // latitude and summer-solstice declination are temporary level/weather policy.
+    const float hourAngle = (timeOfDayHours - 12.0f) * 15.0f * DegreesToRadians;
+    const float sinLatitude = std::sin(ModelLatitudeRadians);
+    const float cosLatitude = std::cos(ModelLatitudeRadians);
+    const float sinDeclination = std::sin(ModelSolarDeclinationRadians);
+    const float cosDeclination = std::cos(ModelSolarDeclinationRadians);
+    return glm::normalize(glm::vec3{
+        -cosDeclination * std::sin(hourAngle),
+        sinLatitude * sinDeclination
+            + cosLatitude * cosDeclination * std::cos(hourAngle),
+        cosLatitude * sinDeclination
+            - sinLatitude * cosDeclination * std::cos(hourAngle),
+    });
+}
+
+std::array<glm::vec3, 5> preethamPerezCoefficients(float turbidity)
+{
+    // Components are (x chromaticity, y chromaticity, luminance Y), matching the
+    // original Preetham/Shirley/Smits SIGGRAPH 1999 fits (DOI 10.1145/311535.311545).
+    // Packing xyY keeps the closed form exact; conversion to linear sRGB happens only
+    // after directional evaluation.
+    return {{
+        {-0.0193f * turbidity - 0.2592f,
+         -0.0167f * turbidity - 0.2608f,
+          0.1787f * turbidity - 1.4630f},
+        {-0.0665f * turbidity + 0.0008f,
+         -0.0950f * turbidity + 0.0092f,
+         -0.3554f * turbidity + 0.4275f},
+        {-0.0004f * turbidity + 0.2125f,
+         -0.0079f * turbidity + 0.2102f,
+         -0.0227f * turbidity + 5.3251f},
+        {-0.0641f * turbidity - 0.8989f,
+         -0.0441f * turbidity - 1.6537f,
+          0.1206f * turbidity - 2.5771f},
+        {-0.0033f * turbidity + 0.0452f,
+         -0.0109f * turbidity + 0.0529f,
+         -0.0670f * turbidity + 0.3703f},
+    }};
+}
+
+glm::vec3 preethamZenithXyY(float turbidity, float solarZenith)
+{
+    const float theta2 = solarZenith * solarZenith;
+    const float theta3 = theta2 * solarZenith;
+    const float turbidity2 = turbidity * turbidity;
+    const float x =
+        (0.00165f * theta3 - 0.00374f * theta2
+            + 0.00208f * solarZenith) * turbidity2
+        + (-0.02902f * theta3 + 0.06377f * theta2
+            - 0.03202f * solarZenith + 0.00394f) * turbidity
+        + (0.11693f * theta3 - 0.21196f * theta2
+            + 0.06052f * solarZenith + 0.25885f);
+    const float y =
+        (0.00275f * theta3 - 0.00610f * theta2
+            + 0.00316f * solarZenith) * turbidity2
+        + (-0.04214f * theta3 + 0.08970f * theta2
+            - 0.04153f * solarZenith + 0.00516f) * turbidity
+        + (0.15346f * theta3 - 0.26756f * theta2
+            + 0.06669f * solarZenith + 0.26688f);
+    const float chi = (4.0f / 9.0f - turbidity / 120.0f)
+        * (Pi - 2.0f * solarZenith);
+    const float luminance = ((4.0453f * turbidity - 4.9710f) * std::tan(chi)
+        - 0.2155f * turbidity + 2.4192f) * SkyLuminanceScale;
+    return {x, y, std::max(luminance, 0.0f)};
+}
+
+glm::vec3 attenuatedSunIrradiance(float solarElevationRadians)
+{
+    const float elevationDegrees = solarElevationRadians / DegreesToRadians;
+    if (elevationDegrees <= 0.0f) {
+        return {};
     }
+
+    // Kasten-Young relative optical air mass plus a compact RGB extinction fit. The
+    // normalization keeps ZenithSunIrradiance's existing incident-energy meaning at
+    // zenith while producing the expected warm, dim disc near the horizon.
+    const float airMass = 1.0f / (
+        std::sin(solarElevationRadians)
+        + 0.50572f * std::pow(elevationDegrees + 6.07995f, -1.6364f));
+    const float relativePath = std::max(airMass - 1.0f, 0.0f);
+    constexpr glm::vec3 OpticalDepth{0.035f, 0.07f, 0.14f};
+    const glm::vec3 transmittance{
+        std::exp(-OpticalDepth.x * relativePath),
+        std::exp(-OpticalDepth.y * relativePath),
+        std::exp(-OpticalDepth.z * relativePath),
+    };
+    const float horizonVisibility = smoothstep(
+        0.0f,
+        1.0f,
+        elevationDegrees);
+    return ZenithSunIrradiance * transmittance * horizonVisibility;
+}
+
+bool configureTimeOfDay(float timeOfDayHours, SceneLighting* lighting)
+{
+    if (lighting == nullptr || !std::isfinite(timeOfDayHours)
+        || timeOfDayHours < 0.0f || timeOfDayHours >= 24.0f) {
+        return false;
+    }
+
+    const glm::vec3 actualSunDirection = solarDirection(timeOfDayHours);
+    const float solarElevation = std::asin(std::clamp(
+        actualSunDirection.y,
+        -1.0f,
+        1.0f));
+    const float daylightBlend = smoothstep(
+        -6.0f * DegreesToRadians,
+        0.0f,
+        solarElevation);
+
+    glm::vec3 modelSunDirection = actualSunDirection;
+    if (modelSunDirection.y < 0.0f && daylightBlend > 0.0f) {
+        // Freeze Preetham at its horizon-domain boundary through civil twilight.
+        // Only the blend changes below zero elevation; the model is not extrapolated.
+        modelSunDirection.y = 0.0f;
+        modelSunDirection = glm::normalize(modelSunDirection);
+    }
+    const float modelSolarZenith = std::acos(std::clamp(
+        modelSunDirection.y,
+        0.0f,
+        1.0f));
+
+    const DirectionalSun sun{
+        .direction = modelSunDirection,
+        .irradiance = attenuatedSunIrradiance(solarElevation),
+        .angularRadiusRadians = SunAngularRadiusRadians,
+    };
+    const AnalyticSky sky{
+        .zenithRadiance = preethamZenithXyY(
+            ModelTurbidity,
+            modelSolarZenith),
+        .horizonRadiance = NightHorizonRadiance,
+        .perezCoefficients = preethamPerezCoefficients(ModelTurbidity),
+        .nightZenithRadiance = NightZenithRadiance,
+        .daylightBlend = daylightBlend,
+        .perezEnabled = true,
+        .enabled = true,
+    };
+    // Publish only the mutable analytic state. In particular, a per-frame time update
+    // must not copy or allocate the immutable light/CDF/lookup tables.
+    lighting->sun = sun;
+    lighting->sky = sky;
+    lighting->emitterScale = 1.0f - daylightBlend;
+    return true;
+}
+
+SceneLighting makeLightingAtTime(float timeOfDayHours)
+{
+    SceneLighting lighting;
+    [[maybe_unused]] const bool configured = configureTimeOfDay(
+        timeOfDayHours,
+        &lighting);
     return lighting;
+}
+
+glm::vec3 perezDistribution(
+    const glm::vec3& coefficientA,
+    const glm::vec3& coefficientB,
+    const glm::vec3& coefficientC,
+    const glm::vec3& coefficientD,
+    const glm::vec3& coefficientE,
+    float cosineTheta,
+    float gamma,
+    float cosineGamma)
+{
+    cosineTheta = std::max(cosineTheta, 0.01f);
+    glm::vec3 result;
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        result[channel] = (1.0f + coefficientA[channel]
+                * std::exp(coefficientB[channel] / cosineTheta))
+            * (1.0f + coefficientC[channel]
+                * std::exp(coefficientD[channel] * gamma)
+                + coefficientE[channel] * cosineGamma * cosineGamma);
+    }
+    return result;
+}
+
+glm::vec3 xyYToLinearRgb(const glm::vec3& xyY)
+{
+    const float chromaticityY = std::max(xyY.y, 1.0e-4f);
+    const float luminanceY = std::max(xyY.z, 0.0f);
+    const float tristimulusX = xyY.x * luminanceY / chromaticityY;
+    const float tristimulusZ = std::max(
+        0.0f,
+        (1.0f - xyY.x - xyY.y) * luminanceY / chromaticityY);
+    return glm::max(glm::vec3{
+        3.2406f * tristimulusX - 1.5372f * luminanceY
+            - 0.4986f * tristimulusZ,
+        -0.9689f * tristimulusX + 1.8758f * luminanceY
+            + 0.0415f * tristimulusZ,
+        0.0557f * tristimulusX - 0.2040f * luminanceY
+            + 1.0570f * tristimulusZ,
+    }, glm::vec3{});
+}
+
+bool validPerezSky(const AnalyticSky& sky)
+{
+    if (!isFinite(sky.zenithRadiance)
+        || !isFiniteNonnegative(sky.horizonRadiance)
+        || !isFiniteNonnegative(sky.nightZenithRadiance)
+        || !std::isfinite(sky.daylightBlend)
+        || sky.daylightBlend < 0.0f || sky.daylightBlend > 1.0f
+        || sky.zenithRadiance.x < 0.0f || sky.zenithRadiance.x > 1.0f
+        || sky.zenithRadiance.y <= 0.0f || sky.zenithRadiance.y > 1.0f
+        || sky.zenithRadiance.x + sky.zenithRadiance.y > 1.0f
+        || sky.zenithRadiance.z < 0.0f) {
+        return false;
+    }
+    for (const glm::vec3& coefficients : sky.perezCoefficients) {
+        if (!isFinite(coefficients)) {
+            return false;
+        }
+    }
+    return true;
+}
+}
+
+const SceneLighting DefaultSceneLighting = makeLightingAtTime(DefaultTimeOfDayHours);
+
+bool updateSceneLightingTimeOfDay(
+    float timeOfDayHours,
+    SceneLighting* lighting)
+{
+    return configureTimeOfDay(timeOfDayHours, lighting);
 }
 
 bool validateEmitterLookup(
@@ -406,33 +632,63 @@ bool makeFrameLighting(
     std::uint32_t instanceCount,
     FrameLighting* output)
 {
-    if (output == nullptr
-        || !isFiniteNonnegative(scene.sun.irradiance)
-        || !isFiniteNonnegative(scene.sky.zenithRadiance)
-        || !isFiniteNonnegative(scene.sky.horizonRadiance)) {
+    if (output == nullptr || !isFiniteNonnegative(scene.sun.irradiance)
+        || !std::isfinite(scene.sun.angularRadiusRadians)
+        || scene.sun.angularRadiusRadians < 0.0f
+        || scene.sun.angularRadiusRadians >= 0.5f * Pi
+        || !std::isfinite(scene.emitterScale)
+        || scene.emitterScale < 0.0f || scene.emitterScale > 1.0f
+        || (scene.sky.perezEnabled
+                ? !validPerezSky(scene.sky)
+                : (!isFiniteNonnegative(scene.sky.zenithRadiance)
+                    || !isFiniteNonnegative(scene.sky.horizonRadiance)))) {
         return false;
     }
 
     FrameLighting packed{};
     packed.instanceCount = instanceCount;
 
-    if (hasPower(scene.sun.irradiance)) {
+    const bool sunHasPower = hasPower(scene.sun.irradiance);
+    const bool daylightNeedsSunDirection = scene.sky.enabled
+        && scene.sky.perezEnabled && scene.sky.daylightBlend > 0.0f;
+    if (sunHasPower || daylightNeedsSunDirection) {
         if (!normalizedFinite(scene.sun.direction, &packed.sunDirection)) {
             return false;
         }
+    }
+    if (sunHasPower) {
         packed.sunIrradiance = scene.sun.irradiance;
+        if (scene.sun.angularRadiusRadians > 0.0f) {
+            packed.sunCosineHalfAngle = std::cos(
+                scene.sun.angularRadiusRadians);
+            packed.sunSolidAngle = TwoPi
+                * (1.0f - packed.sunCosineHalfAngle);
+            if (!std::isfinite(packed.sunSolidAngle)
+                || packed.sunSolidAngle <= 0.0f) {
+                return false;
+            }
+        }
     }
 
-    const bool skyHasPower = scene.sky.enabled
-        && (hasPower(scene.sky.zenithRadiance)
+    const bool perezDaylightHasPower = scene.sky.perezEnabled
+        && scene.sky.daylightBlend > 0.0f
+        && scene.sky.zenithRadiance.z > 0.0f;
+    const bool perezNightHasPower = scene.sky.perezEnabled
+        && scene.sky.daylightBlend < 1.0f
+        && (hasPower(scene.sky.nightZenithRadiance)
             || hasPower(scene.sky.horizonRadiance));
+    const bool skyHasPower = scene.sky.enabled
+        && (scene.sky.perezEnabled
+            ? (perezDaylightHasPower || perezNightHasPower)
+            : (hasPower(scene.sky.zenithRadiance)
+                || hasPower(scene.sky.horizonRadiance)));
     const bool emitterTablesEmpty = scene.lights.empty() && scene.lightCdf.empty();
-    const bool emittersHavePower = !scene.lights.empty()
+    const bool emitterTablesHavePower = !scene.lights.empty()
         && checkedU32(scene.lights.size())
         && scene.lightCdf.size() == scene.lights.size()
         && std::isfinite(scene.totalLightPower)
         && scene.totalLightPower > 0.0f;
-    if ((!emitterTablesEmpty && !emittersHavePower)
+    if ((!emitterTablesEmpty && !emitterTablesHavePower)
         || (emitterTablesEmpty && scene.totalLightPower != 0.0f)) {
         return false;
     }
@@ -443,7 +699,7 @@ bool makeFrameLighting(
             static_cast<std::uint32_t>(scene.lights.size()))) {
         return false;
     }
-    if (emittersHavePower) {
+    if (emitterTablesHavePower) {
         float previousCdf = 0.0f;
         for (std::size_t lightIndex = 0;
              lightIndex < scene.lightCdf.size();
@@ -459,9 +715,23 @@ bool makeFrameLighting(
             return false;
         }
     }
+    const bool emittersHavePower = emitterTablesHavePower
+        && scene.emitterScale > 0.0f;
     if (skyHasPower) {
         packed.skyZenith = scene.sky.zenithRadiance;
         packed.skyHorizon = scene.sky.horizonRadiance;
+        if (scene.sky.perezEnabled) {
+            packed.skyPerezA = glm::vec4{scene.sky.perezCoefficients[0], 0.0f};
+            packed.skyPerezB = glm::vec4{scene.sky.perezCoefficients[1], 0.0f};
+            packed.skyPerezC = glm::vec4{scene.sky.perezCoefficients[2], 0.0f};
+            packed.skyPerezD = glm::vec4{scene.sky.perezCoefficients[3], 0.0f};
+            packed.skyPerezE = glm::vec4{scene.sky.perezCoefficients[4], 0.0f};
+            packed.nightZenith = glm::vec4{
+                scene.sky.nightZenithRadiance,
+                0.0f};
+            packed.daylightBlend = scene.sky.daylightBlend;
+            packed.flags |= FrameLightingPerezSkyBit;
+        }
     }
     const float selectorCount = static_cast<float>(skyHasPower)
         + static_cast<float>(emittersHavePower);
@@ -470,7 +740,8 @@ bool makeFrameLighting(
         packed.pEmitters = emittersHavePower ? 1.0f / selectorCount : 0.0f;
     }
     packed.lightCount = static_cast<std::uint32_t>(scene.lights.size());
-    packed.totalLightPower = scene.totalLightPower;
+    packed.totalLightPower = scene.totalLightPower * scene.emitterScale;
+    packed.emitterScale = scene.emitterScale;
 
     if (!hasValidFrameLightingFlags(packed.flags)) {
         return false;
@@ -485,6 +756,51 @@ glm::vec3 evaluateSkyRadiance(
 {
     if (direction.y < 0.0f) {
         return {};
+    }
+    if ((lighting.flags & FrameLightingPerezSkyBit) != 0) {
+        const float upperY = std::clamp(direction.y, 0.0f, 1.0f);
+        const glm::vec3 nightRadiance = glm::mix(
+            lighting.skyHorizon,
+            glm::vec3{lighting.nightZenith},
+            upperY);
+        if (lighting.daylightBlend <= 0.0f) {
+            return nightRadiance;
+        }
+
+        const float cosineGamma = std::clamp(
+            glm::dot(direction, lighting.sunDirection),
+            -1.0f,
+            1.0f);
+        const float gamma = std::acos(cosineGamma);
+        const glm::vec3 numerator = perezDistribution(
+            glm::vec3{lighting.skyPerezA},
+            glm::vec3{lighting.skyPerezB},
+            glm::vec3{lighting.skyPerezC},
+            glm::vec3{lighting.skyPerezD},
+            glm::vec3{lighting.skyPerezE},
+            upperY,
+            gamma,
+            cosineGamma);
+        const float cosineSunZenith = std::clamp(
+            lighting.sunDirection.y,
+            0.0f,
+            1.0f);
+        const float sunZenith = std::acos(cosineSunZenith);
+        const glm::vec3 denominator = perezDistribution(
+            glm::vec3{lighting.skyPerezA},
+            glm::vec3{lighting.skyPerezB},
+            glm::vec3{lighting.skyPerezC},
+            glm::vec3{lighting.skyPerezD},
+            glm::vec3{lighting.skyPerezE},
+            1.0f,
+            sunZenith,
+            cosineSunZenith);
+        const glm::vec3 xyY = lighting.skyZenith * numerator
+            / glm::max(denominator, glm::vec3{1.0e-6f});
+        return glm::mix(
+            nightRadiance,
+            xyYToLinearRgb(xyY),
+            lighting.daylightBlend);
     }
     return glm::mix(
         lighting.skyHorizon,
@@ -557,6 +873,94 @@ bool sampleSky(
         .pdf = skyPdf(surfaceNormal, direction, twoSided),
     };
     return output->pdf > 0.0f;
+}
+
+float sunPdf(
+    const FrameLighting& lighting,
+    const glm::vec3& direction)
+{
+    if (!std::isfinite(lighting.sunSolidAngle)
+        || lighting.sunSolidAngle <= 0.0f
+        || !hasPower(lighting.sunIrradiance)
+        || !isUnitFinite(lighting.sunDirection)
+        || !isUnitFinite(direction)
+        || glm::dot(lighting.sunDirection, direction)
+            < lighting.sunCosineHalfAngle) {
+        return 0.0f;
+    }
+    return 1.0f / lighting.sunSolidAngle;
+}
+
+glm::vec3 evaluateSunRadiance(
+    const FrameLighting& lighting,
+    const glm::vec3& direction)
+{
+    return sunPdf(lighting, direction) > 0.0f
+        ? lighting.sunIrradiance / lighting.sunSolidAngle
+        : glm::vec3{};
+}
+
+bool sampleSun(
+    const FrameLighting& lighting,
+    const glm::vec2& sample,
+    SunSample* output)
+{
+    if (output == nullptr || !hasPower(lighting.sunIrradiance)
+        || !isUnitFinite(lighting.sunDirection)
+        || sample.x < 0.0f || sample.x >= 1.0f
+        || sample.y < 0.0f || sample.y >= 1.0f) {
+        return false;
+    }
+    if (lighting.sunSolidAngle == 0.0f
+        && lighting.sunCosineHalfAngle == 1.0f) {
+        *output = {
+            .direction = lighting.sunDirection,
+            .radiance = lighting.sunIrradiance,
+            .pdf = 1.0f,
+            .delta = true,
+        };
+        return true;
+    }
+    if (!std::isfinite(lighting.sunSolidAngle)
+        || lighting.sunSolidAngle <= 0.0f
+        || !std::isfinite(lighting.sunCosineHalfAngle)
+        || lighting.sunCosineHalfAngle < 0.0f
+        || lighting.sunCosineHalfAngle >= 1.0f) {
+        return false;
+    }
+
+    const float cosineTheta = glm::mix(
+        1.0f,
+        lighting.sunCosineHalfAngle,
+        sample.x);
+    const float sineTheta = std::sqrt(std::max(
+        0.0f,
+        1.0f - cosineTheta * cosineTheta));
+    const float phi = TwoPi * sample.y;
+    const float sign = lighting.sunDirection.z >= 0.0f ? 1.0f : -1.0f;
+    const float a = -1.0f / (sign + lighting.sunDirection.z);
+    const float b = lighting.sunDirection.x * lighting.sunDirection.y * a;
+    const glm::vec3 tangent{
+        1.0f + sign * lighting.sunDirection.x * lighting.sunDirection.x * a,
+        sign * b,
+        -sign * lighting.sunDirection.x,
+    };
+    const glm::vec3 bitangent{
+        b,
+        sign + lighting.sunDirection.y * lighting.sunDirection.y * a,
+        -lighting.sunDirection.y,
+    };
+    const glm::vec3 direction = glm::normalize(
+        tangent * (sineTheta * std::cos(phi))
+        + bitangent * (sineTheta * std::sin(phi))
+        + lighting.sunDirection * cosineTheta);
+    *output = {
+        .direction = direction,
+        .radiance = lighting.sunIrradiance / lighting.sunSolidAngle,
+        .pdf = 1.0f / lighting.sunSolidAngle,
+        .delta = false,
+    };
+    return true;
 }
 
 float dielectricFresnel(float cosineI, float etaI, float etaT)
