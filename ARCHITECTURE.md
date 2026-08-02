@@ -9,8 +9,8 @@ xrPhoton renders an interactive ray-traced OGFx test yard. It
 brings up Vulkan hardware ray tracing, a swapchain, one BLAS per model mesh and a
 TLAS over every yard placement, then launches one path per pixel from either a basic
 collision-aware player view or the original perspective fly camera. The ray-tracing
-shader evaluates direct sun, hard alpha-aware visibility, a procedural sky, and up to
-eight dielectric-or-metal GGX surface vertices before it
+shader evaluates direct sun, hard alpha/Glass-aware visibility, a procedural sky, and up to
+eight dielectric, metal, or rough-glass GGX surface vertices before it
 stores linear radiance in a device-local float HDR image. A compute pass applies
 fixed-exposure Reinhard tonemapping into an 8-bit linear image, which is blitted to
 the sRGB swapchain. The present path has two frames in flight, resize handling, and
@@ -45,27 +45,40 @@ sun, and a dim sky. An acceptance-only linear-HDR reference mode freezes the sce
 reads `R16G16B16A16_SFLOAT` after every sample, and proves MIS, NEE-only, and BSDF-only
 agreement in three pinned regions.
 P3a gives material offset 44 its v4 class meaning without changing the 48-byte
-record: older versions decode as `Dielectric`, `Metal` uses base color as spectral
-F0 with no diffuse lobe, and `Glass` is schema-reserved but rejected by the runtime
-until P3b. The BSDF module now exposes class-aware evaluation, sampling, and PDF
-entry points; metal uses the same GGX visible-normal sampler as dielectric specular
-reflection. The optional Blender sphere proof emits one sharp and one rough
-copper-like Metal asset and retains the pair's existing normal/UV regression checks.
+record: older versions decode as `Dielectric`, and `Metal` uses base color as spectral
+F0 with no diffuse lobe. P3b makes `Glass` runtime-complete as a rough dielectric
+interface with fixed IOR 1.5, exact Fresnel, matched GGX reflection/refraction PDFs,
+two-sided direct-light sampling, and named straight-line tinted shadow attenuation.
+The BSDF module exposes class-aware evaluation, sampling, and PDF entry points using
+the shared GGX visible-normal sampler. Four generated closed Glass panels—clear,
+aqua, amber, and frosted smoke—stand on the ground in a shared day/night material
+display; the optional Blender sphere proof retains its sharp/rough Metal and normal/UV
+regressions.
+The fixed 32-warm-up + 256-measured validation capture on an RTX 5070 Ti with NVIDIA
+595.71.05 at 1920×1080 recorded 1.131 ms for P3b's original suspended-panel Glass
+acceptance view versus 0.907 ms for the identical P3a-equivalent opaque-panel view
+(+24.7%). Before the panel was promoted
+into the shared yard, the isolated no-Glass control recorded 0.862 ms versus
+0.848 ms from the P3a snapshot (+1.7%), so both P3b gates passed. These are
+trace-only diagnostic medians, not general product benchmarks.
 The repository-owned crate is now a live Jolt body: it spawns above the yard,
 falls, tumbles, settles, and sleeps. `PhysicsWorld` writes its body-origin
 transform into `SceneData`; the renderer remains physics-agnostic, writing one
 mapped instance-input slot and fully rebuilding the existing TLAS in place before
 every trace.
 
-Generated-only builds load `test_yard_ground.ogfx`, `test_yard_wall.ogfx`, and
-`test_yard_box.ogfx` beside the permanent quad and two-geometry wedge probes. The
-generated-only scene has **5 models / 13 placements / 5 BLASes / 6 geometries**:
+Generated-only builds load `test_yard_ground.ogfx`, `test_yard_wall.ogfx`,
+`test_yard_box.ogfx`, and `test_glass_panel.ogfx` beside the permanent quad and
+two-geometry wedge probes. The generated-only scene has
+**6 assets / 17 instances / 9 BLASes / 10 geometries**:
 a 20-by-20-metre ground, an L-shaped wall corner, a stepped platform, one static
 crate, the dynamic crate, a face-on quad, and two transformed wedges sharing one
-BLAS. A fully configured build adds the nine legacy/Blender exhibits below for a
-total of **14 models / 22 placements / 14 BLASes / 16 geometries**. Every entry
+BLAS, plus four upright Glass panels. A fully configured build adds the ten
+legacy/Blender exhibits below for a total of
+**16 assets / 27 instances / 19 BLASes / 21 geometries**. Every entry
 uses the same OGFx decoder, `SceneData`, GPU upload,
-acceleration-structure, material/texture, and shader path.
+acceleration-structure, material/texture, and shader path. Night reuses that exact
+yard, including Glass, before adding its three emitter meshes and 21 placements.
 
 The converted legacy `plitka1.ogfx` resolves its
 `ston\ston_stena_marbl_m_03_back` DDS beneath an owner-supplied texture root and
@@ -117,7 +130,7 @@ generated-only build still exercises recipe-to-body construction. The opt-in
 `xrPhotonAlphaOgfOfflineProof` target takes its OGF
 from `XRPHOTON_ALPHA_TAIL_CORPUS_OGF`, pins the companion DDS selected by
 `XRPHOTON_ALPHA_TAIL_TEXTURE_DDS`, and writes
-`build/<preset>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`; the
+`<binary-dir>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`; the
 runtime yard entry is selected independently with
 `XRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX`.
 
@@ -231,7 +244,7 @@ the renderer layering.)
 | [src/gallery.hpp](src/gallery.hpp) / [.cpp](src/gallery.cpp) and [src/scene_preset.hpp](src/scene_preset.hpp) | File-private yard asset/placement tables and `loadGalleryScene`, which loads each required or configured OGFx model once, merges it, instantiates every mesh in each placement, optionally adds the shared-mesh 21-placement night emitter set, resolves fallback/DDS images from Blender-authored then legacy owner-local roots, and returns `GalleryLoadResult` with validated `SceneData`, the accepted spawn, and flat `dynamicInstances` in placement order | Temporary engine-side scene policy called by `main()`; `ScenePreset` is the shared CLI/gallery/lighting selector and retires with this policy when level data has a real owner |
 | [src/physics.hpp](src/physics.hpp) / [.cpp](src/physics.cpp) | Jolt-free public `PhysicsWorld` owner and create/step/control/query seam; the implementation alone owns Jolt initialization, shapes/bodies, the invisible `CharacterVirtual`, layer filters, job/temp systems, fixed-step accumulator, topology guards, and GLM ↔ Jolt conversion | Program lifetime after scene load; borrows one stable `SceneData`, writes only dynamic instance transforms, and tears down before that scene |
 | [third_party/jolt](third_party/jolt) | Trimmed Jolt Physics v5.6.0 library source, CMake support, MIT license, and one documented thread-pool exception-safety patch | Vendored static engine dependency; never configured by the graphics-free `ogfx-core` build |
-| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, and ground/wall/box test-yard front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the five uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
+| [tools/compile_probe_assets.cpp](tools/compile_probe_assets.cpp) | Offline quad, multi-geometry wedge, ground/wall/box test-yard, and four-mesh Glass-showcase front end plus command-line file output; the generated box includes the canonical one-box rigid recipe, while all validation and encoding remain in `xrPhotonOgfx` | Build-time tool — generates the six uncommitted `assets/probes/test_*.ogfx` files in each binary directory |
 | [src/gpu_scene.hpp](src/gpu_scene.hpp) / [.cpp](src/gpu_scene.cpp) | `GpuScene` owner, the `GeometryRecord` and 48-byte emission/class-capable `MaterialRecord` shader ABIs, staged upload of unified geometry/record buffers and sampled scene images, shared texture sampler, and storage/descriptor/format gates | Program lifetime — created once at startup |
 | [src/acceleration_structure.hpp](src/acceleration_structure.hpp) / [.cpp](src/acceleration_structure.cpp) | `AccelerationStructure` (one mapped TLAS-instance input per frame slot, stable-fields instance template, vector of BLAS handles/backings, TLAS, transient BLAS scratch, and persistent TLAS scratch); startup construction plus checked `writeTlasInstances` and `recordTlasRebuild`, including per-range opacity flags and per-instance first-geometry SBT offsets | Program lifetime — BLASes built once; TLAS rebuilt in place per frame |
 | [src/camera.hpp](src/camera.hpp) / [.cpp](src/camera.cpp) | GLM-backed player/free `Camera` view states, `CameraControls` edge state, `CameraPushConstants` (the stable camera prefix of the raygen payload + its ABI asserts), `updateCamera` (all GLFW input policy), and `makeCameraPushConstants` | Plain value state owned by `main()` — no Vulkan objects |
@@ -435,15 +448,15 @@ returns `1` on failure (RAII handles the unwind):
 1. **GLFW + Vulkan gate.** `glfwInit`, then `glfwVulkanSupported`. Create a
    visible `GLFW_NO_API` window up front, so Wayland compositors can configure the
    drawable surface before swapchain setup and first presentation.
-2. **Instance.** Validation is requested at build time (the
-   `XRPHOTON_ENABLE_VALIDATION` CMake option, default ON) but is best-effort at
+2. **Instance.** Validation is requested with the canonical executable's
+   `--validation` option and is best-effort at
    runtime: if the Khronos layer or `VK_EXT_debug_utils` is missing (machines without
    the Vulkan SDK), bring-up warns and continues without validation rather than
    failing. The instance extensions are GLFW's required surface set, plus
    `VK_EXT_debug_utils` when validation is enabled; with validation on, the
    debug-messenger create info is chained via `pNext` on the instance create info, so
    validation also covers instance creation and destruction.
-3. **Debug messenger** (validation builds only). Standalone `VK_EXT_debug_utils`
+3. **Debug messenger** (when `--validation` is active). Standalone `VK_EXT_debug_utils`
    messenger, filtered to warnings and errors, routing messages to `std::cerr`.
 4. **Surface.** `glfwCreateWindowSurface`.
 5. **Physical device.** `pickPhysicalDevice` takes the first GPU passing every
@@ -740,7 +753,8 @@ this reporting contract. Timing reads do not participate in image hashing or
 publication.
 
 The recorded P0 yard baseline (2026-07-28) is **0.412 ms** at 1920×1080 on an NVIDIA
-GeForce RTX 5070 Ti, driver 595.71.05, using the validation-enabled debug build with
+GeForce RTX 5070 Ti, driver 595.71.05, using the then-current validation-enabled
+Debug configuration (retired in favor of the canonical runtime-validation build) with
 MangoHud disabled. The monolithic control and split shader both produced frame-7 hash
 `0x9725f7b1e5652acb` and byte-identical PPMs under those conditions.
 Under the same fixed 32+256 protocol, P1 records **0.582 ms** and final-frame hash
@@ -1009,9 +1023,10 @@ Decisions and contracts worth preserving:
   addresses are pre-offset to that geometry's range; OGFx indices stay local, so
   the build range uses `primitiveOffset = 0`, `firstVertex = 0`, and
   `maxVertex = vertexCount - 1`. Opaque ranges set
-  `VK_GEOMETRY_OPAQUE_BIT_KHR` and bypass any-hit in hardware; alpha-tested
-  ranges deliberately leave the flag clear so their SBT-selected any-hit shader
-  can reject a texel. A mesh such as the tail can contain both kinds in one BLAS.
+  `VK_GEOMETRY_OPAQUE_BIT_KHR` and bypass any-hit in hardware; alpha-tested and
+  Glass ranges deliberately leave the flag clear so their SBT-selected any-hit
+  shader can reject a texel or continue transmissive visibility. A mesh such as
+  the tail can contain both opaque and alpha-tested ranges in one BLAS.
 - **Hit-record identity is flat and stable.** Each TLAS instance stores its
   mesh's `firstGeometry` as `instanceCustomIndex`. Vulkan's `GeometryIndex()` is
   the BLAS-local geometry index, so `InstanceID() + GeometryIndex()` recovers the
@@ -1132,7 +1147,7 @@ Decisions and contracts worth preserving:
   [records.slang](shaders/records.slang) for shared ABI/payload structs,
   [sampling.slang](shaders/sampling.slang) for PCG/directional/MIS helpers,
   [bsdf.slang](shaders/bsdf.slang) for surface orientation plus class-aware
-  dielectric/Metal evaluation, sampling, and PDFs, and
+  dielectric/Metal/Glass evaluation, sampling, and PDFs, and
   [lighting.slang](shaders/lighting.slang) for analytic light evaluation. `rayGenMain`
   (perspective rays from the frame constants, an eight-vertex iterative throughput
   loop, direct class-aware GGX sun lighting with a hard visibility trace at each hit,
@@ -1146,11 +1161,13 @@ Decisions and contracts worth preserving:
   `closestHitMain` (indexed BDA fetch of
   sampled albedo and un-oriented shading/geometric normals), and `anyHitMain`
   (the same indexed UV/material fetch followed by sampled-alpha × material-alpha
-  comparison against `alphaCutoff`, calling `IgnoreHit` below the cutoff). The
-  shadow route initializes visibility to occluded, lets `shadowMissMain` mark an
-  unobstructed sun or sky direction, and uses the lean `shadowAnyHitMain` to pass through the same
-  alpha cutouts without fetching normals or gradients. Radiance rays use
-  `RAY_FLAG_NONE`; shadow rays accept the first hit and skip closest-hit. In both
+  comparison against `alphaCutoff`, calling `IgnoreHit` below the cutoff; Glass
+  candidates skip that texture-alpha test). The shadow route initializes visibility
+  to occluded and attenuation to one, lets `shadowMissMain` mark an unobstructed
+  direction, and uses `shadowAnyHitMain` to pass through alpha cutouts or multiply
+  Glass tint and exact `(1 - Fresnel)` before continuing. Radiance rays use
+  `RAY_FLAG_NONE`; shadow rays always skip closest-hit and leave traversal available
+  for every Glass interface. In both
   cases per-geometry BLAS flags and SBT selection, not `RAY_FLAG_FORCE_OPAQUE`,
   decide whether any-hit runs. CMake compiles the linked program with `slangc
   -target spirv -fvk-use-entrypoint-name -source-embed-style u32 -depfile` into a
@@ -1167,9 +1184,9 @@ Decisions and contracts worth preserving:
   scratch-buffer pattern: a failure bare-returns and the destructor cleans up) and
   destroyed as soon as the pipeline exists.
 - **Groups in SBT order.** Group 0 is raygen; groups 1–2 are the radiance and
-  shadow misses; groups 3–4 are opaque and alpha-tested radiance hits; groups 5–6
-  are opaque and alpha-tested shadow hits. The opaque shadow group intentionally
-  has no shaders, while the alpha-tested shadow group contains only its any-hit.
+  shadow misses; groups 3–4 are opaque and any-hit-capable radiance hits; groups 5–6
+  are opaque and any-hit-capable shadow hits. The opaque shadow group intentionally
+  has no shaders, while the other shadow group contains the shared alpha/Glass any-hit.
   Triangle intersection remains fixed-function. Unused shader indices are set to
   `VK_SHADER_UNUSED_KHR` *explicitly* — zero-init would leave 0, a valid stage
   index, producing a silently wrong pipeline rather than a validation error.
@@ -1206,7 +1223,8 @@ Decisions and contracts worth preserving:
   index, position, and all-scalar 20-byte attribute streams. C++ `static_assert`s pin
   the 32-byte record layouts; emitted SPIR-V confirms identical offsets/strides.
   Both radiance hit stages index the record with
-  `InstanceID() + GeometryIndex()` and interpolate UV/material data; closest-hit
+  `InstanceID() + GeometryIndex()` and interpolate UV/material data; bit 0 of the
+  record's offset-28 flags word marks alpha testing. Closest-hit
   additionally returns the sampled albedo plus raw shading/geometric normals.
   Shading normals use the inverse-transpose implied by row-vector multiplication
   with `WorldToObject3x4()`; raygen owns their surface orientation and shading use.
@@ -1215,7 +1233,9 @@ Decisions and contracts worth preserving:
   GGX with scalar Schlick Fresnel and samples a normalized-energy diffuse/specular
   mixture. Metal has no diffuse floor, interprets base color as spectral F0, evaluates
   colored Schlick Fresnel with the same GGX/Smith terms, and samples only GGX VNDF
-  reflection. Each class's matching PDF drives throughput; paths reach at most eight
+  reflection. Glass is a fixed-IOR 1.5 rough interface: exact dielectric Fresnel
+  selects GGX reflection or Walter-style transmission with the matching half-vector
+  Jacobian and radiance-mode eta scaling. Each class's matching PDF drives throughput; paths reach at most eight
   vertices and use `[0.05, 0.95]` throughput-based Russian roulette after vertex 3.
   At every nonterminal surface raygen also draws one non-delta selector sample. The
   sky branch cosine-samples about the shading normal and traces an infinite
@@ -1230,7 +1250,7 @@ Decisions and contracts worth preserving:
   this selector.
   Secondary directions use a sign-stable Duff basis, are rejected rather than
   resampled when they fall below the geometric normal, and launch from the
-  geometric-normal offset. The matching
+  geometric-normal offset on the selected reflection or transmission side. The matching
   C++/Slang PCG permutation seeds each pixel from its coordinates and frame index;
   capture mode therefore reproduces a selected noisy frame without accumulation.
 - **One lighting authority and pinned ABI.** `SceneLighting` owns the mutable analytic
@@ -1238,8 +1258,10 @@ Decisions and contracts worth preserving:
   normalizes a powered sun, derives selector probabilities, and transactionally packs
   `FrameLighting`. The `alignas(16)` record is exactly 192 bytes: sun lanes at 0/16,
   sky lanes at 32/48, counts/power/flags at 64, five Perez `float4`s at 80–144,
-  `nightZenith` at 160, then daylight blend and reserved words at 176–188. Perez and
-  glass remain zero; estimator bits select MIS, NEE-only, or BSDF-only for offline
+  `nightZenith` at 160, then daylight blend and reserved words at 176–188. Bit 1
+  records the always-enabled Glass transport capability. The pipeline has one fixed
+  configuration and dispatches transmissive behavior solely from each material class.
+  Perez remains zero; estimator bits select MIS, NEE-only, or BSDF-only for offline
   reference capture, while interactive and ordinary capture always publish MIS. A
   powered sky or a nonempty static-emitter table
   is the sole selector branch; when both exist they receive equal branch probability,
@@ -1450,7 +1472,7 @@ Decisions and contracts worth preserving:
    `test_leaf_card.ogfx` and opaque-textured
    `remade_bochka_close_1.ogfx` / `custom_stalker_barrel.ogfx` for the optional
    yard beneath
-   `build/<preset>/assets/blender/`. The leaf uses strict XRBM v2 material
+   `<binary-dir>/assets/blender/`. The leaf uses strict XRBM v2 material
    metadata and `trees\trees_new_vetka_green`; its transparent DXT1 samples
    visibly execute `IgnoreHit`. The direct legacy path now also produces
    `bochka_close_1.ogfx`: its type-`0xA` hierarchy is validated, its already
@@ -1499,7 +1521,7 @@ Decisions and contracts worth preserving:
    The remaining step-3 slice is deformable geometry: compute-pass skinning into
    per-slot vertex buffers followed by per-character BLAS refits for NPCs and
    mutants. It is separate from the completed rigid-body path.
-4. **Lighting + path tracing.** **Phases P0–P3a plus HDR, dielectric/metal
+4. **Lighting + path tracing.** **Phases P0–P3b plus HDR, dielectric/metal/Glass
    materials, emissive geometry, and multi-bounce transport landed** — the shader is
    split into
    depfile-tracked imported modules and trace-only GPU timing establishes the fixed
@@ -1508,13 +1530,13 @@ Decisions and contracts worth preserving:
    direct class-aware GGX delta-sun evaluation at every hit, hard alpha-aware shadow rays,
    sky and finite-emitter NEE with power-heuristic MIS against BSDF misses/hits,
    diffuse/GGX VNDF mixture sampling for dielectrics, reflection-only GGX VNDF
-   sampling for metals, and Russian roulette. OGFx material v2 carries
+   sampling for metals, matched rough GGX reflection/refraction for Glass, and
+   Russian roulette. OGFx material v2 carries
    roughness/F0, v3 carries emission, and v4 carries the explicit class; older versions map missing fields to
    deliberate defaults. The night yard exercises a flat power-weighted CDF over 42
    emitting triangles, and the frozen linear-HDR proof independently runs MIS,
    NEE-only, and BSDF-only to guard against double-counted or missing energy. The
-   renderer still needs transmissive glass and a time-varying
-   sun/sky model. Many-light sampling remains a first-class requirement, with a
+   renderer still needs a time-varying sun/sky model. Many-light sampling remains a first-class requirement, with a
    ReSTIR-class upgrade tracked once the flat selector is measurably limiting.
 5. **Temporal accumulation + denoising.** Pending — one coupled system, and the
    critical path for a playable image: at real-time budgets every visible pixel

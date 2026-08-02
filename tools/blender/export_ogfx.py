@@ -257,12 +257,13 @@ def validate_material_profile(
     material_class_name = material.get("xrphoton_material_class", "dielectric")
     reject(
         type(material_class_name) is not str
-        or material_class_name not in {"dielectric", "metal"},
+        or material_class_name not in {"dielectric", "metal", "glass"},
         object_name,
         "material class",
-        "expected xrphoton_material_class to be 'dielectric' or 'metal'",
+        "expected xrphoton_material_class to be 'dielectric', 'metal', or 'glass'",
     )
     is_metal = material_class_name == "metal"
+    is_glass = material_class_name == "glass"
     alpha_tested = material.get("xrphoton_alpha_tested")
     reject(
         type(alpha_tested) is not bool,
@@ -305,12 +306,12 @@ def validate_material_profile(
     )
     nodes = list(node_tree.nodes)
     reject(
-        len(nodes) != (2 if is_metal else 3),
+        len(nodes) != (2 if is_metal or is_glass else 3),
         object_name,
         "material node count",
         (
             "expected exactly Material Output and Principled BSDF nodes"
-            if is_metal
+            if is_metal or is_glass
             else "expected exactly Material Output, Principled BSDF, and Image Texture nodes"
         ),
     )
@@ -357,12 +358,12 @@ def validate_material_profile(
     principled = surface_links[0].from_node
     base_color_links = list(principled.inputs["Base Color"].links)
     alpha_links = list(principled.inputs["Alpha"].links)
-    if is_metal:
+    if is_metal or is_glass:
         reject(
             alpha_tested,
             object_name,
             "material alpha-test classification",
-            "the P3a Metal profile must be opaque",
+            "Metal and Glass profiles cannot also be alpha-tested",
         )
         roughness_links = list(principled.inputs["Roughness"].links)
         metallic_links = list(principled.inputs["Metallic"].links)
@@ -374,7 +375,7 @@ def validate_material_profile(
             or len(node_tree.links) != 1
             or any(link.is_muted or not link.is_valid for link in node_tree.links),
             object_name,
-            "metal material links",
+            "solid material links",
             "only the direct Principled BSDF to Material Output link is supported",
         )
         base_color_components = tuple(
@@ -385,7 +386,7 @@ def validate_material_profile(
             or not finite_values(list(base_color_components))
             or any(value < 0.0 or value > 1.0 for value in base_color_components),
             object_name,
-            "metal base color",
+            "Metal spectral F0 or Glass transmission tint",
             "expected four unlinked finite values in [0, 1]",
         )
         base_color_factor = (
@@ -395,19 +396,35 @@ def validate_material_profile(
             base_color_components[3],
         )
         metallic = float(principled.inputs["Metallic"].default_value)
+        expected_metallic = 1.0 if is_metal else 0.0
         reject(
-            metallic != 1.0,
+            metallic != expected_metallic,
             object_name,
             "metallic value",
-            "expected exactly 1.0 for the Metal class",
+            f"expected exactly {expected_metallic:.1f} for the {material_class_name.title()} class",
         )
+        if is_glass:
+            transmission = float(principled.inputs["Transmission Weight"].default_value)
+            ior = float(principled.inputs["IOR"].default_value)
+            reject(
+                transmission != 1.0,
+                object_name,
+                "transmission weight",
+                "expected exactly 1.0 for the Glass class",
+            )
+            reject(
+                ior != 1.5,
+                object_name,
+                "IOR",
+                "expected exactly 1.5 for the fixed-IOR Glass class",
+            )
         perceptual_roughness = float(principled.inputs["Roughness"].default_value)
         reject(
             not math.isfinite(perceptual_roughness)
             or perceptual_roughness < 0.0
             or perceptual_roughness > 1.0,
             object_name,
-            "metal roughness",
+            f"{material_class_name} roughness",
             "expected an unlinked finite value in [0, 1]",
         )
         return MaterialProfile(
@@ -415,7 +432,7 @@ def validate_material_profile(
             alpha_tested=alpha_tested,
             alpha_cutoff=alpha_cutoff,
             image_path=None,
-            material_class=1,
+            material_class=1 if is_metal else 2,
             base_color_factor=base_color_factor,
             perceptual_roughness=perceptual_roughness,
         )

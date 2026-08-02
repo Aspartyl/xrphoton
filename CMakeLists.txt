@@ -67,6 +67,8 @@ set(XRPHOTON_TEST_YARD_WALL_ASSET
     ${XRPHOTON_PROBE_ASSET_DIR}/test_yard_wall.ogfx)
 set(XRPHOTON_TEST_YARD_BOX_ASSET
     ${XRPHOTON_PROBE_ASSET_DIR}/test_yard_box.ogfx)
+set(XRPHOTON_TEST_GLASS_PANEL_ASSET
+    ${XRPHOTON_PROBE_ASSET_DIR}/test_glass_panel.ogfx)
 set(XRPHOTON_TEST_PYRAMID_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_pyramid.ogfx)
 set(XRPHOTON_TEST_SPHERE_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_sphere.ogfx)
 set(XRPHOTON_TEST_SMOOTH_SPHERE_ASSET
@@ -89,6 +91,7 @@ add_custom_command(
         ${XRPHOTON_TEST_YARD_GROUND_ASSET}
         ${XRPHOTON_TEST_YARD_WALL_ASSET}
         ${XRPHOTON_TEST_YARD_BOX_ASSET}
+        ${XRPHOTON_TEST_GLASS_PANEL_ASSET}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_PROBE_ASSET_DIR}
     COMMAND $<TARGET_FILE:xrPhotonProbeAssetCompiler>
         ${XRPHOTON_TEST_QUAD_ASSET}
@@ -96,6 +99,7 @@ add_custom_command(
         ${XRPHOTON_TEST_YARD_GROUND_ASSET}
         ${XRPHOTON_TEST_YARD_WALL_ASSET}
         ${XRPHOTON_TEST_YARD_BOX_ASSET}
+        ${XRPHOTON_TEST_GLASS_PANEL_ASSET}
     DEPENDS xrPhotonProbeAssetCompiler
     COMMENT "Compiling the procedural probes and test-yard assets to OGFx"
     VERBATIM
@@ -108,6 +112,7 @@ add_custom_target(xrPhotonAssets DEPENDS
     ${XRPHOTON_TEST_YARD_GROUND_ASSET}
     ${XRPHOTON_TEST_YARD_WALL_ASSET}
     ${XRPHOTON_TEST_YARD_BOX_ASSET}
+    ${XRPHOTON_TEST_GLASS_PANEL_ASSET}
 )
 
 if(BUILD_TESTING)
@@ -523,11 +528,6 @@ else()
     set(XRPHOTON_GALLERY_TEXTURE_ROOT_ABSOLUTE "")
 endif()
 
-# Whether to request the Khronos validation layer and debug messenger. Even when ON,
-# validation is best-effort at runtime: if the layer is not installed (machines without
-# the Vulkan SDK), the program warns and continues rather than refusing to start.
-option(XRPHOTON_ENABLE_VALIDATION "Request the Vulkan validation layer and debug messenger" ON)
-
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 
@@ -592,6 +592,7 @@ if(BUILD_TESTING)
             XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
             XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
             XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
+            XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH=u8\"${XRPHOTON_TEST_GLASS_PANEL_ASSET}\"
             XRPHOTON_GALLERY_PLITKA_OGFX=u8\"\"
             XRPHOTON_GALLERY_BLENDER_OGFX=u8\"\"
             XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"\"
@@ -759,10 +760,6 @@ add_executable(xrPhoton
     src/renderer.cpp
 )
 
-if(XRPHOTON_ENABLE_VALIDATION)
-    target_compile_definitions(xrPhoton PRIVATE XRPHOTON_ENABLE_VALIDATION)
-endif()
-
 # The yard inputs are build-tree probes and optional owner-supplied local content,
 # not packaged game assets. Embed absolute UTF-8 paths so launching from any working
 # directory exercises the same configured gallery; a future asset root replaces this
@@ -773,6 +770,7 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_TEST_YARD_GROUND_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_GROUND_ASSET}\"
     XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
     XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
+    XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH=u8\"${XRPHOTON_TEST_GLASS_PANEL_ASSET}\"
     XRPHOTON_GALLERY_PLITKA_OGFX=u8\"${XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"

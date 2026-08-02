@@ -219,9 +219,9 @@ struct DecodeResult
     std::string_view diagnosticName = "<memory>");
 
 // Decodes and validates the complete container-v1 static schema within its published
-// resource caps, including logical texture references and alpha-tested geometry
-// beyond the current runtime capability gates. This is the offline round-trip /
-// inspection entry point; it does not make the model runtime-ready.
+// resource caps, including logical texture references and every serialized material
+// class. This is the offline round-trip / inspection entry point; it does not apply
+// runtime-only scene compatibility checks.
 [[nodiscard]] DecodeResult decodeModelSchema(
     std::span<const std::uint8_t> bytes,
     std::string_view diagnosticName = "<memory>");

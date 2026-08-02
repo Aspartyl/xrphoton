@@ -743,6 +743,28 @@ void testMetalMaterialProfile()
 
     std::vector<std::uint8_t> malformed = bytes;
     writeU32(&malformed, MaterialClassOffsetV3, 2);
+    const DecodeResult glass = decodeStaticMesh(
+        malformed,
+        "glass-panel.blend::panel");
+    expect(
+        glass
+            && glass.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Glass
+            && !glass.model.geometries[0].alphaTested,
+        "XRBM v3 accepts opaque Glass and preserves its tint and roughness fields");
+    if (glass) {
+        const SerializeResult glassOgfx = xrphoton::ogfx::serializeModel(
+            glass.model,
+            "glass-panel.ogfx");
+        expect(
+            glassOgfx
+                && xrphoton::ogfx::decodeModel(
+                    glassOgfx.bytes,
+                    "glass-panel.ogfx"),
+            "Blender-authored Glass passes through the runtime OGFx profile");
+    }
+    malformed = bytes;
+    writeU32(&malformed, MaterialClassOffsetV3, 3);
     expectRejected(malformed, "material class");
     malformed = bytes;
     writeF32(&malformed, MaterialBaseColorOffsetV3, 1.01f);

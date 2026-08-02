@@ -27,6 +27,43 @@ static const uint EstimatorMask = 3u << EstimatorShift;
 static const uint EstimatorMis = 0;
 static const uint EstimatorNee = 1;
 static const uint EstimatorBsdf = 2;
+static const uint GeometryFlagAlphaTested = 1u << 0;
+
+uint shadowTraceFlags()
+{
+    // Glass candidates use IgnoreHit after tinting the payload, so shadow traversal
+    // must remain available for every interface along the light segment.
+    return RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+}
+
+float surfaceCosine(bool twoSided, float3 normal, float3 direction)
+{
+    float cosine = dot(normal, direction);
+    return twoSided ? abs(cosine) : cosine;
+}
+
+bool validSurfaceDirection(
+    bool twoSided,
+    OrientedSurfaceNormals normals,
+    float3 direction)
+{
+    float shadingCosine = dot(normals.shading, direction);
+    float geometricCosine = dot(normals.geometric, direction);
+    if (twoSided)
+        return shadingCosine * geometricCosine > 0.0;
+    return shadingCosine > 0.0 && geometricCosine > 0.0;
+}
+
+float3 offsetSurfaceRay(
+    float3 worldPosition,
+    float3 geometricNormal,
+    float3 direction,
+    bool twoSided)
+{
+    if (twoSided && dot(geometricNormal, direction) < 0.0)
+        return worldPosition - geometricNormal * SurfaceRayOffset;
+    return worldPosition + geometricNormal * SurfaceRayOffset;
+}
 
 // Bindings match the descriptor set layout in rt_pipeline: the TLAS at 0, the
 // swapchain-sized HDR radiance image at 1. The [format] attribute stamps the SPIR-V
@@ -142,6 +179,35 @@ HitMaterialCoordinates fetchHitMaterialCoordinates(
             attributes[triangle.z].v) * weights.z;
     result.materialIndex = geometry.materialIndex;
     return result;
+}
+
+// Only Glass shadow hits need orientation. Keeping this separate preserves the
+// compact alpha-test path used by no-glass scenes.
+float3 fetchHitWorldGeometricNormal(GeometryRecord geometry)
+{
+    uint* indices = (uint*)geometry.indexAddress;
+    uint baseIndex = 3 * PrimitiveIndex();
+    uint3 triangle = uint3(
+        indices[baseIndex],
+        indices[baseIndex + 1],
+        indices[baseIndex + 2]);
+    float* positions = (float*)geometry.positionAddress;
+    float3 objectA = float3(
+        positions[triangle.x * 3],
+        positions[triangle.x * 3 + 1],
+        positions[triangle.x * 3 + 2]);
+    float3 objectB = float3(
+        positions[triangle.y * 3],
+        positions[triangle.y * 3 + 1],
+        positions[triangle.y * 3 + 2]);
+    float3 objectC = float3(
+        positions[triangle.z * 3],
+        positions[triangle.z * 3 + 1],
+        positions[triangle.z * 3 + 2]);
+    float3 worldA = mul(ObjectToWorld3x4(), float4(objectA, 1.0));
+    float3 worldB = mul(ObjectToWorld3x4(), float4(objectB, 1.0));
+    float3 worldC = mul(ObjectToWorld3x4(), float4(objectC, 1.0));
+    return normalize(cross(worldB - worldA, worldC - worldA));
 }
 
 bool rejectsAlpha(MaterialRecord material, float sampledAlpha)
@@ -307,6 +373,7 @@ void rayGenMain()
     float3 throughput = float3(1.0);
     float previousBsdfPdf = 0.0;
     float previousSkyPdf = 0.0;
+    uint shadowRayFlags = shadowTraceFlags();
     uint rngState = pcgHash(
         pixel.x + pcgHash(pixel.y + pcgHash(frameConstants.frameIndex)));
     for (uint pathVertex = 0; pathVertex < MaxPathVertices; ++pathVertex)
@@ -356,6 +423,15 @@ void rayGenMain()
             -ray.Direction);
         MaterialRecord material = materials[hit.materialIndex];
         float3 wo = -ray.Direction;
+        bool isGlass = material.materialClass == MaterialClassGlass;
+        float etaI = 1.0;
+        float etaT = 1.0;
+        if (isGlass)
+        {
+            bool enteringGlass = dot(hit.geometricNormal, wo) > 0.0;
+            etaI = enteringGlass ? 1.0 : GlassIor;
+            etaT = enteringGlass ? GlassIor : 1.0;
+        }
         uint estimator = estimatorMode();
         float maximumEmission = max(
             hit.emission.x,
@@ -384,29 +460,36 @@ void rayGenMain()
             }
             radiance += throughput * hit.emission * emissionWeight;
         }
-        float shadingCosine = dot(normals.shading, frameLighting.sunDirection);
-        float geometricCosine = dot(normals.geometric, frameLighting.sunDirection);
+        float shadingCosine = surfaceCosine(
+            isGlass,
+            normals.shading,
+            frameLighting.sunDirection);
         float maximumSunIrradiance = max(
             frameLighting.sunIrradiance.x,
             max(frameLighting.sunIrradiance.y, frameLighting.sunIrradiance.z));
         if (maximumSunIrradiance > 0.0
-            && shadingCosine > 0.0
-            && geometricCosine > 0.0)
+            && validSurfaceDirection(
+                isGlass,
+                normals,
+                frameLighting.sunDirection))
         {
             ShadowPayload shadow;
             shadow.visibility = 0.0;
+            shadow.attenuation = float3(1.0);
 
             RayDesc shadowRay;
-            shadowRay.Origin = worldPosition
-                + normals.geometric * SurfaceRayOffset;
+            shadowRay.Origin = offsetSurfaceRay(
+                worldPosition,
+                normals.geometric,
+                frameLighting.sunDirection,
+                isGlass);
             shadowRay.Direction = frameLighting.sunDirection;
             shadowRay.TMin = 0.0;
             shadowRay.TMax = InfiniteRayTMax;
 
             TraceRay(
                 topLevelAS,
-                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-                    | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                shadowRayFlags,
                 0xFF,
                 ShadowRayType,
                 XRPHOTON_RAY_TYPE_COUNT,
@@ -419,6 +502,8 @@ void rayGenMain()
                 hit.albedo,
                 material.perceptualRoughness,
                 material.dielectricF0,
+                etaI,
+                etaT,
                 normals.shading,
                 wo,
                 frameLighting.sunDirection);
@@ -426,7 +511,8 @@ void rayGenMain()
                 * sunBrdf
                 * frameLighting.sunIrradiance
                 * shadingCosine
-                * shadow.visibility;
+                * shadow.visibility
+                * shadow.attenuation;
         }
 
         // Draw exactly one non-delta branch. The delta sun stays separate and cannot
@@ -445,27 +531,32 @@ void rayGenMain()
                 SkySample lightSample = sampleSky(
                     frameLighting,
                     normals.shading,
+                    isGlass,
                     float2(rngNextFloat(rngState), rngNextFloat(rngState)));
-                float lightGeometricCosine = dot(
-                    normals.geometric,
-                    lightSample.direction);
                 float lightPdf = frameLighting.pSky * lightSample.pdf;
-                if (lightGeometricCosine > 0.0 && lightPdf > 0.0)
+                if (validSurfaceDirection(
+                        isGlass,
+                        normals,
+                        lightSample.direction)
+                    && lightPdf > 0.0)
                 {
                     ShadowPayload shadow;
                     shadow.visibility = 0.0;
+                    shadow.attenuation = float3(1.0);
 
                     RayDesc shadowRay;
-                    shadowRay.Origin = worldPosition
-                        + normals.geometric * SurfaceRayOffset;
+                    shadowRay.Origin = offsetSurfaceRay(
+                        worldPosition,
+                        normals.geometric,
+                        lightSample.direction,
+                        isGlass);
                     shadowRay.Direction = lightSample.direction;
                     shadowRay.TMin = 0.0;
                     shadowRay.TMax = InfiniteRayTMax;
 
                     TraceRay(
                         topLevelAS,
-                        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-                            | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                        shadowRayFlags,
                         0xFF,
                         ShadowRayType,
                         XRPHOTON_RAY_TYPE_COUNT,
@@ -478,6 +569,8 @@ void rayGenMain()
                         hit.albedo,
                         material.perceptualRoughness,
                         material.dielectricF0,
+                        etaI,
+                        etaT,
                         normals.shading,
                         wo,
                         lightSample.direction);
@@ -486,6 +579,8 @@ void rayGenMain()
                         hit.albedo,
                         material.perceptualRoughness,
                         material.dielectricF0,
+                        etaI,
+                        etaT,
                         normals.shading,
                         wo,
                         lightSample.direction);
@@ -497,13 +592,20 @@ void rayGenMain()
                                 pathVertex,
                                 throughput,
                                 lightBrdf,
-                                dot(normals.shading, lightSample.direction),
+                                surfaceCosine(
+                                    isGlass,
+                                    normals.shading,
+                                    lightSample.direction),
                                 lightBsdfPdf));
                     radiance += throughput
                         * lightBrdf
                         * lightSample.radiance
-                        * dot(normals.shading, lightSample.direction)
+                        * surfaceCosine(
+                            isGlass,
+                            normals.shading,
+                            lightSample.direction)
                         * shadow.visibility
+                        * shadow.attenuation
                         * (neeWeight / lightPdf);
                 }
             }
@@ -520,19 +622,25 @@ void rayGenMain()
                         + light.edge1 * (sqrtSample * (1.0 - triangleSample))
                         + light.edge2 * (sqrtSample * triangleSample);
                     float3 lightNormal = normalize(cross(light.edge1, light.edge2));
-                    float3 shadowOrigin = worldPosition
-                        + normals.geometric * SurfaceRayOffset;
+                    float3 shadowOrigin = worldPosition;
                     float3 toLight = lightPosition - shadowOrigin;
                     float distanceSquared = dot(toLight, toLight);
                     float distance = sqrt(distanceSquared);
                     if (distance > SurfaceRayOffset)
                     {
                         float3 lightDirection = toLight / distance;
-                        float shadingLightCosine = dot(
-                            normals.shading,
-                            lightDirection);
-                        float geometricLightCosine = dot(
+                        shadowOrigin = offsetSurfaceRay(
+                            worldPosition,
                             normals.geometric,
+                            lightDirection,
+                            isGlass);
+                        toLight = lightPosition - shadowOrigin;
+                        distanceSquared = dot(toLight, toLight);
+                        distance = sqrt(distanceSquared);
+                        lightDirection = toLight / distance;
+                        float shadingLightCosine = surfaceCosine(
+                            isGlass,
+                            normals.shading,
                             lightDirection);
                         float emitterCosine = dot(lightNormal, -lightDirection);
                         float lightPdf = emitterCosine > 0.0 && light.area > 0.0
@@ -545,13 +653,16 @@ void rayGenMain()
                             SurfaceRayOffset,
                             1.0e-4 * distance);
                         float shadowTMax = distance - endpointExclusion;
-                        if (shadingLightCosine > 0.0
-                            && geometricLightCosine > 0.0
+                        if (validSurfaceDirection(
+                                isGlass,
+                                normals,
+                                lightDirection)
                             && lightPdf > 0.0
                             && shadowTMax > 0.0)
                         {
                             ShadowPayload shadow;
                             shadow.visibility = 0.0;
+                            shadow.attenuation = float3(1.0);
 
                             RayDesc shadowRay;
                             shadowRay.Origin = shadowOrigin;
@@ -561,8 +672,7 @@ void rayGenMain()
 
                             TraceRay(
                                 topLevelAS,
-                                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-                                    | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                                shadowRayFlags,
                                 0xFF,
                                 ShadowRayType,
                                 XRPHOTON_RAY_TYPE_COUNT,
@@ -575,6 +685,8 @@ void rayGenMain()
                                 hit.albedo,
                                 material.perceptualRoughness,
                                 material.dielectricF0,
+                                etaI,
+                                etaT,
                                 normals.shading,
                                 wo,
                                 lightDirection);
@@ -583,6 +695,8 @@ void rayGenMain()
                                 hit.albedo,
                                 material.perceptualRoughness,
                                 material.dielectricF0,
+                                etaI,
+                                etaT,
                                 normals.shading,
                                 wo,
                                 lightDirection);
@@ -601,6 +715,7 @@ void rayGenMain()
                                 * light.emission
                                 * shadingLightCosine
                                 * shadow.visibility
+                                * shadow.attenuation
                                 * (neeWeight / lightPdf);
                         }
                     }
@@ -623,19 +738,29 @@ void rayGenMain()
             hit.albedo,
             material.perceptualRoughness,
             material.dielectricF0,
+            etaI,
+            etaT,
             normals.shading,
             wo,
             lobeSample,
             directionSample);
-        if (dot(normals.geometric, bounceDirection) <= 0.0)
+        if (!validSurfaceDirection(
+                isGlass,
+                normals,
+                bounceDirection))
             break;
 
-        float bounceCosine = dot(normals.shading, bounceDirection);
+        float bounceCosine = surfaceCosine(
+            isGlass,
+            normals.shading,
+            bounceDirection);
         float bouncePdf = bsdfPdf(
             material.materialClass,
             hit.albedo,
             material.perceptualRoughness,
             material.dielectricF0,
+            etaI,
+            etaT,
             normals.shading,
             wo,
             bounceDirection);
@@ -646,13 +771,15 @@ void rayGenMain()
             hit.albedo,
             material.perceptualRoughness,
             material.dielectricF0,
+            etaI,
+            etaT,
             normals.shading,
             wo,
             bounceDirection);
         throughput *= bounceBrdf * (bounceCosine / bouncePdf);
         previousBsdfPdf = bouncePdf;
         previousSkyPdf = frameLighting.pSky
-            * skyPdf(normals.shading, bounceDirection);
+            * skyPdf(normals.shading, bounceDirection, isGlass);
 
         float maximumThroughput = max(throughput.x, max(throughput.y, throughput.z));
         if (maximumThroughput <= 0.0)
@@ -666,7 +793,11 @@ void rayGenMain()
             previousBsdfPdf *= survivalProbability;
         }
 
-        ray.Origin = worldPosition + normals.geometric * SurfaceRayOffset;
+        ray.Origin = offsetSurfaceRay(
+            worldPosition,
+            normals.geometric,
+            bounceDirection,
+            isGlass);
         ray.Direction = bounceDirection;
         ray.TMin = 0.001;
         ray.TMax = InfiniteRayTMax;
@@ -735,6 +866,9 @@ void anyHitMain(
     inout SurfaceHit payload,
     BuiltInTriangleIntersectionAttributes attribs)
 {
+    GeometryRecord geometry = geometryRecords[InstanceID() + GeometryIndex()];
+    if ((geometry.flags & GeometryFlagAlphaTested) == 0)
+        return;
     HitAttributes hit = fetchHitAttributes(attribs, payload);
     MaterialRecord material = materials[hit.materialIndex];
     float sampledAlpha =
@@ -755,11 +889,32 @@ void shadowAnyHitMain(
     inout ShadowPayload payload,
     BuiltInTriangleIntersectionAttributes attribs)
 {
+    GeometryRecord geometry = geometryRecords[InstanceID() + GeometryIndex()];
     HitMaterialCoordinates hit = fetchHitMaterialCoordinates(attribs);
     MaterialRecord material = materials[hit.materialIndex];
-    float sampledAlpha =
+    float4 sampledBaseColor =
         sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
-            .SampleLevel(hit.uv, 0).a;
-    if (rejectsAlpha(material, sampledAlpha))
+            .SampleLevel(hit.uv, 0);
+    if ((geometry.flags & GeometryFlagAlphaTested) != 0
+        && rejectsAlpha(material, sampledBaseColor.a))
+    {
         IgnoreHit();
+        return;
+    }
+    if (material.materialClass == MaterialClassGlass)
+    {
+        float3 worldGeometricNormal = fetchHitWorldGeometricNormal(geometry);
+        float3 wo = -WorldRayDirection();
+        bool entering = dot(worldGeometricNormal, wo) > 0.0;
+        float etaI = entering ? 1.0 : GlassIor;
+        float etaT = entering ? GlassIor : 1.0;
+        float fresnel = fresnelDielectric(
+            abs(dot(worldGeometricNormal, wo)),
+            etaI,
+            etaT);
+        float3 tint = saturate(
+            material.baseColorFactor.rgb * sampledBaseColor.rgb);
+        payload.attenuation *= tint * (1.0 - fresnel);
+        IgnoreHit();
+    }
 }

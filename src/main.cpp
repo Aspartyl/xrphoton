@@ -43,16 +43,6 @@ void markFramebufferResized(GLFWwindow*, int, int)
     framebufferResized = true;
 }
 
-// Compile-time request from the XRPHOTON_ENABLE_VALIDATION CMake option. The runtime
-// decision (validationEnabled in main) additionally requires the layer and debug-utils
-// extension to actually be present, so a build with validation on still runs on
-// machines without the Vulkan SDK — just without validation coverage.
-#ifdef XRPHOTON_ENABLE_VALIDATION
-constexpr bool ValidationRequested = true;
-#else
-constexpr bool ValidationRequested = false;
-#endif
-
 } // namespace
 
 // Program entry point and orchestration: bring up GLFW and Vulkan in dependency order,
@@ -141,11 +131,11 @@ int main(int argumentCount, char** arguments)
     // machines with the Vulkan SDK (or the layer package) installed, and the program is
     // equally correct without it. The debug-utils extension is tied to the same decision
     // because its only consumer is the validation messenger.
-    const bool validationEnabled = ValidationRequested
+    const bool validationEnabled = commandLine.validationRequested
         && isValidationLayerAvailable(ValidationLayerName)
         && isInstanceExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
-    if (ValidationRequested && !validationEnabled) {
+    if (commandLine.validationRequested && !validationEnabled) {
         std::cerr << "Vulkan validation layer is not available: " << ValidationLayerName
                   << " — continuing without validation.\n";
     }
@@ -428,6 +418,10 @@ int main(int argumentCount, char** arguments)
         std::cerr << "Failed to pack scene lighting.\n";
         return 1;
     }
+    // Glass transport is a permanent pipeline capability. Keep the published feature
+    // bit stable for capture/debug consumers without deriving renderer behavior from
+    // the current scene's material inventory.
+    frameLighting.flags |= FrameLightingGlassBit;
     if (referenceMode) {
         frameLighting.flags =
             (frameLighting.flags & ~FrameLightingEstimatorMask)

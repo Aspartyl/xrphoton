@@ -920,13 +920,28 @@ void testFinalValidation()
         "material[0].emission[2]",
         "nonfinite assembled material emission is rejected");
 
-    xrphoton::SceneData unsupportedGlass = valid;
-    unsupportedGlass.materials[0].materialClass =
+    xrphoton::SceneData glass = valid;
+    glass.materials[0].materialClass =
         xrphoton::SceneMaterialClass::Glass;
+    expect(
+        xrphoton::validateAssembledScene(glass, &error) && error.empty(),
+        "Glass passes the P3b assembled-scene profile");
+    expect(
+        xrphoton::sceneHasGlass(glass)
+            && xrphoton::geometryRequiresAnyHit(
+                glass.geometries[0],
+                glass.materials[0])
+            && !xrphoton::geometryRequiresAnyHit(
+                valid.geometries[0],
+                valid.materials[0]),
+        "Glass selects unified any-hit routing while ordinary opaque geometry keeps the fast path");
+
+    xrphoton::SceneData alphaGlass = glass;
+    alphaGlass.geometries[0].alphaTested = true;
     expectValidationRejected(
-        std::move(unsupportedGlass),
-        "material[0].materialClass",
-        "Glass is rejected until the P3b runtime profile lands");
+        std::move(alphaGlass),
+        "cannot combine alpha-tested and Glass",
+        "alpha-tested Glass is rejected at final validation");
 
     xrphoton::SceneData bodyWithoutColliders = valid;
     bodyWithoutColliders.physicsColliders.clear();
@@ -1187,13 +1202,31 @@ void testModelPreconditionsAreTransactional()
         "incoming material[0].emission[2]",
         "nonfinite material emission precondition");
 
-    xrphoton::SceneData unsupportedGlass = makeTriangleModel();
-    unsupportedGlass.materials[0].materialClass =
+    xrphoton::SceneData glass = makeTriangleModel();
+    glass.materials[0].materialClass =
         xrphoton::SceneMaterialClass::Glass;
+    xrphoton::SceneData glassDestination = makeTriangleModel(
+        100.0f,
+        "target\\glass_append");
+    std::string glassError = "stale";
+    expect(
+        xrphoton::appendSceneModel(
+            &glassDestination,
+            std::move(glass),
+            &glassError)
+            && glassError.empty()
+            && glassDestination.materials.back().materialClass
+                == xrphoton::SceneMaterialClass::Glass,
+        "Glass passes the P3b model-append profile");
+
+    xrphoton::SceneData alphaGlass = makeTriangleModel();
+    alphaGlass.materials[0].materialClass =
+        xrphoton::SceneMaterialClass::Glass;
+    alphaGlass.geometries[0].alphaTested = true;
     expectAppendRejectedUnchanged(
-        std::move(unsupportedGlass),
-        "incoming material[0].materialClass",
-        "Glass material precondition before P3b");
+        std::move(alphaGlass),
+        "cannot combine alpha-tested and Glass",
+        "alpha-tested Glass model precondition");
 
     xrphoton::SceneData scene = makeTriangleModel(100.0f, "target\\with_image");
     scene.images.push_back({

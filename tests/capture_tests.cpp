@@ -55,6 +55,7 @@ void testCommandLine()
             && options.referenceSampleCount == 0
             && options.scenePreset == xrphoton::ScenePreset::Yard
             && options.estimator == xrphoton::EstimatorMode::Mis
+            && !options.validationRequested
             && error.empty(),
         "no arguments select interactive mode");
 
@@ -90,6 +91,16 @@ void testCommandLine()
         "interactive mode accepts the night scene selector");
 
     options = parse(
+        {"xrPhoton", "--validation", "--scene", "night"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded && options.mode == xrphoton::CommandLineMode::Interactive
+            && options.scenePreset == xrphoton::ScenePreset::Night
+            && options.validationRequested,
+        "the canonical engine accepts runtime validation in interactive mode");
+
+    options = parse(
         {"xrPhoton", "--reference", "64", "--scene", "night",
          "--estimator", "nee"},
         &succeeded,
@@ -123,6 +134,8 @@ void testCommandLine()
         {"xrPhoton", "--capture", "4294967296", "result.ppm"},
         {"xrPhoton", "--capture", "8", ""},
         {"xrPhoton", "--scene", "furnace"},
+        {"xrPhoton", "--scene", "glass"},
+        {"xrPhoton", "--validation", "--validation"},
         {"xrPhoton", "--reference", "8", "--scene", "night"},
         {"xrPhoton", "--reference", "8", "--estimator", "mis"},
         {"xrPhoton", "--reference", "0", "--scene", "night", "--estimator", "mis"},

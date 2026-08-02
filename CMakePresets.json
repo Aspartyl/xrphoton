@@ -7,23 +7,12 @@
   },
   "configurePresets": [
     {
-      "name": "debug",
-      "displayName": "Debug",
-      "description": "Debug build with Vulkan validation requested",
-      "binaryDir": "${sourceDir}/build/debug",
+      "name": "default",
+      "displayName": "xrPhoton",
+      "description": "Canonical optimized engine build with debug symbols",
+      "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "XRPHOTON_ENABLE_VALIDATION": "ON"
-      }
-    },
-    {
-      "name": "release",
-      "displayName": "Optimized",
-      "description": "RelWithDebInfo build without Vulkan validation",
-      "binaryDir": "${sourceDir}/build/release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "XRPHOTON_ENABLE_VALIDATION": "OFF"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
     },
     {
@@ -40,15 +29,9 @@
   ],
   "buildPresets": [
     {
-      "name": "debug",
-      "displayName": "Build Debug",
-      "configurePreset": "debug",
-      "configuration": "Debug"
-    },
-    {
-      "name": "release",
-      "displayName": "Build Optimized",
-      "configurePreset": "release",
+      "name": "default",
+      "displayName": "Build xrPhoton",
+      "configurePreset": "default",
       "configuration": "RelWithDebInfo"
     },
     {
@@ -59,6 +42,14 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "default",
+      "displayName": "Test xrPhoton",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "ogfx-core",
       "displayName": "Test OGFx Core",

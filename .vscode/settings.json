@@ -1,5 +1,5 @@
 {
-    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
     "C_Cpp.default.cppStandard": "c++23",
     "slang.predefinedMacros": [
         "XRPHOTON_RADIANCE_RAY_TYPE=0",

@@ -1246,7 +1246,7 @@ void testPayloadFramingAndScalars()
         glassSchema
             && glassSchema.model.materials[0].materialClass
                 == xrphoton::ogfx::MaterialClass::Glass,
-        "schema decoder preserves the v4 Glass value reserved for P3b");
+        "schema decoder preserves the v4 Glass value");
     if (glassSchema) {
         const SerializeResult glassRoundTrip = xrphoton::ogfx::serializeModel(
             glassSchema.model,
@@ -1255,7 +1255,27 @@ void testPayloadFramingAndScalars()
             glassRoundTrip && glassRoundTrip.bytes == glassBytes,
             "schema-decoded v4 Glass material round-trips byte-for-byte");
     }
-    expectRejected(glassBytes, "OGFX_MATERIALS", "materialClass");
+    const DecodeResult glassRuntime = xrphoton::ogfx::decodeModel(
+        glassBytes,
+        "material-v4-glass-runtime.ogfx");
+    expect(
+        glassRuntime
+            && glassRuntime.model.materials[0].materialClass
+                == xrphoton::ogfx::MaterialClass::Glass,
+        "runtime decoder accepts and preserves material chunk v4 Glass");
+
+    RawChunk& glassGeometry = chunkById(&chunks, ChunkId::Geometries);
+    writeU32(&glassGeometry.payload, 20, 1);
+    const std::vector<std::uint8_t> alphaGlassBytes = assembleFile(chunks);
+    expectRejected(
+        alphaGlassBytes,
+        "OGFX_GEOMETRIES",
+        "geometryFlags/materialClass");
+    expectSchemaRejected(
+        alphaGlassBytes,
+        "OGFX_GEOMETRIES",
+        "geometryFlags/materialClass");
+    writeU32(&glassGeometry.payload, 20, 0);
 
     writeU32(&materialV4.payload, 60, 3);
     expectSchemaRejected(

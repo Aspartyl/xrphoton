@@ -31,9 +31,9 @@ constexpr uint32_t RaygenGroup = 0;
 constexpr uint32_t RadianceMissGroup = 1;
 constexpr uint32_t ShadowMissGroup = 2;
 constexpr uint32_t OpaqueRadianceHitGroup = 3;
-constexpr uint32_t AlphaTestedRadianceHitGroup = 4;
+constexpr uint32_t AnyHitRadianceHitGroup = 4;
 constexpr uint32_t OpaqueShadowHitGroup = 5;
-constexpr uint32_t AlphaTestedShadowHitGroup = 6;
+constexpr uint32_t AnyHitShadowHitGroup = 6;
 constexpr uint32_t GroupCount = 7;
 
 // Both semantic ray types have dedicated miss and hit records. Their shared build
@@ -374,7 +374,7 @@ VkResult createRtPipeline(
     stages[5].pName = "shadowAnyHitMain";
 
     // Group order is the SBT contract: raygen; radiance/shadow misses; opaque and
-    // alpha-tested radiance hits; then opaque and alpha-tested shadow hits. Every
+    // any-hit-capable radiance hits; then opaque and any-hit-capable shadow hits. Every
     // shader index a group does not use must be VK_SHADER_UNUSED_KHR explicitly —
     // zero-init would leave 0, which is a valid stage index (the raygen stage).
     VkRayTracingShaderGroupCreateInfoKHR groups[GroupCount]{};
@@ -394,20 +394,20 @@ VkResult createRtPipeline(
     groups[OpaqueRadianceHitGroup].type =
         VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
     groups[OpaqueRadianceHitGroup].closestHitShader = 3;
-    // Both radiance classes share closest-hit surface evaluation. Only alpha-tested
-    // ranges pay for their any-hit stage, selected through per-geometry SBT records.
-    groups[AlphaTestedRadianceHitGroup].type =
+    // Both radiance classes share closest-hit surface evaluation. Alpha-tested and
+    // Glass ranges pay for any-hit, selected through per-geometry SBT records.
+    groups[AnyHitRadianceHitGroup].type =
         VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[AlphaTestedRadianceHitGroup].closestHitShader = 3;
-    groups[AlphaTestedRadianceHitGroup].anyHitShader = 4;
+    groups[AnyHitRadianceHitGroup].closestHitShader = 3;
+    groups[AnyHitRadianceHitGroup].anyHitShader = 4;
     // An accepted shadow hit leaves its payload's occluded initialization untouched.
-    // Opaque records therefore need no shaders; alpha-tested records run only the
-    // lean cutoff any-hit stage and likewise need no closest hit.
+    // Opaque records therefore need no shaders; any-hit-capable records run only the
+    // shared alpha/Glass stage and likewise need no closest hit.
     groups[OpaqueShadowHitGroup].type =
         VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[AlphaTestedShadowHitGroup].type =
+    groups[AnyHitShadowHitGroup].type =
         VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[AlphaTestedShadowHitGroup].anyHitShader = 5;
+    groups[AnyHitShadowHitGroup].anyHitShader = 5;
 
     VkRayTracingPipelineCreateInfoKHR pipelineCreateInfo{};
     pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
@@ -561,16 +561,20 @@ VkResult buildShaderBindingTable(
     std::array<uint32_t, RayTypeCount> opaqueHitGroups{};
     opaqueHitGroups[RadianceRayType] = OpaqueRadianceHitGroup;
     opaqueHitGroups[ShadowRayType] = OpaqueShadowHitGroup;
-    std::array<uint32_t, RayTypeCount> alphaTestedHitGroups{};
-    alphaTestedHitGroups[RadianceRayType] = AlphaTestedRadianceHitGroup;
-    alphaTestedHitGroups[ShadowRayType] = AlphaTestedShadowHitGroup;
+    std::array<uint32_t, RayTypeCount> anyHitGroups{};
+    anyHitGroups[RadianceRayType] = AnyHitRadianceHitGroup;
+    anyHitGroups[ShadowRayType] = AnyHitShadowHitGroup;
     for (VkDeviceSize recordIndex = 0; recordIndex < hitRecordCount; ++recordIndex) {
         const std::size_t geometryIndex =
             static_cast<std::size_t>(recordIndex / RayTypeCount);
         const uint32_t rayType =
             static_cast<uint32_t>(recordIndex % RayTypeCount);
-        const uint32_t groupIndex = scene.geometries[geometryIndex].alphaTested
-            ? alphaTestedHitGroups[rayType]
+        const SceneGeometry& geometry = scene.geometries[geometryIndex];
+        const bool requiresAnyHit = geometryRequiresAnyHit(
+            geometry,
+            scene.materials[geometry.materialIndex]);
+        const uint32_t groupIndex = requiresAnyHit
+            ? anyHitGroups[rayType]
             : opaqueHitGroups[rayType];
         std::memcpy(
             table + hitOffset + recordIndex * recordStride,

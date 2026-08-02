@@ -512,6 +512,55 @@ void testSkyEvaluationSamplingAndPdf()
         "fixed-seed sky-PDF quadrature integrates to one");
 }
 
+void testGlassSamplingAndShadowApproximation()
+{
+    xrphoton::FrameLighting lighting;
+    expect(
+        xrphoton::makeFrameLighting(
+            xrphoton::DefaultSceneLighting,
+            0u,
+            &lighting),
+        "glass sky test lighting packs");
+    const glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    xrphoton::SkySample front;
+    xrphoton::SkySample back;
+    expect(
+        xrphoton::sampleSky(lighting, normal, {0.25f, 0.125f}, &front, true)
+            && xrphoton::sampleSky(lighting, normal, {0.75f, 0.125f}, &back, true)
+            && glm::dot(normal, front.direction) > 0.0f
+            && glm::dot(normal, back.direction) < 0.0f
+            && nearly(front.pdf, back.pdf)
+            && nearly(
+                front.pdf,
+                xrphoton::skyPdf(normal, front.direction, true)),
+        "Glass sky sampling is an equal mixture over both shading hemispheres");
+
+    const float normalFresnel = xrphoton::dielectricFresnel(
+        1.0f,
+        1.0f,
+        xrphoton::GlassIor);
+    expect(
+        nearly(normalFresnel, 0.04f)
+            && xrphoton::dielectricFresnel(
+                0.5f,
+                xrphoton::GlassIor,
+                1.0f) == 1.0f,
+        "exact Glass Fresnel pins normal incidence and internal total reflection");
+    const glm::vec3 attenuation = xrphoton::glassShadowAttenuation(
+        {0.25f, 0.5f, 1.0f},
+        1.0f,
+        true);
+    expect(
+        nearly(attenuation.x, 0.24f)
+            && nearly(attenuation.y, 0.48f)
+            && nearly(attenuation.z, 0.96f)
+            && xrphoton::glassShadowAttenuation(
+                {1.0f, 1.0f, 1.0f},
+                0.5f,
+                false) == glm::vec3{},
+        "straight Glass shadow attenuation applies tint/Fresnel and respects TIR");
+}
+
 void testMisWeights()
 {
     expect(
@@ -605,6 +654,7 @@ int main()
     testFrameAbiAndFlags();
     testSelectorPacking();
     testSkyEvaluationSamplingAndPdf();
+    testGlassSamplingAndShadowApproximation();
     testMisWeights();
     testEmitterPdfAndEstimatorFlags();
     testDynamicBufferMath();

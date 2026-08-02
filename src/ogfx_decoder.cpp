@@ -160,7 +160,7 @@ public:
             || !validateModel(geometryBounds, metadata)) {
             return failedResult();
         }
-        if (profile_ == DecodeProfile::Runtime && !validateRuntimeProfile()) {
+        if (!validateMaterialGeometryCombinations()) {
             return failedResult();
         }
 
@@ -792,7 +792,8 @@ private:
                         static_cast<MaterialClass>(classWord);
                 }
             }
-            if (material.materialClass == MaterialClass::Metal) {
+            if (material.materialClass == MaterialClass::Metal
+                || material.materialClass == MaterialClass::Glass) {
                 for (std::size_t component = 0; component < 3; ++component) {
                     if (material.baseColorFactor[component] < 0.0f
                         || material.baseColorFactor[component] > 1.0f) {
@@ -800,7 +801,9 @@ private:
                             chunk.id,
                             indexedField("materials", index, "baseColorFactor")
                                 + '[' + std::to_string(component) + ']',
-                            "a finite f32 in [0, 1] for Metal spectral F0",
+                            material.materialClass == MaterialClass::Metal
+                                ? "a finite f32 in [0, 1] for Metal spectral F0"
+                                : "a finite f32 in [0, 1] for Glass transmission tint",
                             std::to_string(material.baseColorFactor[component]));
                     }
                 }
@@ -1569,15 +1572,18 @@ private:
         return true;
     }
 
-    bool validateRuntimeProfile()
+    bool validateMaterialGeometryCombinations()
     {
-        for (std::size_t index = 0; index < model_.materials.size(); ++index) {
-            if (model_.materials[index].materialClass == MaterialClass::Glass) {
+        for (std::size_t index = 0; index < model_.geometries.size(); ++index) {
+            const Geometry& geometry = model_.geometries[index];
+            if (geometry.alphaTested
+                && model_.materials[geometry.materialIndex].materialClass
+                    == MaterialClass::Glass) {
                 return reject(
-                    static_cast<std::uint32_t>(ChunkId::Materials),
-                    indexedField("materials", index, "materialClass"),
-                    "Dielectric (0) or Metal (1) in the P3a runtime profile",
-                    "Glass (2)");
+                    static_cast<std::uint32_t>(ChunkId::Geometries),
+                    indexedField("geometries", index, "geometryFlags/materialClass"),
+                    "Glass geometry without alpha-tested bit 0",
+                    "alpha-tested Glass");
             }
         }
         return true;

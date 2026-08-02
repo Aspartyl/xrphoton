@@ -190,12 +190,26 @@ struct SkySample
     const glm::vec3& direction);
 [[nodiscard]] float skyPdf(
     const glm::vec3& surfaceNormal,
-    const glm::vec3& direction);
+    const glm::vec3& direction,
+    bool twoSided = false);
 [[nodiscard]] bool sampleSky(
     const FrameLighting& lighting,
     const glm::vec3& surfaceNormal,
     const glm::vec2& sample,
-    SkySample* output);
+    SkySample* output,
+    bool twoSided = false);
+
+inline constexpr float GlassIor = 1.5f;
+[[nodiscard]] float dielectricFresnel(
+    float cosineI,
+    float etaI,
+    float etaT);
+// P3b's deliberately approximate NEE visibility rule: keep the straight shadow
+// direction, tint transmitted energy, and account for interface Fresnel loss.
+[[nodiscard]] glm::vec3 glassShadowAttenuation(
+    const glm::vec3& tint,
+    float cosineI,
+    bool entering);
 
 [[nodiscard]] constexpr float powerHeuristic(float firstPdf, float secondPdf)
 {

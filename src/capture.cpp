@@ -112,12 +112,13 @@ bool parseCommandLine(
 
     try {
         constexpr const char* Usage =
-            "Usage: xrPhoton [--capture <count> <output.ppm>] "
-            "[--scene <yard|night>] | --reference <count> "
+            "Usage: xrPhoton [--validation] [--capture <count> <output.ppm>] "
+            "[--scene <yard|night>] | [--validation] --reference <count> "
             "--scene <yard|night> --estimator <mis|nee|bsdf>";
         bool modeSeen = false;
         bool sceneSeen = false;
         bool estimatorSeen = false;
+        bool validationSeen = false;
         CommandLineOptions candidate;
         for (int index = 1; index < argumentCount;) {
             if (arguments[index] == nullptr) {
@@ -125,7 +126,15 @@ bool parseCommandLine(
                 return false;
             }
             const std::string_view option(arguments[index]);
-            if (option == "--capture") {
+            if (option == "--validation") {
+                if (validationSeen) {
+                    *error = Usage;
+                    return false;
+                }
+                candidate.validationRequested = true;
+                validationSeen = true;
+                ++index;
+            } else if (option == "--capture") {
                 if (modeSeen || index + 2 >= argumentCount
                     || arguments[index + 1] == nullptr
                     || arguments[index + 2] == nullptr) {

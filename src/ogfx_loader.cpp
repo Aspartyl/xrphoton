@@ -180,9 +180,8 @@ OgfxLoadResult decodeOgfxScene(
                  ++component) {
                 sceneMaterial.emission[component] = material.emission[component];
             }
-            sceneMaterial.materialClass = material.materialClass == ogfx::MaterialClass::Metal
-                ? SceneMaterialClass::Metal
-                : SceneMaterialClass::Dielectric;
+            sceneMaterial.materialClass =
+                static_cast<SceneMaterialClass>(material.materialClass);
             // Resolution is scene-global, so the model adapter preserves the logical
             // OGFx identity while leaving the eventual image index at fallback slot 0.
             sceneMaterial.baseColorTexture = material.baseColorTexture;

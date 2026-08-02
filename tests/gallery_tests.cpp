@@ -18,6 +18,7 @@
 #include <fstream>
 #endif
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 3
@@ -26,9 +27,11 @@
 #include <vector>
 
 #include <glm/geometric.hpp>
+#include <glm/common.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat3x3.hpp>
 #include <glm/matrix.hpp>
+#include <glm/vec4.hpp>
 
 namespace
 {
@@ -60,6 +63,89 @@ bool matrixNear(
         }
     }
     return true;
+}
+
+struct WorldBounds
+{
+    glm::vec3 minimum{std::numeric_limits<float>::max()};
+    glm::vec3 maximum{std::numeric_limits<float>::lowest()};
+    bool valid = false;
+};
+
+bool instanceWorldBounds(
+    const xrphoton::SceneData& scene,
+    std::size_t instanceIndex,
+    WorldBounds* bounds)
+{
+    if (bounds == nullptr || instanceIndex >= scene.instances.size()) {
+        return false;
+    }
+    *bounds = {};
+    const xrphoton::SceneInstance& instance = scene.instances[instanceIndex];
+    if (instance.meshIndex >= scene.meshes.size()) {
+        return false;
+    }
+    const xrphoton::SceneMesh& mesh = scene.meshes[instance.meshIndex];
+    for (std::uint64_t geometryOffset = 0;
+         geometryOffset < mesh.geometryCount;
+         ++geometryOffset) {
+        const std::uint64_t geometryIndex =
+            static_cast<std::uint64_t>(mesh.firstGeometry) + geometryOffset;
+        if (geometryIndex >= scene.geometries.size()) {
+            return false;
+        }
+        const xrphoton::SceneGeometry& geometry =
+            scene.geometries[static_cast<std::size_t>(geometryIndex)];
+        for (std::uint64_t vertexOffset = 0;
+             vertexOffset < geometry.vertexCount;
+             ++vertexOffset) {
+            const std::uint64_t vertex =
+                static_cast<std::uint64_t>(geometry.firstVertex) + vertexOffset;
+            const std::uint64_t scalar = vertex * 3;
+            if (scalar + 2 >= scene.positions.size()) {
+                return false;
+            }
+            const glm::vec4 world = instance.transform * glm::vec4{
+                scene.positions[static_cast<std::size_t>(scalar)],
+                scene.positions[static_cast<std::size_t>(scalar + 1)],
+                scene.positions[static_cast<std::size_t>(scalar + 2)],
+                1.0f,
+            };
+            const glm::vec3 position{world};
+            bounds->minimum = glm::min(bounds->minimum, position);
+            bounds->maximum = glm::max(bounds->maximum, position);
+            bounds->valid = true;
+        }
+    }
+    return bounds->valid;
+}
+
+bool boundsOverlap(const WorldBounds& left, const WorldBounds& right)
+{
+    return left.minimum.x < right.maximum.x && left.maximum.x > right.minimum.x
+        && left.minimum.y < right.maximum.y && left.maximum.y > right.minimum.y
+        && left.minimum.z < right.maximum.z && left.maximum.z > right.minimum.z;
+}
+
+bool instanceClashes(const xrphoton::SceneData& scene, std::size_t instanceIndex)
+{
+    WorldBounds target;
+    if (!instanceWorldBounds(scene, instanceIndex, &target)) {
+        return true;
+    }
+    for (std::size_t otherIndex = 0;
+         otherIndex < scene.instances.size();
+         ++otherIndex) {
+        if (otherIndex == instanceIndex) {
+            continue;
+        }
+        WorldBounds other;
+        if (!instanceWorldBounds(scene, otherIndex, &other)
+            || boundsOverlap(target, other)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 glm::mat4 translation(glm::vec3 offset)
@@ -211,16 +297,16 @@ void testGeneratedYardPolicy()
     const xrphoton::SceneData& scene = loaded.scene;
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1 \
     || XRPHOTON_GALLERY_TEST_EXPECTATION == 4
-    constexpr std::size_t ExpectedMeshCount = 6;
-    constexpr std::size_t ExpectedGeometryCount = 7;
-    constexpr std::size_t ExpectedInstanceCount = 14;
-    constexpr std::size_t ExpectedMaterialCount = 7;
+    constexpr std::size_t ExpectedMeshCount = 10;
+    constexpr std::size_t ExpectedGeometryCount = 11;
+    constexpr std::size_t ExpectedInstanceCount = 18;
+    constexpr std::size_t ExpectedMaterialCount = 11;
     constexpr std::size_t ExpectedPhysicsCount = 2;
 #else
-    constexpr std::size_t ExpectedMeshCount = 5;
-    constexpr std::size_t ExpectedGeometryCount = 6;
-    constexpr std::size_t ExpectedInstanceCount = 13;
-    constexpr std::size_t ExpectedMaterialCount = 6;
+    constexpr std::size_t ExpectedMeshCount = 9;
+    constexpr std::size_t ExpectedGeometryCount = 10;
+    constexpr std::size_t ExpectedInstanceCount = 17;
+    constexpr std::size_t ExpectedMaterialCount = 10;
     constexpr std::size_t ExpectedPhysicsCount = 1;
 #endif
     expect(scene.meshes.size() == ExpectedMeshCount, "yard loads the expected model set");
@@ -237,9 +323,61 @@ void testGeneratedYardPolicy()
         scene.physicsBodies.size() == ExpectedPhysicsCount
             && scene.physicsColliders.size() == ExpectedPhysicsCount,
         "yard retains one complete rigid recipe per loaded dynamic model");
+    constexpr std::array<float, 4> expectedGlassRoughness{0.02f, 0.10f, 0.22f, 0.55f};
+    constexpr std::array<std::array<float, 3>, 4> expectedGlassTints{{
+        {0.96f, 0.99f, 1.00f},
+        {0.55f, 0.82f, 1.00f},
+        {1.00f, 0.68f, 0.32f},
+        {0.55f, 0.58f, 0.62f},
+    }};
+    bool glassMaterialsMatch = xrphoton::sceneHasGlass(scene);
+    for (std::size_t offset = 0; offset < expectedGlassRoughness.size(); ++offset) {
+        const std::size_t materialIndex = 3 + offset;
+        const std::size_t geometryIndex = 3 + offset;
+        glassMaterialsMatch = glassMaterialsMatch
+            && scene.materials[materialIndex].materialClass
+                == xrphoton::SceneMaterialClass::Glass
+            && nearly(
+                scene.materials[materialIndex].perceptualRoughness,
+                expectedGlassRoughness[offset])
+            && nearly(
+                scene.materials[materialIndex].baseColorFactor[0],
+                expectedGlassTints[offset][0])
+            && nearly(
+                scene.materials[materialIndex].baseColorFactor[1],
+                expectedGlassTints[offset][1])
+            && nearly(
+                scene.materials[materialIndex].baseColorFactor[2],
+                expectedGlassTints[offset][2])
+            && xrphoton::geometryRequiresAnyHit(
+                scene.geometries[geometryIndex], scene.materials[materialIndex])
+            && !scene.geometries[geometryIndex].alphaTested;
+    }
+    expect(
+        glassMaterialsMatch,
+        "day yard retains four Glass roughness variants with non-alpha any-hit routing");
 
-    constexpr std::array<std::uint32_t, 5> expectedFirstGeometries{0, 1, 2, 3, 4};
-    constexpr std::array<std::uint32_t, 5> expectedGeometryCounts{1, 1, 1, 1, 2};
+    bool glassPlacementsMatch = scene.instances.size() >= 14;
+    for (std::size_t offset = 0; offset < 4 && glassPlacementsMatch; ++offset) {
+        const std::size_t instanceIndex = 10 + offset;
+        WorldBounds bounds;
+        glassPlacementsMatch = scene.instances[instanceIndex].meshIndex == 3 + offset
+            && matrixNear(
+                scene.instances[instanceIndex].transform,
+                translation({-2.5f, 0.0f, -3.8f}))
+            && instanceWorldBounds(scene, instanceIndex, &bounds)
+            && nearly(bounds.minimum.y, 0.0f)
+            && nearly(bounds.maximum.y, 2.6f)
+            && !instanceClashes(scene, instanceIndex);
+    }
+    expect(
+        glassPlacementsMatch,
+        "day Glass showcase stands on the ground without intersecting another object");
+
+    constexpr std::array<std::uint32_t, 9> expectedFirstGeometries{
+        0, 1, 2, 3, 4, 5, 6, 7, 8};
+    constexpr std::array<std::uint32_t, 9> expectedGeometryCounts{
+        1, 1, 1, 1, 1, 1, 1, 1, 2};
     if (scene.meshes.size() >= expectedFirstGeometries.size()) {
         for (std::size_t index = 0; index < expectedFirstGeometries.size(); ++index) {
             expect(
@@ -260,6 +398,10 @@ void testGeneratedYardPolicy()
         scaledPlacement({5.0f, 0.49f, 3.66f}, {1.98f, 1.0f, 0.7f}),
         rotatedPlacement({-3.0f, 0.49f, 4.0f}, 30.0f),
         dynamicCrateSpawn(),
+        translation({-2.5f, 0.0f, -3.8f}),
+        translation({-2.5f, 0.0f, -3.8f}),
+        translation({-2.5f, 0.0f, -3.8f}),
+        translation({-2.5f, 0.0f, -3.8f}),
         translation({-6.0f, 1.0f, 9.5f}),
         translation({-4.25f, 1.0f, 9.35f}),
         translation({-2.1f, 1.0f, 9.0f})
@@ -270,14 +412,14 @@ void testGeneratedYardPolicy()
             * glm::scale(glm::mat4{1.0f}, glm::vec3{1.5f, 1.0f, 1.5f}),
     };
     std::vector<std::uint32_t> expectedMeshes{
-        0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 4, 4,
+        0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 8,
     };
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1
     expectedTransforms.push_back(dynamicBarrelSpawn());
-    expectedMeshes.push_back(5);
+    expectedMeshes.push_back(9);
 #elif XRPHOTON_GALLERY_TEST_EXPECTATION == 4
     expectedTransforms.push_back(dynamicTailSpawn());
-    expectedMeshes.push_back(5);
+    expectedMeshes.push_back(9);
 #endif
 
     if (scene.instances.size() == expectedTransforms.size()) {
@@ -294,7 +436,7 @@ void testGeneratedYardPolicy()
     std::vector<std::size_t> expectedDynamicInstances{9};
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1 \
     || XRPHOTON_GALLERY_TEST_EXPECTATION == 4
-    expectedDynamicInstances.push_back(13);
+    expectedDynamicInstances.push_back(17);
 #endif
     expect(
         loaded.dynamicInstances == expectedDynamicInstances,
@@ -351,12 +493,19 @@ void testNightYardPolicy()
         std::cerr << loaded.error << '\n';
         return;
     }
+    bool nightGlassIsClear = xrphoton::sceneHasGlass(loaded.scene);
+    for (std::size_t instanceIndex = 10;
+         instanceIndex < 14 && nightGlassIsClear;
+         ++instanceIndex) {
+        nightGlassIsClear = !instanceClashes(loaded.scene, instanceIndex);
+    }
     expect(
-        loaded.scene.meshes.size() == 8
-            && loaded.scene.geometries.size() == 9
-            && loaded.scene.materials.size() == 9
-            && loaded.scene.instances.size() == 34,
-        "night yard adds three shared emitter meshes and twenty-one placements");
+        loaded.scene.meshes.size() == 12
+            && loaded.scene.geometries.size() == 13
+            && loaded.scene.materials.size() == 13
+            && loaded.scene.instances.size() == 38
+            && nightGlassIsClear,
+        "night yard retains every non-overlapping Glass showcase panel and adds its emitter set");
     xrphoton::SceneLighting lighting = xrphoton::makeSceneLightingPreset(
         xrphoton::ScenePreset::Night);
     std::string error;
@@ -370,14 +519,15 @@ void testNightYardPolicy()
     xrphoton::FrameLighting packed;
     expect(
         error.empty() && lighting.lights.size() == 42
-            && lighting.instanceCount == 34
-            && xrphoton::makeFrameLighting(lighting, 34, &packed)
+            && lighting.instanceCount == 38
+            && xrphoton::makeFrameLighting(lighting, 38, &packed)
             && packed.sunIrradiance == glm::vec3{}
             && packed.lightCount == 42
             && packed.pSky == 0.5f && packed.pEmitters == 0.5f,
         "night lighting disables the sun and publishes forty-two emitter triangles");
 #endif
 }
+
 }
 
 int main()

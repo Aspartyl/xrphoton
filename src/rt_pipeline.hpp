@@ -96,7 +96,7 @@ void writeLightingDescriptorSet(
 // Create the pipeline layout (the one descriptor set plus raygen frame constants)
 // and the ray tracing pipeline: six stages sharing the embedded shader module and
 // seven groups in SBT-contract order — raygen; radiance/shadow misses; opaque and
-// alpha-tested radiance hits; opaque and alpha-tested shadow hits. Every TraceRay
+// any-hit-capable radiance hits; opaque and any-hit-capable shadow hits. Every TraceRay
 // call originates in raygen, so maxPipelineRayRecursionDepth is the spec-guaranteed
 // minimum 1. Requires createRtDescriptorSet to have succeeded (uses the set layout
 // and adopted device); on failure *rt again holds whatever was created and the

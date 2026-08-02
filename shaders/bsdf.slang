@@ -2,6 +2,8 @@ import sampling;
 
 static const uint MaterialClassDielectric = 0;
 static const uint MaterialClassMetal = 1;
+static const uint MaterialClassGlass = 2;
+static const float GlassIor = 1.5;
 
 // Material-independent surface orientation plus the landed opaque BSDF classes.
 
@@ -43,6 +45,24 @@ float3 fresnelSchlick(float cosine, float3 f0)
     float factor = oneMinusCosine * oneMinusCosine;
     factor *= factor * oneMinusCosine;
     return f0 + (float3(1.0) - f0) * factor;
+}
+
+// Exact dielectric Fresnel is shared by the rough Glass BSDF and the named
+// straight-line shadow approximation. etaI/etaT describe the side selected by the
+// unflipped geometric normal; total internal reflection therefore falls out here.
+float fresnelDielectric(float cosineI, float etaI, float etaT)
+{
+    cosineI = saturate(abs(cosineI));
+    float eta = etaI / etaT;
+    float sineSquaredT = eta * eta * max(0.0, 1.0 - cosineI * cosineI);
+    if (sineSquaredT >= 1.0)
+        return 1.0;
+    float cosineT = sqrt(max(0.0, 1.0 - sineSquaredT));
+    float parallel = (etaT * cosineI - etaI * cosineT)
+        / max(etaT * cosineI + etaI * cosineT, 1.0e-8);
+    float perpendicular = (etaI * cosineI - etaT * cosineT)
+        / max(etaI * cosineI + etaT * cosineT, 1.0e-8);
+    return 0.5 * (parallel * parallel + perpendicular * perpendicular);
 }
 
 float ggxDistribution(float normalDotHalf, float alpha)
@@ -135,11 +155,74 @@ float3 evaluateMetalBrdf(
         / max(4.0 * normalDotOut * normalDotIn, 1.0e-8);
 }
 
+float3 evaluateGlassBsdf(
+    float3 transmissionTint,
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo,
+    float3 wi)
+{
+    float normalDotOut = dot(normal, wo);
+    float normalDotIn = dot(normal, wi);
+    if (normalDotOut <= 0.0 || abs(normalDotIn) <= 1.0e-8)
+        return float3(0.0);
+
+    float alpha = max(perceptualRoughness * perceptualRoughness, 1.0e-4);
+    if (normalDotIn > 0.0)
+    {
+        float3 halfVectorSum = wo + wi;
+        float halfLengthSquared = dot(halfVectorSum, halfVectorSum);
+        if (halfLengthSquared <= 1.0e-12)
+            return float3(0.0);
+        float3 halfVector = halfVectorSum * rsqrt(halfLengthSquared);
+        float outDotHalf = dot(wo, halfVector);
+        if (outDotHalf <= 0.0)
+            return float3(0.0);
+        float fresnel = fresnelDielectric(outDotHalf, etaI, etaT);
+        float distribution = ggxDistribution(saturate(dot(normal, halfVector)), alpha);
+        float masking = ggxSmithG1(normalDotOut, alpha)
+            * ggxSmithG1(normalDotIn, alpha);
+        return float3(fresnel * distribution * masking
+            / max(4.0 * normalDotOut * normalDotIn, 1.0e-8));
+    }
+
+    // Walter's rough dielectric transmission half-vector. eta is etaT/etaI;
+    // the final 1/eta^2 converts importance transport to radiance transport.
+    float eta = etaT / etaI;
+    float3 halfVectorSum = wo + eta * wi;
+    float halfLengthSquared = dot(halfVectorSum, halfVectorSum);
+    if (halfLengthSquared <= 1.0e-12)
+        return float3(0.0);
+    float3 halfVector = halfVectorSum * rsqrt(halfLengthSquared);
+    if (dot(normal, halfVector) < 0.0)
+        halfVector = -halfVector;
+    float outDotHalf = dot(wo, halfVector);
+    float inDotHalf = dot(wi, halfVector);
+    if (outDotHalf <= 0.0 || inDotHalf >= 0.0)
+        return float3(0.0);
+    float fresnel = fresnelDielectric(outDotHalf, etaI, etaT);
+    float distribution = ggxDistribution(saturate(dot(normal, halfVector)), alpha);
+    float masking = ggxSmithG1(normalDotOut, alpha)
+        * ggxSmithG1(-normalDotIn, alpha);
+    float denominator = inDotHalf + outDotHalf / eta;
+    float scale = (1.0 - fresnel) * distribution * masking
+        * abs(inDotHalf * outDotHalf)
+        / max(
+            abs(normalDotIn) * normalDotOut * denominator * denominator,
+            1.0e-8);
+    scale /= eta * eta;
+    return transmissionTint * scale;
+}
+
 float3 evaluateBsdf(
     uint materialClass,
     float3 baseColor,
     float perceptualRoughness,
     float dielectricF0,
+    float etaI,
+    float etaT,
     float3 normal,
     float3 wo,
     float3 wi)
@@ -148,6 +231,15 @@ float3 evaluateBsdf(
         return evaluateMetalBrdf(
             baseColor,
             perceptualRoughness,
+            normal,
+            wo,
+            wi);
+    if (materialClass == MaterialClassGlass)
+        return evaluateGlassBsdf(
+            baseColor,
+            perceptualRoughness,
+            etaI,
+            etaT,
             normal,
             wo,
             wi);
@@ -222,6 +314,8 @@ float3 sampleBsdf(
     float3 baseColor,
     float perceptualRoughness,
     float dielectricF0,
+    float etaI,
+    float etaT,
     float3 normal,
     float3 wo,
     float lobeSample,
@@ -236,6 +330,19 @@ float3 sampleBsdf(
             alpha,
             directionSample);
         return reflect(-wo, halfVector);
+    }
+
+    if (materialClass == MaterialClassGlass)
+    {
+        float3 halfVector = sampleGgxVisibleNormal(
+            normal,
+            wo,
+            alpha,
+            directionSample);
+        float fresnel = fresnelDielectric(dot(wo, halfVector), etaI, etaT);
+        if (lobeSample < fresnel)
+            return reflect(-wo, halfVector);
+        return refract(-wo, halfVector, etaI / etaT);
     }
 
     float2 probabilities = brdfLobeProbabilities(baseColor, dielectricF0);
@@ -290,11 +397,59 @@ float dielectricBrdfPdf(
     return probabilities.x * diffusePdf + probabilities.y * specularPdf;
 }
 
+float glassBsdfPdf(
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo,
+    float3 wi)
+{
+    float normalDotOut = dot(normal, wo);
+    float normalDotIn = dot(normal, wi);
+    if (normalDotOut <= 0.0 || abs(normalDotIn) <= 1.0e-8)
+        return 0.0;
+
+    float eta = etaT / etaI;
+    float3 halfVectorSum = normalDotIn > 0.0
+        ? wo + wi
+        : wo + eta * wi;
+    float halfLengthSquared = dot(halfVectorSum, halfVectorSum);
+    if (halfLengthSquared <= 1.0e-12)
+        return 0.0;
+    float3 halfVector = halfVectorSum * rsqrt(halfLengthSquared);
+    if (dot(normal, halfVector) < 0.0)
+        halfVector = -halfVector;
+    float outDotHalf = dot(wo, halfVector);
+    float inDotHalf = dot(wi, halfVector);
+    if (outDotHalf <= 0.0)
+        return 0.0;
+
+    float alpha = max(perceptualRoughness * perceptualRoughness, 1.0e-4);
+    float visibleNormalPdf = ggxDistribution(
+        saturate(dot(normal, halfVector)), alpha)
+        * ggxSmithG1(normalDotOut, alpha)
+        * abs(outDotHalf)
+        / max(normalDotOut, 1.0e-8);
+    float fresnel = fresnelDielectric(outDotHalf, etaI, etaT);
+    if (normalDotIn > 0.0)
+        return fresnel * visibleNormalPdf
+            / max(4.0 * abs(outDotHalf), 1.0e-8);
+    if (inDotHalf >= 0.0)
+        return 0.0;
+    float denominator = inDotHalf + outDotHalf / eta;
+    float halfVectorJacobian = abs(inDotHalf)
+        / max(denominator * denominator, 1.0e-8);
+    return (1.0 - fresnel) * visibleNormalPdf * halfVectorJacobian;
+}
+
 float bsdfPdf(
     uint materialClass,
     float3 baseColor,
     float perceptualRoughness,
     float dielectricF0,
+    float etaI,
+    float etaT,
     float3 normal,
     float3 wo,
     float3 wi)
@@ -306,6 +461,14 @@ float bsdfPdf(
         float alpha = max(perceptualRoughness * perceptualRoughness, 1.0e-4);
         return ggxReflectionPdf(normal, wo, wi, alpha);
     }
+    if (materialClass == MaterialClassGlass)
+        return glassBsdfPdf(
+            perceptualRoughness,
+            etaI,
+            etaT,
+            normal,
+            wo,
+            wi);
     return dielectricBrdfPdf(
         baseColor,
         perceptualRoughness,

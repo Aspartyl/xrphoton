@@ -465,11 +465,11 @@ ogfx::DecodeResult decodeStaticMesh(
         } else {
             const std::uint32_t classWord = reader.readU32();
             if (classWord
-                > static_cast<std::uint32_t>(ogfx::MaterialClass::Metal)) {
+                > static_cast<std::uint32_t>(ogfx::MaterialClass::Glass)) {
                 return failure(
                     diagnosticName,
                     "material class",
-                    "Dielectric (0) or Metal (1)",
+                    "Dielectric (0), Metal (1), or Glass (2)",
                     std::to_string(classWord));
             }
             materialClass = static_cast<ogfx::MaterialClass>(classWord);
@@ -482,14 +482,15 @@ ogfx::DecodeResult decodeStaticMesh(
                         "four finite f32 values",
                         "a non-finite value");
                 }
-                if (materialClass == ogfx::MaterialClass::Metal
+                if ((materialClass == ogfx::MaterialClass::Metal
+                        || materialClass == ogfx::MaterialClass::Glass)
                     && component < 3
                     && (baseColorFactor[component] < 0.0f
                         || baseColorFactor[component] > 1.0f)) {
                     return failure(
                         diagnosticName,
                         "material base color",
-                        "Metal RGB in [0, 1]",
+                        "Metal or Glass RGB in [0, 1]",
                         std::to_string(baseColorFactor[component]));
                 }
             }
@@ -530,6 +531,13 @@ ogfx::DecodeResult decodeStaticMesh(
                 "material texture-reference byte count",
                 "nonzero for an alpha-tested material",
                 "0");
+        }
+        if (alphaTested && materialClass == ogfx::MaterialClass::Glass) {
+            return failure(
+                diagnosticName,
+                "material flags/class",
+                "Glass without alpha-tested bit 0",
+                "alpha-tested Glass");
         }
         if (texturedMaterial && (flags & StreamFlagHasUvs) == 0) {
             return failure(

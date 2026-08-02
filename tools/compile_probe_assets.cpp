@@ -152,6 +152,64 @@ xrphoton::ogfx::Model buildTestYardBox()
     return model;
 }
 
+xrphoton::ogfx::Model buildTestGlassPanels()
+{
+    using namespace xrphoton::ogfx;
+
+    struct PanelStyle
+    {
+        float centerX;
+        std::array<float, 4> tint;
+        float roughness;
+    };
+    constexpr std::array styles{
+        PanelStyle{-3.15f, {0.96f, 0.99f, 1.00f, 1.0f}, 0.02f},
+        PanelStyle{-1.05f, {0.55f, 0.82f, 1.00f, 1.0f}, 0.10f},
+        PanelStyle{ 1.05f, {1.00f, 0.68f, 0.32f, 1.0f}, 0.22f},
+        PanelStyle{ 3.15f, {0.55f, 0.58f, 0.62f, 1.0f}, 0.55f},
+    };
+
+    Model showcase;
+    for (const PanelStyle& style : styles) {
+        // Each panel is a closed 8 cm slab with its lower face exactly at y=0.
+        // Separate meshes/materials let one gallery placement demonstrate clear,
+        // colored, and frosted rough-glass behavior side by side.
+        Model panel = buildAxisAlignedBox(
+            {style.centerX - 0.85f, 0.0f, -0.04f},
+            {style.centerX + 0.85f, 2.6f,  0.04f},
+            style.tint);
+        panel.materials[0].perceptualRoughness = style.roughness;
+        panel.materials[0].materialClass = MaterialClass::Glass;
+
+        const std::uint32_t firstVertex =
+            static_cast<std::uint32_t>(showcase.positions.size());
+        const std::uint32_t firstIndex =
+            static_cast<std::uint32_t>(showcase.indices.size());
+        const std::uint32_t firstGeometry =
+            static_cast<std::uint32_t>(showcase.geometries.size());
+        const std::uint32_t firstMaterial =
+            static_cast<std::uint32_t>(showcase.materials.size());
+        panel.geometries[0].firstVertex += firstVertex;
+        panel.geometries[0].firstIndex += firstIndex;
+        panel.geometries[0].materialIndex += firstMaterial;
+        panel.meshes[0].firstGeometry += firstGeometry;
+
+        showcase.positions.insert(
+            showcase.positions.end(), panel.positions.begin(), panel.positions.end());
+        showcase.attributes.insert(
+            showcase.attributes.end(), panel.attributes.begin(), panel.attributes.end());
+        showcase.indices.insert(
+            showcase.indices.end(), panel.indices.begin(), panel.indices.end());
+        showcase.geometries.insert(
+            showcase.geometries.end(), panel.geometries.begin(), panel.geometries.end());
+        showcase.meshes.insert(
+            showcase.meshes.end(), panel.meshes.begin(), panel.meshes.end());
+        showcase.materials.insert(
+            showcase.materials.end(), panel.materials.begin(), panel.materials.end());
+    }
+    return showcase;
+}
+
 xrphoton::ogfx::Model buildTestQuad()
 {
     using namespace xrphoton::ogfx;
@@ -318,20 +376,22 @@ bool publishOutput(
 
 int main(int argumentCount, char** arguments)
 {
-    if (argumentCount != 6) {
+    if (argumentCount != 7) {
         std::cerr
             << "Usage: xrPhotonProbeAssetCompiler <test-quad.ogfx> "
                "<test-wedge.ogfx> <test-yard-ground.ogfx> "
-               "<test-yard-wall.ogfx> <test-yard-box.ogfx>\n";
+               "<test-yard-wall.ogfx> <test-yard-box.ogfx> "
+               "<test-glass-panel.ogfx>\n";
         return 1;
     }
 
-    const std::array<std::filesystem::path, 5> outputPaths{
+    const std::array<std::filesystem::path, 6> outputPaths{
         arguments[1],
         arguments[2],
         arguments[3],
         arguments[4],
         arguments[5],
+        arguments[6],
     };
     for (std::size_t left = 0; left < outputPaths.size(); ++left) {
         for (std::size_t right = left + 1; right < outputPaths.size(); ++right) {
@@ -342,14 +402,15 @@ int main(int argumentCount, char** arguments)
         }
     }
 
-    const std::array<xrphoton::ogfx::Model, 5> models{
+    const std::array<xrphoton::ogfx::Model, 6> models{
         buildTestQuad(),
         buildTestWedge(),
         buildTestYardGround(),
         buildTestYardWall(),
         buildTestYardBox(),
+        buildTestGlassPanels(),
     };
-    std::array<xrphoton::ogfx::SerializeResult, 5> serialized;
+    std::array<xrphoton::ogfx::SerializeResult, 6> serialized;
     for (std::size_t index = 0; index < models.size(); ++index) {
         serialized[index] = xrphoton::ogfx::serializeModel(
             models[index],

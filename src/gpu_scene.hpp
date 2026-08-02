@@ -26,13 +26,18 @@ struct GeometryRecord
     VkDeviceAddress positionAddress = 0;
     VkDeviceAddress attributeAddress = 0;
     uint32_t materialIndex = 0;
-    uint32_t pad0 = 0;
+    // Bit 0 is the shader-side alpha-test predicate. Glass uses the same any-hit
+    // group but deliberately leaves this bit clear, so its radiance candidate is
+    // accepted without sampling an alpha channel.
+    uint32_t flags = 0;
 };
+constexpr uint32_t GeometryRecordAlphaTestedBit = 1u << 0u;
 static_assert(sizeof(GeometryRecord) == 32);
 static_assert(offsetof(GeometryRecord, indexAddress) == 0
     && offsetof(GeometryRecord, positionAddress) == 8
     && offsetof(GeometryRecord, attributeAddress) == 16
-    && offsetof(GeometryRecord, materialIndex) == 24);
+    && offsetof(GeometryRecord, materialIndex) == 24
+    && offsetof(GeometryRecord, flags) == 28);
 
 struct MaterialRecord
 {

@@ -664,6 +664,9 @@ VkResult createGpuScene(
                 .attributeAddress = gpu->attributeBufferAddress
                     + static_cast<VkDeviceSize>(geometry.firstVertex) * sizeof(VertexAttributes),
                 .materialIndex = geometry.materialIndex,
+                .flags = geometry.alphaTested
+                    ? GeometryRecordAlphaTestedBit
+                    : 0u,
             });
         }
 

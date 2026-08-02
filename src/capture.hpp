@@ -30,6 +30,7 @@ struct CommandLineOptions
     std::uint32_t referenceSampleCount = 0;
     ScenePreset scenePreset = ScenePreset::Yard;
     EstimatorMode estimator = EstimatorMode::Mis;
+    bool validationRequested = false;
 };
 
 struct CaptureTraceTimingSummary
@@ -56,8 +57,9 @@ struct ReferenceRegionSummary
 };
 
 // Accept interactive/capture with an optional scene selector, or reference mode:
-//   [--capture <positive-frame-count> <output.ppm>] [--scene <yard|night>]
-//   --reference <positive-sample-count> --scene <yard|night>
+//   [--validation] [--capture <positive-frame-count> <output.ppm>]
+//       [--scene <yard|night>]
+//   [--validation] --reference <positive-sample-count> --scene <yard|night>
 //       --estimator <mis|nee|bsdf>
 // Parsing is deliberately independent of GLFW/Vulkan so malformed capture requests
 // fail before any window or GPU state is created.
@@ -69,7 +71,12 @@ struct ReferenceRegionSummary
 
 [[nodiscard]] constexpr const char* scenePresetName(ScenePreset preset)
 {
-    return preset == ScenePreset::Night ? "night" : "yard";
+    switch (preset) {
+    case ScenePreset::Night:
+        return "night";
+    default:
+        return "yard";
+    }
 }
 
 [[nodiscard]] constexpr const char* estimatorModeName(EstimatorMode estimator)

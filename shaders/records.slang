@@ -14,7 +14,7 @@ struct GeometryRecord
     uint64_t positionAddress;
     uint64_t attributeAddress;
     uint materialIndex;
-    uint pad0;
+    uint flags;
 };
 
 struct MaterialRecord
@@ -113,6 +113,7 @@ struct SurfaceHit
 struct ShadowPayload
 {
     float visibility;
+    float3 attenuation;
 };
 
 struct HitMaterialCoordinates

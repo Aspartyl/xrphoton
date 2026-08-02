@@ -55,6 +55,14 @@ struct SceneMaterial
     std::string baseColorTexture;
 };
 
+[[nodiscard]] constexpr bool geometryRequiresAnyHit(
+    const SceneGeometry& geometry,
+    const SceneMaterial& material)
+{
+    return geometry.alphaTested
+        || material.materialClass == SceneMaterialClass::Glass;
+}
+
 struct SceneMesh
 {
     uint32_t firstGeometry = 0;
@@ -128,5 +136,15 @@ struct SceneData
     std::vector<SceneMaterial> materials;
     std::vector<SceneImage> images;
 };
+
+[[nodiscard]] inline bool sceneHasGlass(const SceneData& scene)
+{
+    for (const SceneMaterial& material : scene.materials) {
+        if (material.materialClass == SceneMaterialClass::Glass) {
+            return true;
+        }
+    }
+    return false;
+}
 
 }

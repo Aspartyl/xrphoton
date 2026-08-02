@@ -23,19 +23,31 @@ float3 skyRadiance(FrameLighting frameLighting, float3 direction)
         saturate(direction.y));
 }
 
-float skyPdf(float3 surfaceNormal, float3 direction)
+float skyPdf(float3 surfaceNormal, float3 direction, bool twoSided)
 {
-    return max(dot(surfaceNormal, direction), 0.0) * InversePi;
+    float cosine = dot(surfaceNormal, direction);
+    return twoSided
+        ? 0.5 * abs(cosine) * InversePi
+        : max(cosine, 0.0) * InversePi;
 }
 
 SkySample sampleSky(
     FrameLighting frameLighting,
     float3 surfaceNormal,
+    bool twoSided,
     float2 sample)
 {
     SkySample result;
-    result.direction = cosineSampleHemisphere(surfaceNormal, sample);
+    float3 hemisphereNormal = surfaceNormal;
+    float2 hemisphereSample = sample;
+    if (twoSided)
+    {
+        bool opposite = sample.x >= 0.5;
+        hemisphereNormal = opposite ? -surfaceNormal : surfaceNormal;
+        hemisphereSample.x = frac(sample.x * 2.0);
+    }
+    result.direction = cosineSampleHemisphere(hemisphereNormal, hemisphereSample);
     result.radiance = skyRadiance(frameLighting, result.direction);
-    result.pdf = skyPdf(surfaceNormal, result.direction);
+    result.pdf = skyPdf(surfaceNormal, result.direction, twoSided);
     return result;
 }

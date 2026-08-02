@@ -32,7 +32,7 @@ probes.
 Each frame traces a ray per pixel through one BLAS per mesh and a real
 multi-instance TLAS, from a perspective camera fed to the shader through push
 constants. Raygen follows paths of up to eight surface vertices, evaluating an
-energy-aware Lambert diffuse plus isotropic GGX dielectric or conductor BRDF under a
+energy-aware Lambert diffuse plus isotropic GGX dielectric, conductor, or rough-glass BSDF under a
 directional sun, tracing hard visibility rays for shadows, and sampling
 matching lobes for indirect transport. GGX uses visible-normal sampling and
 Russian roulette starts after the third vertex, so bounces gather the
@@ -43,10 +43,12 @@ and blitted to the swapchain, with two frames in flight and proper resize
 handling. A PCG hash seeded by pixel and frame index keeps the one-sample noise
 repeatable in capture mode.
 
-Opaque and alpha-tested geometry get separate hit records for both radiance and
-shadow rays, only opaque BLAS ranges are marked opaque, and the alpha-tested
+Opaque and any-hit-capable geometry get separate hit records for both radiance and
+shadow rays. Alpha-tested and Glass BLAS ranges remain non-opaque; the alpha-tested
 any-hit variants compare sampled texture alpha against the material cutoff, so
-shadow and bounce rays pass through the same cutouts as visible rays. Shaders
+shadow and bounce rays pass through the same cutouts as visible rays. Glass any-hit
+accumulates tinted `(1 - Fresnel)` attenuation for direct-light visibility, while
+radiance paths use matched rough GGX reflection/refraction sampling and PDFs. Shaders
 are written in [Slang](https://shader-slang.org/) and compiled into the binary
 at build time, so shader deployment needs no runtime files.
 
@@ -69,22 +71,23 @@ shared TLAS in place before every trace while all BLAS geometry stays static.
 Plain, GPU-assisted and synchronization validation are clean over live motion,
 resize and teardown.
 
-Deformable skinning and BLAS refits, transmissive materials, a time-varying
+Deformable skinning and BLAS refits, a time-varying
 sun/sky, and temporal accumulation and denoising follow later.
 [ARCHITECTURE.md](ARCHITECTURE.md) has the module map and the roadmap.
 
 ## Building
 
-Development build with Vulkan validation requested:
+The project exposes one canonical optimized engine build with debug symbols:
 
 ```sh
-cmake --preset debug
-cmake --build --preset debug
-./build/debug/xrPhoton
+cmake --preset default
+cmake --build --preset default
+./build/xrPhoton
 ```
 
-Use the `release` preset instead for an optimized build with debug information
-and validation disabled.
+Vulkan validation is available from that same executable when diagnosing renderer
+work: `./build/xrPhoton --validation`. It is best-effort when the Khronos layer is
+not installed.
 
 Requirements:
 
@@ -115,8 +118,9 @@ To check the image without watching the window, render a number of frames and
 write the final tonemapped result as an sRGB PPM:
 
 ```sh
-./build/debug/xrPhoton --capture 8 capture.ppm
-./build/debug/xrPhoton --capture 8 night.ppm --scene night
+./build/xrPhoton --capture 8 capture.ppm
+./build/xrPhoton --capture 8 night.ppm --scene night
+./build/xrPhoton --validation --capture 8 checked.ppm
 ```
 
 Capture mode fixes the camera and extent, advances physics by exactly 1/60
@@ -131,8 +135,8 @@ reads every untouched HDR sample back to the CPU, and exposes MIS, NEE-only, and
 BSDF-only controls for estimator checks:
 
 ```sh
-./build/release/xrPhoton --reference 256 --scene night --estimator mis
-cmake --build --preset release --target xrPhotonReferenceProof
+./build/xrPhoton --reference 256 --scene night --estimator mis
+cmake --build --preset default --target xrPhotonReferenceProof
 ```
 
 The proof target runs all three estimators and requires their means to agree in each
@@ -186,7 +190,7 @@ The generated probes need no local files. Converted legacy and Blender models
 are added to the yard by configuring their paths once, then building normally:
 
 ```sh
-cmake --preset debug \
+cmake --preset default \
   -DXRPHOTON_GALLERY_PLITKA_OGFX=".../plitka1.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_OGFX=".../test_pyramid.ogfx" \
   -DXRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=".../test_sphere.ogfx" \
@@ -198,15 +202,15 @@ cmake --preset debug \
   -DXRPHOTON_GALLERY_CUSTOM_BARREL_OGFX=".../custom_stalker_barrel.ogfx" \
   -DXRPHOTON_GALLERY_PSEVDODOG_TAIL_OGFX=".../item_psevdodog_tail.ogfx" \
   -DXRPHOTON_GALLERY_TEXTURE_ROOT="$PWD/original_game_files/soc/textures"
-cmake --build --preset debug
+cmake --build --preset default
 ```
 
 An empty variable skips that entry, and a configured one that fails to load is
 a loud startup error rather than a silent fallback. The texture root must keep
 its exact-case relative paths, and the yard checks owner-local
 `blender/textures` before the legacy root so an authored texture deterministically
-shadows a same-named legacy one. CMake remembers these per build tree, so
-configure `release` the same way when needed. Original game files, Blender
+shadows a same-named legacy one. CMake remembers these values in the one canonical
+build tree. Original game files, Blender
 sources and generated proof outputs all stay Git-ignored.
 
 ## Docs

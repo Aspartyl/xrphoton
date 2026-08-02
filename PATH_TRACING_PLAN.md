@@ -101,7 +101,8 @@ interfaces (manifold NEE or an equivalent specular-connection method).
 **Status: complete (2026-07-28).** The monolithic control and imported-module build
 produced the same 1920×1080 frame-7 capture hash (`0x9725f7b1e5652acb`) and
 byte-identical PPMs. The first fixed-protocol yard baseline, measured on an NVIDIA
-GeForce RTX 5070 Ti with driver 595.71.05 in the validation-enabled debug build and
+GeForce RTX 5070 Ti with driver 595.71.05 in the then-current validation-enabled
+Debug configuration (retired when the canonical build was introduced) and
 MangoHud disabled, is **0.412 ms median trace time** after 32 warm-up frames over the
 next 256 frames. This number is machine/driver/extent specific; later phase comparisons
 must use the same conditions. Capture waits for each timestamp pair before advancing,
@@ -447,8 +448,14 @@ the audited `models\mirror` / `models\window` / `models\glass` families a real t
 
 **P3a status: complete (2026-07-30).** OGFx v4, runtime/GPU class propagation,
 reflection-only colored-Fresnel Metal transport, XRBM v3, and the sharp/rough
-Blender Metal sphere proof have landed. `Glass` is accepted only by the offline
-schema decoder and remains a deliberate runtime error until P3b lands atomically.
+Blender Metal sphere proof have landed.
+
+**P3b status: complete (2026-08-01).** Runtime Glass decoding/assembly, fixed-IOR
+rough reflection and transmission, two-sided direct sampling, unified any-hit
+routing, straight-line tinted shadow attenuation, Blender/XRBM conversion, and the
+generated panel proof shared by day and night have landed. Glass transport is always
+compiled into the one regular pipeline, while the frame flag preserves the published
+feature state.
 
 ### 7.1 Decisions
 
@@ -534,9 +541,9 @@ unsupported `alphaTested && Glass` combination.
   known-angle tests pin the approximate shadow attenuation separately; traversal-class
   tests prove every Glass geometry clears the BLAS opaque flag and selects the unified
   any-hit SBT record while ordinary opaque geometry retains the fast path.
-- Runtime: metal sphere pair shows correct tinted specular with no diffuse floor; a
-  glass panel between the sun and a floor produces a tinted lit patch rather than a
-  black shadow; the furnace test (§9.2) passes for all three classes.
+- Runtime: metal sphere pair shows correct tinted specular with no diffuse floor; the
+  upright clear/colored/rough Glass panel assortment produces transmitted rather than
+  black shadows; the furnace test (§9.2) passes for all three classes.
 - Perf: after 32 warm-up frames, the median trace time over the next 256 fixed capture
   frames is measured before/after P3b on the same machine, driver, extent, and glass
   acceptance scene and recorded in `ARCHITECTURE.md`. More than 25% over P3a blocks the
@@ -656,8 +663,8 @@ and step 5's budget have a baseline that predates the work they measure.
 
 ### 9.5 Standing validation for every phase
 
-- `ctest --preset ogfx-core` for the graphics-free suites and `ctest --test-dir
-  build/debug` for the full set; every new suite is registered in both the list and
+- `ctest --preset ogfx-core` for the graphics-free suites and `ctest --preset
+  default` for the full set; every new suite is registered in both the list and
   `ARCHITECTURE.md`.
 - Plain, GPU-assisted, and synchronization validation clean over live motion, resize,
   camera-mode switching, and teardown — run with `DISABLE_MANGOHUD=1`.
@@ -681,8 +688,8 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
 6. **P2c — complete.** Emitter NEE + emitter MIS + the night yard preset + linear-HDR reference
    capture and estimator controls.
 7. **P3a — complete.** `OGFX_MATERIALS` v4 class word + metal class + sharp/rough
-   Blender sphere acceptance. Glass is schema-reserved but runtime-rejected until P3b.
-8. **P3b** glass class + two-sided direct sampling + unified any-hit routing + explicit
+   Blender sphere acceptance.
+8. **P3b — complete.** glass class + two-sided direct sampling + unified any-hit routing + explicit
    intervening-glass shadow approximation + perf measurement.
 9. **P4** Preetham sky, time of day, sun disc, cone sampling.
 10. **P5** frame-global pixel jitter, furnace preset/proof, scene selector, final

@@ -43,6 +43,7 @@ enum GalleryAssetIndex : uint32_t
     YardGroundAsset = 0,
     YardWallAsset,
     YardBoxAsset,
+    GlassPanelAsset,
     QuadAsset,
     WedgeAsset,
     PlitkaAsset,
@@ -92,6 +93,12 @@ constexpr std::array GalleryAssets{
         .ogfxPath = XRPHOTON_TEST_YARD_BOX_ASSET_PATH,
         .optional = false,
         .configurationName = "XRPHOTON_TEST_YARD_BOX_ASSET_PATH",
+    },
+    GalleryAsset{
+        .name = "test_glass_panel",
+        .ogfxPath = XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH,
+        .optional = false,
+        .configurationName = "XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH",
     },
     GalleryAsset{
         .name = "test_quad",
@@ -258,6 +265,15 @@ const std::array GalleryPlacements{
                 glm::radians(12.0f),
                 glm::vec3{1.0f, 0.0f, 0.0f}),
         .dynamic = true,
+    },
+    GalleryPlacement{
+        .assetIndex = GlassPanelAsset,
+        // Four closed vertical slabs form a ground-mounted material display in the
+        // open south-west strip. Their combined bounds stay clear of the large sphere,
+        // optional west-side props, player spawn, and every night-only emitter.
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{-2.5f, 0.0f, -3.8f}),
     },
     // Keep the low-level probes along the north-west edge, outside the yard's
     // central movement area but visible from the deliberate spawn.

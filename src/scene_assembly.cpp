@@ -454,13 +454,15 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
                 }
             }
             if (material.materialClass != SceneMaterialClass::Dielectric
-                && material.materialClass != SceneMaterialClass::Metal) {
+                && material.materialClass != SceneMaterialClass::Metal
+                && material.materialClass != SceneMaterialClass::Glass) {
                 return reject(
                     error,
                     "scene assembly: incoming material[" + std::to_string(index)
-                        + "].materialClass must be Dielectric or Metal in P3a");
+                        + "].materialClass must be Dielectric, Metal, or Glass");
             }
-            if (material.materialClass == SceneMaterialClass::Metal) {
+            if (material.materialClass == SceneMaterialClass::Metal
+                || material.materialClass == SceneMaterialClass::Glass) {
                 for (std::size_t component = 0; component < 3; ++component) {
                     if (!std::isfinite(material.baseColorFactor[component])
                         || material.baseColorFactor[component] < 0.0f
@@ -470,7 +472,7 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
                             "scene assembly: incoming material["
                                 + std::to_string(index) + "].baseColorFactor["
                                 + std::to_string(component)
-                                + "] must be finite and in [0, 1] for Metal");
+                                + "] must be finite and in [0, 1] for Metal or Glass");
                     }
                 }
             }
@@ -489,6 +491,15 @@ bool appendSceneModel(SceneData* scene, SceneData&& model, std::string* error)
 
         for (std::size_t index = 0; index < model.geometries.size(); ++index) {
             const SceneGeometry& geometry = model.geometries[index];
+            if (geometry.materialIndex < model.materials.size()
+                && geometry.alphaTested
+                && model.materials[geometry.materialIndex].materialClass
+                    == SceneMaterialClass::Glass) {
+                return reject(
+                    error,
+                    "scene assembly: incoming geometry[" + std::to_string(index)
+                        + "] cannot combine alpha-tested and Glass");
+            }
             if (!checkRebasedValue(
                     geometry.firstVertex,
                     destinationCounts.vertices,
@@ -640,13 +651,15 @@ bool validateAssembledScene(const SceneData& scene, std::string* error)
                 }
             }
             if (material.materialClass != SceneMaterialClass::Dielectric
-                && material.materialClass != SceneMaterialClass::Metal) {
+                && material.materialClass != SceneMaterialClass::Metal
+                && material.materialClass != SceneMaterialClass::Glass) {
                 return reject(
                     error,
                     "scene assembly: material[" + std::to_string(index)
-                        + "].materialClass must be Dielectric or Metal in P3a");
+                        + "].materialClass must be Dielectric, Metal, or Glass");
             }
-            if (material.materialClass == SceneMaterialClass::Metal) {
+            if (material.materialClass == SceneMaterialClass::Metal
+                || material.materialClass == SceneMaterialClass::Glass) {
                 for (std::size_t component = 0; component < 3; ++component) {
                     if (!std::isfinite(material.baseColorFactor[component])
                         || material.baseColorFactor[component] < 0.0f
@@ -655,13 +668,26 @@ bool validateAssembledScene(const SceneData& scene, std::string* error)
                             error,
                             "scene assembly: material[" + std::to_string(index)
                                 + "].baseColorFactor[" + std::to_string(component)
-                                + "] must be finite and in [0, 1] for Metal");
+                                + "] must be finite and in [0, 1] for Metal or Glass");
                     }
                 }
             }
         }
         if (!validatePhysicsRecipes(scene, error)) {
             return false;
+        }
+
+        for (std::size_t index = 0; index < scene.geometries.size(); ++index) {
+            const SceneGeometry& geometry = scene.geometries[index];
+            if (geometry.materialIndex < scene.materials.size()
+                && geometry.alphaTested
+                && scene.materials[geometry.materialIndex].materialClass
+                    == SceneMaterialClass::Glass) {
+                return reject(
+                    error,
+                    "scene assembly: geometry[" + std::to_string(index)
+                        + "] cannot combine alpha-tested and Glass");
+            }
         }
 
         for (std::size_t index = 0; index < scene.meshes.size(); ++index) {

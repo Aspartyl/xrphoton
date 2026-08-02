@@ -493,9 +493,13 @@ VkResult buildAccelerationStructures(
                 blasGeometry.sType =
                     VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
                 blasGeometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-                // Opaque ranges bypass any-hit in hardware. Alpha-tested ranges must
-                // leave the flag clear so their selected any-hit group can reject texels.
-                blasGeometry.flags = geometry.alphaTested
+                // Opaque ranges bypass any-hit in hardware. Alpha-tested ranges and
+                // Glass both need the shared any-hit groups: cutouts may reject a
+                // texel, while Glass shadow hits accumulate attenuation and continue.
+                const bool requiresAnyHit = geometryRequiresAnyHit(
+                    geometry,
+                    scene.materials[geometry.materialIndex]);
+                blasGeometry.flags = requiresAnyHit
                     ? 0
                     : VK_GEOMETRY_OPAQUE_BIT_KHR;
                 blasGeometry.geometry.triangles.sType =

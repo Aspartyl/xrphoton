@@ -492,16 +492,22 @@ glm::vec3 evaluateSkyRadiance(
         std::clamp(direction.y, 0.0f, 1.0f));
 }
 
-float skyPdf(const glm::vec3& surfaceNormal, const glm::vec3& direction)
+float skyPdf(
+    const glm::vec3& surfaceNormal,
+    const glm::vec3& direction,
+    bool twoSided)
 {
-    return std::max(glm::dot(surfaceNormal, direction), 0.0f) * InversePi;
+    const float cosine = glm::dot(surfaceNormal, direction);
+    return (twoSided ? 0.5f * std::abs(cosine) : std::max(cosine, 0.0f))
+        * InversePi;
 }
 
 bool sampleSky(
     const FrameLighting& lighting,
     const glm::vec3& surfaceNormal,
     const glm::vec2& sample,
-    SkySample* output)
+    SkySample* output,
+    bool twoSided)
 {
     if (output == nullptr || lighting.pSky <= 0.0f
         || sample.x < 0.0f || sample.x >= 1.0f
@@ -514,7 +520,12 @@ bool sampleSky(
     if (!isUnitFinite(surfaceNormal)) {
         return false;
     }
-    const glm::vec3 normal = surfaceNormal;
+    const bool opposite = twoSided && sample.x >= 0.5f;
+    const glm::vec3 normal = opposite ? -surfaceNormal : surfaceNormal;
+    const glm::vec2 hemisphereSample{
+        twoSided ? std::fmod(sample.x * 2.0f, 1.0f) : sample.x,
+        sample.y,
+    };
 
     const float sign = normal.z >= 0.0f ? 1.0f : -1.0f;
     const float a = -1.0f / (sign + normal.z);
@@ -530,12 +541,12 @@ bool sampleSky(
         -normal.y,
     };
 
-    const float radius = std::sqrt(sample.x);
-    const float angle = TwoPi * sample.y;
+    const float radius = std::sqrt(hemisphereSample.x);
+    const float angle = TwoPi * hemisphereSample.y;
     const glm::vec3 local{
         radius * std::cos(angle),
         radius * std::sin(angle),
-        std::sqrt(std::max(0.0f, 1.0f - sample.x)),
+        std::sqrt(std::max(0.0f, 1.0f - hemisphereSample.x)),
     };
     const glm::vec3 direction = glm::normalize(
         tangent * local.x + bitangent * local.y + normal * local.z);
@@ -543,9 +554,42 @@ bool sampleSky(
     *output = {
         .direction = direction,
         .radiance = evaluateSkyRadiance(lighting, direction),
-        .pdf = skyPdf(normal, direction),
+        .pdf = skyPdf(surfaceNormal, direction, twoSided),
     };
     return output->pdf > 0.0f;
+}
+
+float dielectricFresnel(float cosineI, float etaI, float etaT)
+{
+    if (!std::isfinite(cosineI) || !std::isfinite(etaI)
+        || !std::isfinite(etaT) || etaI <= 0.0f || etaT <= 0.0f) {
+        return 1.0f;
+    }
+    cosineI = std::clamp(std::abs(cosineI), 0.0f, 1.0f);
+    const float eta = etaI / etaT;
+    const float sineSquaredT = eta * eta
+        * std::max(0.0f, 1.0f - cosineI * cosineI);
+    if (sineSquaredT >= 1.0f) {
+        return 1.0f;
+    }
+    const float cosineT = std::sqrt(std::max(0.0f, 1.0f - sineSquaredT));
+    const float parallel = (etaT * cosineI - etaI * cosineT)
+        / std::max(etaT * cosineI + etaI * cosineT, 1.0e-8f);
+    const float perpendicular = (etaI * cosineI - etaT * cosineT)
+        / std::max(etaI * cosineI + etaT * cosineT, 1.0e-8f);
+    return 0.5f * (parallel * parallel + perpendicular * perpendicular);
+}
+
+glm::vec3 glassShadowAttenuation(
+    const glm::vec3& tint,
+    float cosineI,
+    bool entering)
+{
+    const float etaI = entering ? 1.0f : GlassIor;
+    const float etaT = entering ? GlassIor : 1.0f;
+    const float transmission = 1.0f
+        - dielectricFresnel(cosineI, etaI, etaT);
+    return glm::clamp(tint, glm::vec3{}, glm::vec3{1.0f}) * transmission;
 }
 
 float emitterSolidAnglePdf(

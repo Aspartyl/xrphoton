@@ -493,9 +493,10 @@ versions 1 and 2 decode emission as zero. Version 3 adds emission RGB and requir
 offset-44 reserved word to be zero. Version 4 gives that word an explicit class.
 Older versions decode as `Dielectric`. `Metal` has no diffuse lobe and interprets
 `baseColorFactor.rgb × sampledBaseColor.rgb` as spectral normal-incidence reflectance;
-its authored factor RGB is therefore constrained to `[0, 1]`. `Glass` is reserved by
-the schema for P3b: offline schema decoding preserves it, while the P3a runtime profile
-rejects it rather than rendering it as another class. The writer emits v1 when every material has the
+its authored factor RGB is therefore constrained to `[0, 1]`. `Glass` is a fixed-IOR
+1.5 rough dielectric interface and interprets the same RGB product as transmission
+tint, also constrained to `[0, 1]`. Both decoder profiles and scene assembly accept it;
+the unsupported `alphaTested && Glass` combination is rejected. The writer emits v1 when every material has the
 defaults, preserving old canonical bytes, selects v2 only when at least one BRDF scalar
 differs, selects v3 whenever any emission channel is positive, and selects v4 whenever
 any material is not `Dielectric`. Later records cannot downgrade an already selected
@@ -698,14 +699,16 @@ The runtime profile accepts structurally valid multi-record mesh, geometry, and
 material arrays plus logical texture references and their string arena. The
 N-BLAS/N-instance consumer handles mesh and geometry ranges without a
 format-version change, and scene-global texture resolution assigns material
-image indices. Alpha-tested geometry is accepted: its class selects the
-alpha-tested hit-group records, leaves the corresponding BLAS geometry
-non-opaque, and runs texture-alpha any-hit rejection. Opaque ranges retain the
+image indices. Alpha-tested and Glass geometry select the unified any-hit-capable
+records and leave the corresponding BLAS geometry non-opaque. Alpha runs
+texture-cutoff rejection; Glass continues radiance candidates and attenuates shadow
+visibility. Opaque ranges retain the
 opaque BLAS flag and bypass any-hit. Named radiance/shadow indices plus
-`RayTypeCount == 2` form one shared C++/Slang routing ABI. Direct sunlight now
-traces the shadow records; alpha-tested shadow hits apply the same material-alpha
-cutoff and ignore transparent texels. Radiance paths trace one secondary diffuse
-bounce through the same per-geometry opacity routing. No trace uses
+`RayTypeCount == 2` form one shared C++/Slang routing ABI. Direct lighting traces the
+shadow records; alpha-tested hits apply the same material-alpha cutoff and ignore
+transparent texels, while Glass multiplies its tint and exact `(1 - Fresnel)` before
+continuing. Radiance paths use the same per-geometry routing for up to eight
+dielectric, Metal, or Glass vertices. No trace uses
 `RAY_FLAG_FORCE_OPAQUE`.
 
 Both schema and runtime byte decoders validate and reconstruct optional rigid
@@ -906,13 +909,16 @@ Three strict XRBM profiles now share that geometry path:
   zero (opaque) or alpha-test bit 0; every unknown bit is rejected rather than
   treated as an extensible ignore-unknown field.
 - **Version 3, 144-byte header:** one explicit material whose class is
-  `Dielectric` or `Metal`, with optional texture-reference bytes plus base-color
+  `Dielectric`, `Metal`, or `Glass`, with optional texture-reference bytes plus base-color
   factor, perceptual roughness, and dielectric F0. P3a authors the narrow Metal
   branch from an untextured Principled BSDF: `xrphoton_material_class` is exactly
   `metal`, metallic is exactly 1, base color and roughness are finite unlinked
   values, alpha testing is false, and only the Principled-to-Output link exists.
   This rejects a blended metallic factor and maps Blender intent to the same
-  discrete OGFx class used by legacy conversion and the runtime.
+  discrete OGFx class used by legacy conversion and the runtime. The equally narrow
+  untextured Glass profile requires `xrphoton_material_class = glass`, Transmission
+  Weight 1, IOR 1.5, metallic 0, no alpha test, and finite unlinked base tint and
+  roughness; every unsupported node or parameter fails conversion.
 
 The little-endian exchange layout is deliberately small and closed:
 
@@ -960,7 +966,7 @@ and 0.72 respectively. The dedicated `yard_shiny_sphere` source keeps the
 smooth sphere topology with a silver-like Metal F0 and roughness 0.015; the
 gallery scales its unit source radius to 2.5 m. The leaf card pins the v2
 material and UV contract. Generated outputs live beneath the ignored
-`build/<preset>/assets/blender/` directory. The opt-in
+`<binary-dir>/assets/blender/` directory. The opt-in
 `xrPhotonBlenderOfflineProof` target uses the cache settings
 `XRPHOTON_BLENDER_EXECUTABLE`, `XRPHOTON_BLENDER_PYRAMID_BLEND`, and
 `XRPHOTON_BLENDER_SPHERE_BLEND`, and
@@ -1143,7 +1149,7 @@ gradient on the predicted identity-placed quad is the visual oracle; M3b
 already proved the deliberately X-rotated inverse-transpose normal path.
 
 **Landed:** the shared writer and offline quad front end generate
-`build/<preset>/assets/probes/test_quad.ogfx`; the runtime opens that generated file through
+`<binary-dir>/assets/probes/test_quad.ogfx`; the runtime opens that generated file through
 the strict transactional decoder and field-by-field `SceneData` adapter, then the
 caller appends one identity preview instance. The old `scene.cpp` procedural builder
 is gone, leaving exactly one runtime model-loading path. Deterministic serialization,
@@ -1188,7 +1194,7 @@ each arrives with its own consumer.
    complete schema reconstruction, byte-exact reserialization, and runtime
    reconstruction of the logical reference, then persists the proven output
    beneath
-   `build/<preset>/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`.
+   `<binary-dir>/assets/soc/meshes/objects/dynamics/plitka/plitka1.ogfx`.
 
 2. **Additive runtime test yard + textured plitka path. Landed and visually
    validated.** Generic scene
@@ -1218,7 +1224,7 @@ each arrives with its own consumer.
    strict one-material opaque-or-alpha-tested profile. `test_leaf_card` carries
    `trees\trees_new_vetka_green`, cutoff 128/255, and the one-time textured V
    flip. The four regression outputs are reproducible beneath
-   `build/<preset>/assets/blender/` and are independent optional yard props.
+   `<binary-dir>/assets/blender/` and are independent optional yard props.
    The slice adds no second writer or runtime loader. A direct
    GLB-to-compiler adapter remains an optional later offline tool.
 
@@ -1239,7 +1245,7 @@ each arrives with its own consumer.
    is 19,352 bytes with SHA-256
    `eed1c06c5d975199ae96fe49517f8893e164cf5e93ce1a040421c7cb0e115060`
    and is persisted at
-   `build/<preset>/assets/soc/meshes/physics/balon/bochka_close_1.ogfx`.
+   `<binary-dir>/assets/soc/meshes/physics/balon/bochka_close_1.ogfx`.
    The yard consumes that render data and the existing DDS path. When the optional
    barrel placement is configured, its recipe now creates the live three-cylinder
    Jolt compound body; the adjacent recipe-less remade/custom barrels stay static.
@@ -1265,7 +1271,7 @@ each arrives with its own consumer.
    trips, and pins the 34,921-byte output with SHA-256
    `b5fc918b3e5a9f11dcdf596360361824719999c850282e30ce0f6dd97b5fc0dd`.
    It persists
-   `build/<preset>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`.
+   `<binary-dir>/assets/soc/meshes/equipments/item_psevdodog_tail.ogfx`.
    The yard routes its mixed ranges through separate opaque and alpha-tested
    SBT records, with per-geometry BLAS opacity and real texture-alpha any-hit.
    When configured, the same placement is dynamic: its oriented-box recipe becomes

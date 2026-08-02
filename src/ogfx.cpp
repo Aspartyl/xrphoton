@@ -285,7 +285,8 @@ SerializeResult prepareModel(
                 "Dielectric (0), Metal (1), or Glass (2)",
                 std::to_string(static_cast<std::uint32_t>(material.materialClass)));
         }
-        if (material.materialClass == MaterialClass::Metal) {
+        if (material.materialClass == MaterialClass::Metal
+            || material.materialClass == MaterialClass::Glass) {
             for (std::size_t component = 0; component < 3; ++component) {
                 if (material.baseColorFactor[component] < 0.0f
                     || material.baseColorFactor[component] > 1.0f) {
@@ -294,7 +295,9 @@ SerializeResult prepareModel(
                         ChunkId::Materials,
                         indexedField("materials", index, "baseColorFactor")
                             + '[' + std::to_string(component) + ']',
-                        "a finite f32 in [0, 1] for Metal spectral F0",
+                        material.materialClass == MaterialClass::Metal
+                            ? "a finite f32 in [0, 1] for Metal spectral F0"
+                            : "a finite f32 in [0, 1] for Glass transmission tint",
                         std::to_string(material.baseColorFactor[component]));
                 }
             }
@@ -706,6 +709,16 @@ SerializeResult prepareModel(
                 indexedField("geometries", geometryIndex, "materialIndex"),
                 "less than " + std::to_string(model.materials.size()),
                 std::to_string(geometry.materialIndex));
+        }
+        if (geometry.alphaTested
+            && model.materials[geometry.materialIndex].materialClass
+                == MaterialClass::Glass) {
+            return failure(
+                diagnosticName,
+                ChunkId::Geometries,
+                indexedField("geometries", geometryIndex, "geometryFlags/materialClass"),
+                "Glass geometry without alpha-tested bit 0",
+                "alpha-tested Glass");
         }
 
         for (std::uint64_t index = geometry.firstIndex; index < indexEnd; ++index) {
