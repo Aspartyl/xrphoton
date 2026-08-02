@@ -25,13 +25,14 @@ at radiance 0 / shadow 1 / `RayTypeCount = 2` (`src/ray_types.hpp`), descriptor
 bindings 0–8 are in use, and the pinned frame ABI is an 80-byte view push block plus a
 192-byte dynamic `FrameLighting` uniform record.
 
-P0–P4 have closed the light/material/time-of-day gaps this plan began with. What
-remains is P5's sampling-quality and whole-BSDF energy proof:
+P0–P5 have closed the light/material/time-of-day and sampling-quality gaps this plan
+began with. The milestone is complete and hands an energy-checked jittered path tracer
+to roadmap step 5:
 
-| Gap | Consequence today |
+| Closed gap | Landed result |
 |---|---|
-| Pixel-center sampling only | No anti-aliasing, and no jitter for step 5's reprojection to consume |
-| No white-furnace preset/proof | The complete dielectric/Metal/Glass BSDF set lacks its final whole-transport energy gate |
+| Pixel-center sampling only | A pinned frame-global 4×4 cycle covers all subpixel cell centers without touching the PCG path stream |
+| No white-furnace preset/proof | Nine fixed Dielectric/Metal/Glass roughness regions pass the linear-HDR two-percent/three-sigma energy gate |
 
 ## 2. Definition of done
 
@@ -237,7 +238,8 @@ P1:
 
 `flags` is also pinned: bit 0 = Perez daylight fields active, bit 1 = scene contains
 Glass, and bits 2–3 = estimator mode (`0` MIS, `1` NEE-only, `2` BSDF-only, `3`
-invalid). All upper bits must be zero. P1 publishes zero, and every later producer
+invalid). P5 uses bit 4 only for the full-sphere furnace environment. All higher bits
+must be zero. P1 publishes zero, and every later producer
 validates the complete word before the CPU or shader consumes it.
 
 Descriptor bindings grow from 5 to 6: **binding 5** = `FrameLighting`
@@ -614,10 +616,20 @@ CPU/GPU sky known-answer tests agree to tolerance.
 
 ## 9. Phase P5 — Sampling quality, energy proof, and acceptance instrumentation
 
+**Status: complete (2026-08-02).** A fixed-seed PCG permutation supplies one shared
+4×4 cell-center jitter from `frameIndex % 16` through the existing 80-byte push ABI;
+the neighbor footprint rays shift with it and the path RNG is unchanged. The
+reference-only `--furnace` seam builds nine white closed boxes under constant
+unit-radiance full-sphere lighting with no sun or emitters. Its BSDF-only run exposed
+the landed single-scatter GGX energy loss, so P5 also adds a sampled
+Kulla-Conty-style multiple-scatter return lobe backed by compact pinned roughness
+energy fits and the fixed-IOR Glass slab closure. At 256 samples all nine RGB ratios
+measure 0.999–1.009 and pass the exact two-percent/three-standard-error gate; the yard
+MIS/NEE/BSDF comparison remains green.
+
 ### 9.1 Sub-pixel sampling
 
-Raygen currently fires through the pixel center (`shaders/raytrace.slang:531`). Add one
-**frame-global** jitter shared by all pixels, selected from a pinned, fixed-seed
+Raygen now adds one **frame-global** jitter shared by all pixels, selected from a pinned, fixed-seed
 permutation of a 4×4 stratification by `frameIndex % 16`. Every consecutive 16-frame
 reference accumulation therefore covers the pixel evenly, and step 5 can consume the
 same camera jitter without a full-resolution jitter history. The 16 cell centers are
@@ -713,7 +725,7 @@ across compiler, writer, both decoders, loader, assembly, documentation, and tes
    intervening-glass shadow approximation + perf measurement.
 9. **P4 — complete.** Preetham sky, time of day, sun disc, cone sampling, and
    BSDF-hit solar MIS.
-10. **P5** frame-global pixel jitter, furnace preset/proof, minimal second-scene seam, final
+10. **P5 — complete.** Frame-global pixel jitter, furnace preset/proof, minimal second-scene seam, final
     acceptance matrix.
 
 Documentation lands with the code it describes: `ARCHITECTURE.md` gains a **Lighting**

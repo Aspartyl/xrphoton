@@ -55,28 +55,62 @@ void testPushConstantConstruction()
     camera.up = {13.0f, 14.0f, 15.0f};
     camera.pad3 = 16.0f;
 
-    constexpr std::uint32_t FrameIndex = 0x89abcdefu;
+    constexpr std::uint32_t FrameIndex = 11u;
     const xrphoton::RaygenPushConstants result =
-        xrphoton::makeRaygenPushConstants(camera, FrameIndex, 0.25f, -0.125f);
+        xrphoton::makeRaygenPushConstants(camera, FrameIndex);
 
     expect(
         std::memcmp(&result.camera, &camera, sizeof(camera)) == 0,
         "camera payload is copied byte-for-byte");
     expect(
         result.frameIndex == FrameIndex
-            && nearly(result.cameraJitterX, 0.25f)
-            && nearly(result.cameraJitterY, -0.125f)
+            && nearly(result.cameraJitterX, 0.125f)
+            && nearly(result.cameraJitterY, 0.125f)
             && result.reserved0 == 0,
-        "temporal view fields are copied and the reserved word is zero");
+        "the frame selects authoritative jitter and leaves the reserved word zero");
+}
 
-    const xrphoton::RaygenPushConstants phaseOne =
-        xrphoton::makeRaygenPushConstants(camera, 17u);
+void testCameraJitterSchedule()
+{
+    constexpr std::array<std::uint8_t, xrphoton::CameraJitterPeriod> ExpectedCells{
+        3, 9, 8, 0, 7, 2, 4, 12, 15, 5, 1, 10, 13, 14, 11, 6,
+    };
     expect(
-        phaseOne.frameIndex == 17u
-            && phaseOne.cameraJitterX == 0.0f
-            && phaseOne.cameraJitterY == 0.0f
-            && phaseOne.reserved0 == 0,
-        "Phase 1 defaults camera jitter and the reserved word to zero");
+        xrphoton::CameraJitterCellPermutation == ExpectedCells,
+        "camera jitter uses the pinned fixed-seed permutation");
+
+    std::array<bool, xrphoton::CameraJitterPeriod> visited{};
+    for (std::uint32_t frame = 0; frame < xrphoton::CameraJitterPeriod; ++frame) {
+        const std::uint8_t cell =
+            xrphoton::CameraJitterCellPermutation[frame];
+        visited[cell] = true;
+        const xrphoton::CameraJitter jitter =
+            xrphoton::cameraJitterForFrame(frame);
+        expect(
+            nearly(jitter.x,
+                (static_cast<float>(cell % 4u) + 0.5f) / 4.0f - 0.5f)
+                && nearly(jitter.y,
+                    (static_cast<float>(cell / 4u) + 0.5f) / 4.0f - 0.5f),
+            "camera jitter lands at the selected 4x4 cell center");
+        expect(
+            jitter.x >= -0.5f && jitter.x < 0.5f
+                && jitter.y >= -0.5f && jitter.y < 0.5f,
+            "camera jitter remains inside one pixel");
+    }
+    for (bool wasVisited : visited) {
+        expect(wasVisited, "camera jitter visits every 4x4 cell exactly once");
+    }
+
+    for (std::uint32_t frame = 0; frame < xrphoton::CameraJitterPeriod; ++frame) {
+        const xrphoton::CameraJitter first =
+            xrphoton::cameraJitterForFrame(frame);
+        const xrphoton::CameraJitter repeated =
+            xrphoton::cameraJitterForFrame(
+                frame + static_cast<std::uint32_t>(xrphoton::CameraJitterPeriod));
+        expect(
+            first.x == repeated.x && first.y == repeated.y,
+            "camera jitter repeats after exactly sixteen frames");
+    }
 }
 
 void testPcgHash()
@@ -144,6 +178,7 @@ int main()
 {
     testPayloadLayout();
     testPushConstantConstruction();
+    testCameraJitterSchedule();
     testPcgHash();
     testRngSequence();
 

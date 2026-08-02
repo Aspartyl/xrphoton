@@ -1,4 +1,5 @@
 #include "gallery.hpp"
+#include "furnace.hpp"
 #include "scene_lighting.hpp"
 
 #ifndef XRPHOTON_GALLERY_TEST_EXPECTATION
@@ -209,6 +210,94 @@ glm::mat4 dynamicCrateSpawn()
             glm::mat4{1.0f},
             glm::radians(12.0f),
             glm::vec3{1.0f, 0.0f, 0.0f});
+}
+
+void testFurnacePolicy()
+{
+    xrphoton::GalleryLoadResult loaded = xrphoton::loadGalleryScene(
+        xrphoton::GallerySceneProfile::FurnaceReference);
+    expect(static_cast<bool>(loaded), "white-furnace scene loads successfully");
+    if (!loaded) {
+        std::cerr << loaded.error << '\n';
+        return;
+    }
+
+    const xrphoton::SceneData& scene = loaded.scene;
+    expect(
+        scene.positions.size() == 24 * 3
+            && scene.attributes.size() == 24
+            && scene.indices.size() == 36
+            && scene.geometries.size() == xrphoton::FurnaceCaseCount
+            && scene.meshes.size() == xrphoton::FurnaceCaseCount
+            && scene.instances.size() == xrphoton::FurnaceCaseCount
+            && scene.materials.size() == xrphoton::FurnaceCaseCount,
+        "furnace reuses one closed cube across nine material cases");
+    expect(
+        loaded.dynamicInstances.empty()
+            && scene.physicsBodies.empty()
+            && scene.physicsColliders.empty()
+            && loaded.spawn.position == glm::vec3{}
+            && loaded.spawn.yaw == 0.0f && loaded.spawn.pitch == 0.0f,
+        "furnace has no dynamics and pins a forward origin camera");
+    expect(
+        scene.images.size() == 1
+            && scene.images[0].width == 1 && scene.images[0].height == 1
+            && scene.images[0].pixels
+                == std::vector<std::uint8_t>{255, 255, 255, 255},
+        "furnace materials resolve to the generated opaque-white image");
+
+    bool casesMatch = true;
+    for (std::size_t caseIndex = 0;
+         caseIndex < xrphoton::FurnaceCases.size();
+         ++caseIndex) {
+        const xrphoton::FurnaceCase& furnaceCase =
+            xrphoton::FurnaceCases[caseIndex];
+        const xrphoton::SceneMaterial& material = scene.materials[caseIndex];
+        const xrphoton::SceneGeometry& geometry = scene.geometries[caseIndex];
+        const auto expectedClass = static_cast<xrphoton::SceneMaterialClass>(
+            static_cast<std::uint32_t>(furnaceCase.material));
+        casesMatch = casesMatch
+            && material.materialClass == expectedClass
+            && nearly(
+                material.perceptualRoughness,
+                furnaceCase.perceptualRoughness)
+            && material.baseColorFactor[0] == 1.0f
+            && material.baseColorFactor[1] == 1.0f
+            && material.baseColorFactor[2] == 1.0f
+            && material.emission[0] == 0.0f
+            && material.emission[1] == 0.0f
+            && material.emission[2] == 0.0f
+            && geometry.firstVertex == 0 && geometry.vertexCount == 24
+            && geometry.firstIndex == 0 && geometry.indexCount == 36
+            && geometry.materialIndex == caseIndex
+            && scene.meshes[caseIndex].firstGeometry == caseIndex
+            && scene.meshes[caseIndex].geometryCount == 1
+            && scene.instances[caseIndex].meshIndex == caseIndex
+            && xrphoton::geometryRequiresAnyHit(geometry, material)
+                == (expectedClass == xrphoton::SceneMaterialClass::Glass)
+            && !instanceClashes(scene, caseIndex);
+    }
+    expect(
+        casesMatch,
+        "furnace pins white Dielectric/Metal/Glass cases at low, medium, and high roughness");
+
+    xrphoton::SceneLighting lighting = xrphoton::FurnaceSceneLighting;
+    xrphoton::FrameLighting packed;
+    std::string error;
+    expect(
+        xrphoton::buildSceneLighting(
+            scene, loaded.dynamicInstances, &lighting, &error)
+            && error.empty() && lighting.lights.empty()
+            && lighting.totalLightPower == 0.0f
+            && xrphoton::makeFrameLighting(
+                lighting,
+                static_cast<std::uint32_t>(scene.instances.size()),
+                &packed)
+            && packed.sunIrradiance == glm::vec3{}
+            && packed.lightCount == 0
+            && packed.pSky == 1.0f && packed.pEmitters == 0.0f
+            && packed.flags == xrphoton::FrameLightingFullSphereSkyBit,
+        "furnace builds with one constant full-sphere environment and no emitters");
 }
 
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1
@@ -592,6 +681,7 @@ void testTimeDrivenEmitterPolicy()
 
 int main()
 {
+    testFurnacePolicy();
     testGeneratedYardPolicy();
     testTimeDrivenEmitterPolicy();
 

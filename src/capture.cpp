@@ -105,6 +105,107 @@ bool parseTimeOfDayHours(std::string_view text, float* value)
     *value = parsed;
     return true;
 }
+
+template<std::size_t RegionCount>
+bool accumulateRegions(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::span<const std::uint16_t> rgba16,
+    const std::array<FurnaceRegion, RegionCount>& regions,
+    std::uint32_t denominator,
+    RegionAccumulator<RegionCount>* accumulator)
+{
+    if (accumulator == nullptr || width == 0 || height == 0
+        || denominator == 0) {
+        return false;
+    }
+    const std::uint64_t pixelCount =
+        static_cast<std::uint64_t>(width) * height;
+    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4
+        || rgba16.size() != static_cast<std::size_t>(pixelCount * 4)
+        || accumulator->sampleCount == std::numeric_limits<std::uint32_t>::max()
+        || (accumulator->sampleCount != 0
+            && (accumulator->width != width
+                || accumulator->height != height))) {
+        return false;
+    }
+
+    auto updated = *accumulator;
+    if (updated.sampleCount == 0) {
+        updated.width = width;
+        updated.height = height;
+    }
+    for (std::size_t regionIndex = 0;
+         regionIndex < regions.size();
+         ++regionIndex) {
+        const FurnaceRegion& region = regions[regionIndex];
+        const std::uint32_t x0 = width * region.x0Numerator / denominator;
+        const std::uint32_t x1 = width * region.x1Numerator / denominator;
+        const std::uint32_t y0 = height * region.y0Numerator / denominator;
+        const std::uint32_t y1 = height * region.y1Numerator / denominator;
+        if (x0 >= x1 || y0 >= y1) {
+            return false;
+        }
+        const double regionPixelCount =
+            static_cast<double>(x1 - x0) * (y1 - y0);
+        std::array<double, 3> frameMean{};
+        for (std::uint32_t y = y0; y < y1; ++y) {
+            for (std::uint32_t x = x0; x < x1; ++x) {
+                const std::size_t pixel =
+                    (static_cast<std::size_t>(y) * width + x) * 4;
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const float value = binary16ToFloat(rgba16[pixel + channel]);
+                    if (!std::isfinite(value) || value < 0.0f) {
+                        return false;
+                    }
+                    frameMean[channel] += value;
+                }
+            }
+        }
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            frameMean[channel] /= regionPixelCount;
+            updated.sums[regionIndex][channel] += frameMean[channel];
+            updated.squaredSums[regionIndex][channel] +=
+                frameMean[channel] * frameMean[channel];
+        }
+    }
+    ++updated.sampleCount;
+    *accumulator = updated;
+    return true;
+}
+
+template<std::size_t RegionCount>
+bool summarizeRegions(
+    const RegionAccumulator<RegionCount>& accumulator,
+    std::array<ReferenceRegionSummary, RegionCount>* summaries)
+{
+    if (summaries == nullptr || accumulator.sampleCount == 0) {
+        return false;
+    }
+    std::array<ReferenceRegionSummary, RegionCount> candidate{};
+    const double count = accumulator.sampleCount;
+    for (std::size_t region = 0; region < RegionCount; ++region) {
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            const double mean = accumulator.sums[region][channel] / count;
+            double standardError = 0.0;
+            if (accumulator.sampleCount > 1) {
+                const double variance = std::max(
+                    0.0,
+                    (accumulator.squaredSums[region][channel]
+                        - count * mean * mean)
+                        / (count - 1.0));
+                standardError = std::sqrt(variance / count);
+            }
+            if (!std::isfinite(mean) || !std::isfinite(standardError)) {
+                return false;
+            }
+            candidate[region].mean[channel] = mean;
+            candidate[region].standardError[channel] = standardError;
+        }
+    }
+    *summaries = candidate;
+    return true;
+}
 }
 
 bool parseCommandLine(
@@ -133,10 +234,12 @@ bool parseCommandLine(
         constexpr const char* Usage =
             "Usage: xrPhoton [--validation] [--capture <count> <output.ppm>] "
             "[--time <hours>] | [--validation] --reference <count> "
-            "--estimator <mis|nee|bsdf> [--time <hours>]";
+            "--estimator <mis|nee|bsdf> [--time <hours>] | [--validation] "
+            "--reference <count> --estimator bsdf --furnace";
         bool modeSeen = false;
         bool estimatorSeen = false;
         bool timeSeen = false;
+        bool furnaceSeen = false;
         bool validationSeen = false;
         CommandLineOptions candidate;
         for (int index = 1; index < argumentCount;) {
@@ -222,6 +325,14 @@ bool parseCommandLine(
                 candidate.timeOfDayHours = hours;
                 timeSeen = true;
                 index += 2;
+            } else if (option == "--furnace") {
+                if (furnaceSeen) {
+                    *error = Usage;
+                    return false;
+                }
+                candidate.furnaceRequested = true;
+                furnaceSeen = true;
+                ++index;
             } else {
                 *error = Usage;
                 return false;
@@ -233,6 +344,20 @@ bool parseCommandLine(
         }
         if (candidate.mode != CommandLineMode::Reference && estimatorSeen) {
             *error = "--estimator is only valid with --reference.";
+            return false;
+        }
+        if (candidate.furnaceRequested
+            && candidate.mode != CommandLineMode::Reference) {
+            *error = "--furnace is only valid with --reference.";
+            return false;
+        }
+        if (candidate.furnaceRequested
+            && candidate.estimator != EstimatorMode::Bsdf) {
+            *error = "--furnace requires --estimator bsdf.";
+            return false;
+        }
+        if (candidate.furnaceRequested && candidate.timeOfDayHours.has_value()) {
+            *error = "--time is not valid with the constant furnace environment.";
             return false;
         }
         *options = std::move(candidate);
@@ -271,107 +396,58 @@ bool accumulateReferenceImage(
     std::span<const std::uint16_t> rgba16,
     ReferenceAccumulator* accumulator)
 {
-    if (accumulator == nullptr || width == 0 || height == 0) {
-        return false;
-    }
-    const std::uint64_t pixelCount =
-        static_cast<std::uint64_t>(width) * height;
-    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4
-        || rgba16.size() != static_cast<std::size_t>(pixelCount * 4)
-        || accumulator->sampleCount == std::numeric_limits<std::uint32_t>::max()
-        || (accumulator->sampleCount != 0
-            && (accumulator->width != width
-                || accumulator->height != height))) {
-        return false;
-    }
-
-    struct Region
-    {
-        std::uint32_t x0Numerator;
-        std::uint32_t x1Numerator;
-        std::uint32_t y0Numerator;
-        std::uint32_t y1Numerator;
-    };
     constexpr std::uint32_t Denominator = 8;
-    constexpr Region Regions[ReferenceRegionCount] = {
+    constexpr std::array<FurnaceRegion, ReferenceRegionCount> Regions{{
         {3, 5, 3, 5},
         {4, 6, 2, 4},
         {2, 6, 4, 6},
-    };
-
-    auto updated = *accumulator;
-    if (updated.sampleCount == 0) {
-        updated.width = width;
-        updated.height = height;
-    }
-    for (std::size_t regionIndex = 0;
-         regionIndex < ReferenceRegionCount;
-         ++regionIndex) {
-        const Region& region = Regions[regionIndex];
-        const std::uint32_t x0 = width * region.x0Numerator / Denominator;
-        const std::uint32_t x1 = width * region.x1Numerator / Denominator;
-        const std::uint32_t y0 = height * region.y0Numerator / Denominator;
-        const std::uint32_t y1 = height * region.y1Numerator / Denominator;
-        if (x0 >= x1 || y0 >= y1) {
-            return false;
-        }
-        const double regionPixelCount =
-            static_cast<double>(x1 - x0) * (y1 - y0);
-        std::array<double, 3> frameMean{};
-        for (std::uint32_t y = y0; y < y1; ++y) {
-            for (std::uint32_t x = x0; x < x1; ++x) {
-                const std::size_t pixel =
-                    (static_cast<std::size_t>(y) * width + x) * 4;
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    const float value = binary16ToFloat(rgba16[pixel + channel]);
-                    if (!std::isfinite(value) || value < 0.0f) {
-                        return false;
-                    }
-                    frameMean[channel] += value;
-                }
-            }
-        }
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            frameMean[channel] /= regionPixelCount;
-            updated.sums[regionIndex][channel] += frameMean[channel];
-            updated.squaredSums[regionIndex][channel] +=
-                frameMean[channel] * frameMean[channel];
-        }
-    }
-    ++updated.sampleCount;
-    *accumulator = updated;
-    return true;
+    }};
+    return accumulateRegions(
+        width, height, rgba16, Regions, Denominator, accumulator);
 }
 
 bool summarizeReferenceRegions(
     const ReferenceAccumulator& accumulator,
     std::array<ReferenceRegionSummary, ReferenceRegionCount>* summaries)
 {
-    if (summaries == nullptr || accumulator.sampleCount == 0) {
-        return false;
-    }
-    std::array<ReferenceRegionSummary, ReferenceRegionCount> candidate{};
-    const double count = accumulator.sampleCount;
-    for (std::size_t region = 0; region < ReferenceRegionCount; ++region) {
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            const double mean = accumulator.sums[region][channel] / count;
-            double standardError = 0.0;
-            if (accumulator.sampleCount > 1) {
-                const double variance = std::max(
-                    0.0,
-                    (accumulator.squaredSums[region][channel]
-                        - count * mean * mean)
-                        / (count - 1.0));
-                standardError = std::sqrt(variance / count);
-            }
-            if (!std::isfinite(mean) || !std::isfinite(standardError)) {
-                return false;
-            }
-            candidate[region].mean[channel] = mean;
-            candidate[region].standardError[channel] = standardError;
+    return summarizeRegions(accumulator, summaries);
+}
+
+bool accumulateFurnaceImage(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::span<const std::uint16_t> rgba16,
+    FurnaceAccumulator* accumulator)
+{
+    return accumulateRegions(
+        width,
+        height,
+        rgba16,
+        FurnaceRegions,
+        FurnaceRegionDenominator,
+        accumulator);
+}
+
+bool summarizeFurnaceCases(
+    const FurnaceAccumulator& accumulator,
+    std::array<ReferenceRegionSummary, FurnaceCaseCount>* summaries)
+{
+    return summarizeRegions(accumulator, summaries);
+}
+
+bool furnaceCasePasses(const ReferenceRegionSummary& summary)
+{
+    constexpr double Expected = FurnaceEnvironmentRadiance;
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        const double mean = summary.mean[channel];
+        const double standardError = summary.standardError[channel];
+        if (!std::isfinite(mean) || !std::isfinite(standardError)
+            || mean < 0.0 || standardError < 0.0
+            || std::abs(mean / Expected - 1.0)
+                > std::max(0.02, 3.0 * standardError / Expected)) {
+            return false;
         }
     }
-    *summaries = candidate;
     return true;
 }
 

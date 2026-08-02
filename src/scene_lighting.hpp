@@ -40,6 +40,10 @@ struct AnalyticSky
     glm::vec3 nightZenithRadiance{};
     float daylightBlend = 0.0f;
     bool perezEnabled = false;
+    // Acceptance environments can illuminate both world hemispheres. Production
+    // skies leave this false so geometry, rather than fictitious ground radiance,
+    // supplies light below the horizon.
+    bool fullSphere = false;
     bool enabled = true;
 };
 
@@ -95,6 +99,7 @@ struct SceneLighting
 };
 
 extern const SceneLighting DefaultSceneLighting;
+extern const SceneLighting FurnaceSceneLighting;
 
 inline constexpr float DefaultTimeOfDayHours = 12.0f;
 inline constexpr float SunAngularRadiusRadians = 0.00471238898f; // 0.27 degrees
@@ -129,8 +134,10 @@ constexpr std::uint32_t FrameLightingPerezSkyBit = 1u << 0u;
 constexpr std::uint32_t FrameLightingGlassBit = 1u << 1u;
 constexpr std::uint32_t FrameLightingEstimatorShift = 2u;
 constexpr std::uint32_t FrameLightingEstimatorMask = 3u << FrameLightingEstimatorShift;
+constexpr std::uint32_t FrameLightingFullSphereSkyBit = 1u << 4u;
 constexpr std::uint32_t FrameLightingKnownFlags =
-    FrameLightingPerezSkyBit | FrameLightingGlassBit | FrameLightingEstimatorMask;
+    FrameLightingPerezSkyBit | FrameLightingGlassBit
+    | FrameLightingEstimatorMask | FrameLightingFullSphereSkyBit;
 // Estimator modes drive P2c's linear-HDR reference path. Interactive and ordinary
 // capture retain MIS mode zero; only reference capture exposes the diagnostic modes.
 

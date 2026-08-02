@@ -19,6 +19,7 @@ struct SunSample
 };
 
 static const uint PerezSkyBit = 1u << 0;
+static const uint FullSphereSkyBit = 1u << 4;
 
 float3 perezDistribution(
     float3 coefficientA,
@@ -58,7 +59,8 @@ float3 skyRadiance(FrameLighting frameLighting, float3 direction)
     // There is no analytic ground-light model. Geometry supplies real ground
     // bounce; an escaping direction below the world horizon sees black rather than
     // receiving fictitious horizon radiance from underneath the scene.
-    if (direction.y < 0.0)
+    if (direction.y < 0.0
+        && (frameLighting.flags & FullSphereSkyBit) == 0)
         return float3(0.0);
     if ((frameLighting.flags & PerezSkyBit) != 0)
     {

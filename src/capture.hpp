@@ -1,6 +1,7 @@
 #pragma once
 
 #include "estimator_mode.hpp"
+#include "furnace.hpp"
 
 #include <array>
 #include <cstddef>
@@ -31,6 +32,7 @@ struct CommandLineOptions
     std::uint32_t referenceSampleCount = 0;
     EstimatorMode estimator = EstimatorMode::Mis;
     std::optional<float> timeOfDayHours;
+    bool furnaceRequested = false;
     bool validationRequested = false;
 };
 
@@ -42,14 +44,17 @@ struct CaptureTraceTimingSummary
 };
 
 constexpr std::size_t ReferenceRegionCount = 3;
-struct ReferenceAccumulator
+template<std::size_t RegionCount>
+struct RegionAccumulator
 {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t sampleCount = 0;
-    std::array<std::array<double, 3>, ReferenceRegionCount> sums{};
-    std::array<std::array<double, 3>, ReferenceRegionCount> squaredSums{};
+    std::array<std::array<double, 3>, RegionCount> sums{};
+    std::array<std::array<double, 3>, RegionCount> squaredSums{};
 };
+using ReferenceAccumulator = RegionAccumulator<ReferenceRegionCount>;
+using FurnaceAccumulator = RegionAccumulator<FurnaceCaseCount>;
 
 struct ReferenceRegionSummary
 {
@@ -62,6 +67,8 @@ struct ReferenceRegionSummary
 //       [--time <hours>]
 //   [--validation] --reference <positive-sample-count>
 //       --estimator <mis|nee|bsdf> [--time <hours>]
+//   [--validation] --reference <positive-sample-count>
+//       --estimator bsdf --furnace
 // Parsing is deliberately independent of GLFW/Vulkan so malformed capture requests
 // fail before any window or GPU state is created.
 [[nodiscard]] bool parseCommandLine(
@@ -106,6 +113,23 @@ struct ReferenceRegionSummary
 [[nodiscard]] bool summarizeReferenceRegions(
     const ReferenceAccumulator& accumulator,
     std::array<ReferenceRegionSummary, ReferenceRegionCount>* summaries);
+
+// The furnace uses the same frame-level statistics over nine independent fixed
+// regions. BSDF-only reference mode is intentional: it excludes P3's approximate
+// straight shadow transmission from the whole-transport energy proof.
+[[nodiscard]] bool accumulateFurnaceImage(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::span<const std::uint16_t> rgba16,
+    FurnaceAccumulator* accumulator);
+
+[[nodiscard]] bool summarizeFurnaceCases(
+    const FurnaceAccumulator& accumulator,
+    std::array<ReferenceRegionSummary, FurnaceCaseCount>* summaries);
+
+// Each RGB channel must agree with the constant environment within either two
+// percent or three measured standard errors, whichever is wider.
+[[nodiscard]] bool furnaceCasePasses(const ReferenceRegionSummary& summary);
 
 // P2c's pairwise estimator gate: agreement within one percent of the larger mean or
 // three combined standard errors, independently for every region and RGB channel.

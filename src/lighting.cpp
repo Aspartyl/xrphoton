@@ -4,15 +4,14 @@ namespace xrphoton
 {
 RaygenPushConstants makeRaygenPushConstants(
     const CameraPushConstants& camera,
-    std::uint32_t frameIndex,
-    float cameraJitterX,
-    float cameraJitterY)
+    std::uint32_t frameIndex)
 {
+    const CameraJitter jitter = cameraJitterForFrame(frameIndex);
     RaygenPushConstants result{};
     result.camera = camera;
     result.frameIndex = frameIndex;
-    result.cameraJitterX = cameraJitterX;
-    result.cameraJitterY = cameraJitterY;
+    result.cameraJitterX = jitter.x;
+    result.cameraJitterY = jitter.y;
     return result;
 }
 }

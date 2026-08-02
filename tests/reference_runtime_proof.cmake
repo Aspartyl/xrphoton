@@ -59,3 +59,21 @@ if(NOT compare_result EQUAL 0)
         "Reference estimator gate failed:\n${compare_stdout}${compare_stderr}")
 endif()
 message(STATUS "${compare_stdout}")
+
+# The isolated furnace uses BSDF-only transport so P3's intentionally approximate
+# straight-line Glass shadow rule cannot enter the energy-conservation proof. The
+# executable applies the per-case linear-HDR two-percent/three-sigma gate itself.
+execute_process(
+    COMMAND "${ENGINE}" --reference "${SAMPLE_COUNT}"
+        --estimator bsdf --furnace
+    RESULT_VARIABLE furnace_result
+    OUTPUT_VARIABLE furnace_stdout
+    ERROR_VARIABLE furnace_stderr
+    TIMEOUT 900
+)
+file(WRITE "${TEST_DIR}/furnace.log" "${furnace_stdout}${furnace_stderr}")
+if(NOT furnace_result EQUAL 0)
+    message(FATAL_ERROR
+        "White-furnace energy proof failed; see ${TEST_DIR}/furnace.log")
+endif()
+message(STATUS "White-furnace energy proof passed")

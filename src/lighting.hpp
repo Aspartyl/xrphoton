@@ -2,6 +2,7 @@
 
 #include "camera.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -29,14 +30,6 @@ static_assert(offsetof(RaygenPushConstants, camera) == 0
     && offsetof(RaygenPushConstants, reserved0) == 76,
     "field offsets are the shader ABI, not just the total size");
 
-// Preserve the camera prefix byte-for-byte and attach temporal view state. Phase 1
-// passes zero jitter; the pinned fields reserve the later temporal-camera ABI.
-[[nodiscard]] RaygenPushConstants makeRaygenPushConstants(
-    const CameraPushConstants& camera,
-    std::uint32_t frameIndex,
-    float cameraJitterX = 0.0f,
-    float cameraJitterY = 0.0f);
-
 // Small stateless PCG permutation used as the CPU reference for the matching Slang
 // RNG. Unsigned overflow is intentional and defined.
 [[nodiscard]] constexpr std::uint32_t pcgHash(std::uint32_t value)
@@ -53,4 +46,56 @@ static_assert(offsetof(RaygenPushConstants, camera) == 0
     state = pcgHash(state);
     return static_cast<float>(state >> 8u) * (1.0f / 16777216.0f);
 }
+
+struct CameraJitter
+{
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+constexpr std::uint32_t CameraJitterPermutationSeed = 0x4a495454u;
+constexpr std::size_t CameraJitterPeriod = 16;
+
+[[nodiscard]] consteval std::array<std::uint8_t, CameraJitterPeriod>
+makeCameraJitterCellPermutation()
+{
+    std::array<std::uint8_t, CameraJitterPeriod> cells{};
+    for (std::size_t index = 0; index < cells.size(); ++index) {
+        cells[index] = static_cast<std::uint8_t>(index);
+    }
+
+    std::uint32_t state = CameraJitterPermutationSeed;
+    for (std::size_t remaining = cells.size(); remaining > 1; --remaining) {
+        state = pcgHash(state);
+        const std::size_t selected = state % remaining;
+        const std::uint8_t temporary = cells[remaining - 1];
+        cells[remaining - 1] = cells[selected];
+        cells[selected] = temporary;
+    }
+    return cells;
+}
+
+// A pinned fixed-seed permutation visits every 4x4 subpixel-cell center exactly
+// once before repeating. The offset is frame-global: it must not consume or alter
+// the per-pixel PCG path stream.
+inline constexpr auto CameraJitterCellPermutation =
+    makeCameraJitterCellPermutation();
+
+[[nodiscard]] constexpr CameraJitter cameraJitterForFrame(
+    std::uint32_t frameIndex)
+{
+    const std::uint8_t cell =
+        CameraJitterCellPermutation[frameIndex % CameraJitterPeriod];
+    constexpr float CellWidth = 1.0f / 4.0f;
+    return {
+        (static_cast<float>(cell % 4u) + 0.5f) * CellWidth - 0.5f,
+        (static_cast<float>(cell / 4u) + 0.5f) * CellWidth - 0.5f,
+    };
+}
+
+// Preserve the camera prefix byte-for-byte and attach the authoritative temporal
+// view state selected from the frame index.
+[[nodiscard]] RaygenPushConstants makeRaygenPushConstants(
+    const CameraPushConstants& camera,
+    std::uint32_t frameIndex);
 }

@@ -86,6 +86,7 @@ int main(int argumentCount, char** arguments)
     }
     const bool captureMode = commandLine.mode == CommandLineMode::Capture;
     const bool referenceMode = commandLine.mode == CommandLineMode::Reference;
+    const bool furnaceMode = commandLine.furnaceRequested;
     const bool offlineMode = captureMode || referenceMode;
 
     std::cout << "xrPhoton booting...\n";
@@ -413,9 +414,11 @@ int main(int argumentCount, char** arguments)
     std::cout << ".\n";
 
     GalleryLoadResult loadedGallery = loadGalleryScene(
-        referenceMode
-            ? GallerySceneProfile::EstimatorReference
-            : GallerySceneProfile::Complete);
+        furnaceMode
+            ? GallerySceneProfile::FurnaceReference
+            : referenceMode
+                ? GallerySceneProfile::EstimatorReference
+                : GallerySceneProfile::Complete);
     if (!loadedGallery) {
         std::cerr << loadedGallery.error << '\n';
         return 1;
@@ -428,8 +431,11 @@ int main(int argumentCount, char** arguments)
     }
     float timeOfDayHours = commandLine.timeOfDayHours.value_or(
         DefaultTimeOfDayHours);
-    SceneLighting sceneLighting = DefaultSceneLighting;
-    if (!updateSceneLightingTimeOfDay(timeOfDayHours, &sceneLighting)) {
+    SceneLighting sceneLighting = furnaceMode
+        ? FurnaceSceneLighting
+        : DefaultSceneLighting;
+    if (!furnaceMode
+        && !updateSceneLightingTimeOfDay(timeOfDayHours, &sceneLighting)) {
         std::cerr << "Failed to configure scene time of day.\n";
         return 1;
     }
@@ -665,10 +671,15 @@ int main(int argumentCount, char** arguments)
         std::cout << "Reference start: extent="
                   << referenceExtent.width << 'x' << referenceExtent.height
                   << " requestedSamples=" << commandLine.referenceSampleCount
-                  << " time=" << timeOfDayHours
+                  << " scene=" << (furnaceMode ? "furnace" : "yard");
+        if (!furnaceMode) {
+            std::cout << " time=" << timeOfDayHours;
+        }
+        std::cout
                   << " estimator=" << estimatorModeName(commandLine.estimator)
                   << '\n';
         ReferenceAccumulator accumulator;
+        FurnaceAccumulator furnaceAccumulator;
         std::array<double, CaptureTraceTimingCapacity> traceTimings{};
         std::size_t traceTimingCount = 0;
 
@@ -734,11 +745,18 @@ int main(int argumentCount, char** arguments)
                           << formatVkResult(readbackResult) << ".\n";
                 return 1;
             }
-            if (!accumulateReferenceImage(
+            const bool accumulated = furnaceMode
+                ? accumulateFurnaceImage(
                     readback.width,
                     readback.height,
                     readback.rgba16,
-                    &accumulator)) {
+                    &furnaceAccumulator)
+                : accumulateReferenceImage(
+                    readback.width,
+                    readback.height,
+                    readback.rgba16,
+                    &accumulator);
+            if (!accumulated) {
                 std::cerr << "Failed to accumulate HDR reference sample.\n";
                 return 1;
             }
@@ -747,11 +765,57 @@ int main(int argumentCount, char** arguments)
         }
 
         CaptureTraceTimingSummary timingSummary;
-        std::array<ReferenceRegionSummary, ReferenceRegionCount> summaries{};
         if (!summarizeCaptureTraceTimings(
                 std::span(traceTimings.data(), traceTimingCount),
-                &timingSummary)
-            || !summarizeReferenceRegions(accumulator, &summaries)) {
+                &timingSummary)) {
+            std::cerr << "Failed to summarize reference timing.\n";
+            return 1;
+        }
+        if (furnaceMode) {
+            std::array<ReferenceRegionSummary, FurnaceCaseCount> summaries{};
+            if (!summarizeFurnaceCases(furnaceAccumulator, &summaries)) {
+                std::cerr << "Failed to summarize furnace results.\n";
+                return 1;
+            }
+            bool allCasesPass = true;
+            for (std::size_t caseIndex = 0;
+                 caseIndex < summaries.size();
+                 ++caseIndex) {
+                const ReferenceRegionSummary& summary = summaries[caseIndex];
+                const bool passed = furnaceCasePasses(summary);
+                allCasesPass = allCasesPass && passed;
+                std::cout << "Furnace case=" << furnaceCaseName(caseIndex)
+                          << " mean=" << summary.mean[0] << ',' << summary.mean[1]
+                          << ',' << summary.mean[2]
+                          << " standardError=" << summary.standardError[0] << ','
+                          << summary.standardError[1] << ','
+                          << summary.standardError[2]
+                          << " ratio="
+                          << summary.mean[0] / FurnaceEnvironmentRadiance << ','
+                          << summary.mean[1] / FurnaceEnvironmentRadiance << ','
+                          << summary.mean[2] / FurnaceEnvironmentRadiance
+                          << " result=" << (passed ? "pass" : "fail") << '\n';
+            }
+            if (!allCasesPass) {
+                std::cerr << "Furnace failed: one or more BSDF cases did not "
+                             "conserve the constant environment radiance.\n";
+                return 1;
+            }
+            std::cout << "Furnace complete: extent="
+                      << referenceExtent.width << 'x' << referenceExtent.height
+                      << " samples=" << furnaceAccumulator.sampleCount
+                      << " estimator=" << estimatorModeName(commandLine.estimator)
+                      << " traceMedianMs=" << std::fixed << std::setprecision(3)
+                      << timingSummary.medianMilliseconds
+                      << " traceSamples=" << timingSummary.sampleCount
+                      << " traceTiming="
+                      << (timingSummary.comparable ? "comparable" : "diagnostic")
+                      << std::defaultfloat << std::setprecision(6) << '\n';
+            return 0;
+        }
+
+        std::array<ReferenceRegionSummary, ReferenceRegionCount> summaries{};
+        if (!summarizeReferenceRegions(accumulator, &summaries)) {
             std::cerr << "Failed to summarize reference results.\n";
             return 1;
         }

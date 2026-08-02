@@ -368,7 +368,12 @@ void rayGenMain()
         + ndc.x * frameConstants.camera.right
         - (ndc.y + ndcStep.y) * frameConstants.camera.up);
 
-    static const uint MaxPathVertices = 8;
+    // Closed rough Glass may need more than eight interface events before it reaches
+    // the furnace environment. Production skies keep the established cap; the
+    // full-sphere acceptance flag raises only the offline proof's truncation ceiling.
+    uint maxPathVertices = (frameLighting.flags & (1u << 4u)) != 0
+        ? 32u
+        : 8u;
     float3 radiance = float3(0.0);
     float3 throughput = float3(1.0);
     float previousBsdfPdf = 0.0;
@@ -376,7 +381,7 @@ void rayGenMain()
     uint shadowRayFlags = shadowTraceFlags();
     uint rngState = pcgHash(
         pixel.x + pcgHash(pixel.y + pcgHash(frameConstants.frameIndex)));
-    for (uint pathVertex = 0; pathVertex < MaxPathVertices; ++pathVertex)
+    for (uint pathVertex = 0; pathVertex < maxPathVertices; ++pathVertex)
     {
         SurfaceHit hit;
         hit.hitT = -1.0;
@@ -490,7 +495,7 @@ void rayGenMain()
             max(frameLighting.sunIrradiance.y, frameLighting.sunIrradiance.z));
         bool deltaSun = frameLighting.sunSolidAngle <= 0.0;
         bool sampleSunAtVertex = deltaSun
-            || (pathVertex + 1 < MaxPathVertices
+            || (pathVertex + 1 < maxPathVertices
                 && estimator != EstimatorBsdf);
         if (maximumSunIrradiance > 0.0 && sampleSunAtVertex)
         {
@@ -580,7 +585,7 @@ void rayGenMain()
         // A light connection adds the source endpoint to the path. Do not add it at
         // the terminal surface where the matching BSDF technique has no remaining
         // segment; all estimator modes must integrate the same finite path set.
-        if (pathVertex + 1 < MaxPathVertices
+        if (pathVertex + 1 < maxPathVertices
             && estimator != EstimatorBsdf
             && selectableProbability > 0.0)
         {
@@ -783,7 +788,7 @@ void rayGenMain()
             }
         }
 
-        if (pathVertex + 1 >= MaxPathVertices)
+        if (pathVertex + 1 >= maxPathVertices)
             break;
 
         // Draw through the class-aware sampler, then evaluate the matching complete

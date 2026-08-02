@@ -7,6 +7,10 @@ endif()
 if(NOT DEFINED BINARY_DIR OR BINARY_DIR STREQUAL "")
     message(FATAL_ERROR "BINARY_DIR must name the configured build directory")
 endif()
+if(NOT DEFINED FRAME_COUNT OR FRAME_COUNT STREQUAL "")
+    set(FRAME_COUNT 8)
+endif()
+math(EXPR FINAL_FRAME_INDEX "${FRAME_COUNT} - 1")
 
 # This path is configured inside the binary tree. Pin recursive cleanup to the
 # dedicated leaf even if somebody invokes the script manually with bad arguments.
@@ -26,7 +30,7 @@ file(MAKE_DIRECTORY "${TEST_DIR}")
 
 function(run_capture label output_path)
     execute_process(
-        COMMAND "${ENGINE}" --capture 8 "${output_path}"
+        COMMAND "${ENGINE}" --capture "${FRAME_COUNT}" "${output_path}"
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr
@@ -40,7 +44,7 @@ function(run_capture label output_path)
     endif()
 
     string(REGEX MATCH
-        "Capture start: extent=([0-9]+x[0-9]+) requestedFrames=8"
+        "Capture start: extent=([0-9]+x[0-9]+) requestedFrames=${FRAME_COUNT}"
         start_line
         "${stdout}")
     if(start_line STREQUAL "")
@@ -49,7 +53,7 @@ function(run_capture label output_path)
     set(start_extent "${CMAKE_MATCH_1}")
 
     string(REGEX MATCH
-        "Capture complete: extent=([0-9]+x[0-9]+) successfulFrames=8 frameIndex=7 hash=0x([0-9a-f]+)"
+        "Capture complete: extent=([0-9]+x[0-9]+) successfulFrames=${FRAME_COUNT} frameIndex=${FINAL_FRAME_INDEX} hash=0x([0-9a-f]+)"
         summary
         "${stdout}")
     if(summary STREQUAL "")
@@ -59,11 +63,21 @@ function(run_capture label output_path)
     set(hash "${CMAKE_MATCH_2}")
 
     string(REGEX MATCH
-        "traceMedianMs=([0-9]+[.][0-9]+) traceSamples=8 traceTiming=diagnostic"
+        "traceMedianMs=([0-9]+[.][0-9]+) traceSamples=([0-9]+) traceTiming=(diagnostic|comparable)"
         timing_summary
         "${stdout}")
     if(timing_summary STREQUAL "")
-        message(FATAL_ERROR "${label}: missing diagnostic trace timing summary")
+        message(FATAL_ERROR "${label}: missing trace timing summary")
+    endif()
+    set(timing_samples "${CMAKE_MATCH_2}")
+    set(timing_kind "${CMAKE_MATCH_3}")
+    if(FRAME_COUNT GREATER_EQUAL 288)
+        if(NOT timing_samples EQUAL 256 OR NOT timing_kind STREQUAL "comparable")
+            message(FATAL_ERROR
+                "${label}: 288-frame protocol did not publish 256 comparable timings")
+        endif()
+    elseif(NOT timing_kind STREQUAL "diagnostic")
+        message(FATAL_ERROR "${label}: short capture was not labeled diagnostic")
     endif()
 
     if(NOT start_extent STREQUAL final_extent)
@@ -131,4 +145,4 @@ if(NOT unwritable_log MATCHES "Failed to publish capture PPM")
 endif()
 
 message(STATUS
-    "Capture baseline: extent=${first_extent} frameIndex=7 hash=0x${first_hash}")
+    "Capture baseline: extent=${first_extent} frameIndex=${FINAL_FRAME_INDEX} hash=0x${first_hash}")

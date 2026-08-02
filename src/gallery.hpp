@@ -36,12 +36,14 @@ enum class GallerySceneProfile
 {
     Complete,
     EstimatorReference,
+    FurnaceReference,
 };
 
 // Load every configured asset through the generic OGFx path, merge its model records,
 // and add the table-owned yard placements. EstimatorReference retains only required,
 // exact-transport placements so fixed statistical regions do not depend on local
 // optional assets or P3's approximate intervening-Glass visibility.
+// FurnaceReference is the isolated, code-owned P5 energy proof.
 [[nodiscard]] GalleryLoadResult loadGalleryScene(
     GallerySceneProfile profile = GallerySceneProfile::Complete);
 }

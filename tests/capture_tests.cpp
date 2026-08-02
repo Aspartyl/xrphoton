@@ -55,6 +55,7 @@ void testCommandLine()
             && options.referenceSampleCount == 0
             && options.estimator == xrphoton::EstimatorMode::Mis
             && !options.timeOfDayHours.has_value()
+            && !options.furnaceRequested
             && !options.validationRequested
             && error.empty(),
         "no arguments select interactive mode");
@@ -104,6 +105,18 @@ void testCommandLine()
         "reference mode retains its estimator and frozen-time controls");
 
     options = parse(
+        {"xrPhoton", "--furnace", "--estimator", "bsdf", "--reference", "256"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded && options.mode == xrphoton::CommandLineMode::Reference
+            && options.referenceSampleCount == 256
+            && options.estimator == xrphoton::EstimatorMode::Bsdf
+            && options.furnaceRequested
+            && !options.timeOfDayHours.has_value(),
+        "the minimal furnace seam selects a BSDF-only reference proof");
+
+    options = parse(
         {"xrPhoton", "--capture", "4294967295", "result.ppm"},
         &succeeded,
         &error);
@@ -137,6 +150,14 @@ void testCommandLine()
         {"xrPhoton", "--time", "nan"},
         {"xrPhoton", "--time", "noon"},
         {"xrPhoton", "--time", "12", "--time", "13"},
+        {"xrPhoton", "--furnace"},
+        {"xrPhoton", "--capture", "8", "result.ppm", "--furnace"},
+        {"xrPhoton", "--reference", "8", "--estimator", "mis", "--furnace"},
+        {"xrPhoton", "--reference", "8", "--estimator", "nee", "--furnace"},
+        {"xrPhoton", "--reference", "8", "--estimator", "bsdf", "--furnace",
+         "--time", "12"},
+        {"xrPhoton", "--reference", "8", "--estimator", "bsdf", "--furnace",
+         "--furnace"},
     };
 
     for (const auto& arguments : invalidArguments) {
@@ -230,6 +251,53 @@ void testHalfAndReferenceAccumulation()
             && !xrphoton::accumulateReferenceImage(7, 8, second, &accumulator)
             && !xrphoton::summarizeReferenceRegions(accumulator, nullptr),
         "invalid HDR data and extent changes are rejected transactionally");
+}
+
+void testFurnaceAccumulationAndGate()
+{
+    constexpr std::uint32_t Extent = 100;
+    std::vector<std::uint16_t> uniform(Extent * Extent * 4, 0x3c00u);
+    xrphoton::FurnaceAccumulator accumulator;
+    expect(
+        xrphoton::accumulateFurnaceImage(
+            Extent, Extent, uniform, &accumulator)
+            && accumulator.sampleCount == 1,
+        "one uniform HDR frame accumulates into all nine furnace regions");
+
+    std::array<xrphoton::ReferenceRegionSummary,
+        xrphoton::FurnaceCaseCount> summaries{};
+    expect(
+        xrphoton::summarizeFurnaceCases(accumulator, &summaries),
+        "furnace region statistics summarize");
+    for (const auto& summary : summaries) {
+        expect(
+            summary.mean == std::array<double, 3>{1.0, 1.0, 1.0}
+                && summary.standardError == std::array<double, 3>{}
+                && xrphoton::furnaceCasePasses(summary),
+            "exact environment radiance passes every furnace case");
+    }
+
+    xrphoton::ReferenceRegionSummary outsideTolerance{
+        .mean = {1.021, 1.0, 1.0},
+    };
+    xrphoton::ReferenceRegionSummary statisticallyConsistent = outsideTolerance;
+    statisticallyConsistent.standardError[0] = 0.008;
+    xrphoton::ReferenceRegionSummary invalid = summaries[0];
+    invalid.standardError[2] = -0.1;
+    expect(
+        !xrphoton::furnaceCasePasses(outsideTolerance)
+            && xrphoton::furnaceCasePasses(statisticallyConsistent)
+            && !xrphoton::furnaceCasePasses(invalid),
+        "furnace gate uses the wider of two percent and three standard errors");
+
+    const xrphoton::FurnaceAccumulator unchanged = accumulator;
+    uniform[(22 * Extent + 22) * 4] = 0x7e00u;
+    expect(
+        !xrphoton::accumulateFurnaceImage(
+            Extent, Extent, uniform, &accumulator)
+            && accumulator.sampleCount == unchanged.sampleCount
+            && !xrphoton::summarizeFurnaceCases(accumulator, nullptr),
+        "furnace accumulation rejects invalid HDR input transactionally");
 }
 
 void testHash()
@@ -382,6 +450,7 @@ int main(int argumentCount, char** arguments)
 
     testCommandLine();
     testHalfAndReferenceAccumulation();
+    testFurnaceAccumulationAndGate();
     testHash();
     testTraceTimingSummary();
     testPpm(arguments[1], arguments[2]);

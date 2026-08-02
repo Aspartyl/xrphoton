@@ -33,11 +33,14 @@ twilight, so changing time never swaps scenes or geometry.
 
 Each frame traces a ray per pixel through one BLAS per mesh and a real
 multi-instance TLAS, from a perspective camera fed to the shader through push
-constants. Raygen follows paths of up to eight surface vertices, evaluating an
-energy-aware Lambert diffuse plus isotropic GGX dielectric, conductor, or rough-glass BSDF under a
+constants. A pinned frame-global 4×4 jitter cycle covers the full pixel footprint
+without consuming the per-pixel path RNG. Raygen follows paths of up to eight surface
+vertices, evaluating an energy-aware Lambert diffuse plus isotropic GGX dielectric,
+conductor, or rough-glass BSDF under a
 finite 0.27-degree solar disc, tracing alpha/Glass-aware visibility rays for soft
 shadows, and sampling
-matching lobes for indirect transport. GGX uses visible-normal sampling and
+matching single- and multiple-scattering lobes for indirect transport. GGX uses
+visible-normal sampling and deterministic directional-energy compensation, while
 Russian roulette starts after the third vertex, so bounces gather the
 Preetham/Perez daylight, the civil-twilight/night gradient, or sunlit surfaces,
 fill occluded regions, bleed color and carry
@@ -145,11 +148,15 @@ BSDF-only controls for estimator checks:
 
 ```sh
 ./build/xrPhoton --reference 256 --estimator mis --time 0
+./build/xrPhoton --reference 256 --estimator bsdf --furnace
 cmake --build --preset default --target xrPhotonReferenceProof
 ```
 
 The proof target runs all three estimators and requires their means to agree in each
-pinned image region. Its scene profile uses only required generated placements and
+pinned yard region. It then runs a white furnace containing Dielectric, Metal, and
+Glass at low, medium, and high roughness; every untouched HDR region must reproduce
+the constant environment radiance within the fixed two-percent/three-sigma gate.
+The yard estimator profile uses only required generated placements and
 omits Glass, because local optional props and P3's deliberately approximate
 straight-line visibility through intervening Glass would change the pinned integrand.
 Interactive and ordinary capture still load the complete configured gallery.

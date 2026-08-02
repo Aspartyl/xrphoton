@@ -1,5 +1,6 @@
 #include "scene_lighting.hpp"
 
+#include "furnace.hpp"
 #include "scene.hpp"
 
 #include <algorithm>
@@ -288,6 +289,19 @@ SceneLighting makeLightingAtTime(float timeOfDayHours)
     return lighting;
 }
 
+SceneLighting makeFurnaceLighting()
+{
+    SceneLighting lighting;
+    lighting.sky = {
+        .zenithRadiance = glm::vec3{FurnaceEnvironmentRadiance},
+        .horizonRadiance = glm::vec3{FurnaceEnvironmentRadiance},
+        .fullSphere = true,
+        .enabled = true,
+    };
+    lighting.emitterScale = 0.0f;
+    return lighting;
+}
+
 glm::vec3 perezDistribution(
     const glm::vec3& coefficientA,
     const glm::vec3& coefficientB,
@@ -351,6 +365,7 @@ bool validPerezSky(const AnalyticSky& sky)
 }
 
 const SceneLighting DefaultSceneLighting = makeLightingAtTime(DefaultTimeOfDayHours);
+const SceneLighting FurnaceSceneLighting = makeFurnaceLighting();
 
 bool updateSceneLightingTimeOfDay(
     float timeOfDayHours,
@@ -732,6 +747,9 @@ bool makeFrameLighting(
             packed.daylightBlend = scene.sky.daylightBlend;
             packed.flags |= FrameLightingPerezSkyBit;
         }
+        if (scene.sky.fullSphere) {
+            packed.flags |= FrameLightingFullSphereSkyBit;
+        }
     }
     const float selectorCount = static_cast<float>(skyHasPower)
         + static_cast<float>(emittersHavePower);
@@ -754,7 +772,8 @@ glm::vec3 evaluateSkyRadiance(
     const FrameLighting& lighting,
     const glm::vec3& direction)
 {
-    if (direction.y < 0.0f) {
+    if (direction.y < 0.0f
+        && (lighting.flags & FrameLightingFullSphereSkyBit) == 0) {
         return {};
     }
     if ((lighting.flags & FrameLightingPerezSkyBit) != 0) {

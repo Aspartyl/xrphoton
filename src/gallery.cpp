@@ -1,5 +1,6 @@
 #include "gallery.hpp"
 
+#include "furnace.hpp"
 #include "ogfx_loader.hpp"
 #include "scene_assembly.hpp"
 #include "texture_loader.hpp"
@@ -75,6 +76,132 @@ const GallerySpawn YardSpawn{
     .yaw = glm::radians(45.0f),
     .pitch = glm::radians(-5.0f),
 };
+
+const GallerySpawn FurnaceSpawn{
+    .position = {0.0f, 0.0f, 0.0f},
+};
+
+GalleryLoadResult fail(std::string error);
+
+SceneMaterialClass furnaceMaterialClass(FurnaceMaterialKind kind)
+{
+    switch (kind) {
+    case FurnaceMaterialKind::Metal:
+        return SceneMaterialClass::Metal;
+    case FurnaceMaterialKind::Glass:
+        return SceneMaterialClass::Glass;
+    default:
+        return SceneMaterialClass::Dielectric;
+    }
+}
+
+GalleryLoadResult makeFurnaceScene()
+{
+    SceneData scene;
+    // Twenty-four vertices keep face normals exact at the cube's hard edges. Each
+    // case reuses this immutable cube range through a material-specific geometry.
+    constexpr std::array<glm::vec3, 24> Positions{
+        // +X
+        glm::vec3{0.5f, -0.5f, -0.5f}, glm::vec3{0.5f, 0.5f, -0.5f},
+        glm::vec3{0.5f, 0.5f, 0.5f}, glm::vec3{0.5f, -0.5f, 0.5f},
+        // -X
+        glm::vec3{-0.5f, -0.5f, 0.5f}, glm::vec3{-0.5f, 0.5f, 0.5f},
+        glm::vec3{-0.5f, 0.5f, -0.5f}, glm::vec3{-0.5f, -0.5f, -0.5f},
+        // +Y
+        glm::vec3{-0.5f, 0.5f, -0.5f}, glm::vec3{-0.5f, 0.5f, 0.5f},
+        glm::vec3{0.5f, 0.5f, 0.5f}, glm::vec3{0.5f, 0.5f, -0.5f},
+        // -Y
+        glm::vec3{-0.5f, -0.5f, 0.5f}, glm::vec3{-0.5f, -0.5f, -0.5f},
+        glm::vec3{0.5f, -0.5f, -0.5f}, glm::vec3{0.5f, -0.5f, 0.5f},
+        // +Z
+        glm::vec3{0.5f, -0.5f, 0.5f}, glm::vec3{0.5f, 0.5f, 0.5f},
+        glm::vec3{-0.5f, 0.5f, 0.5f}, glm::vec3{-0.5f, -0.5f, 0.5f},
+        // -Z, facing the camera
+        glm::vec3{-0.5f, -0.5f, -0.5f}, glm::vec3{-0.5f, 0.5f, -0.5f},
+        glm::vec3{0.5f, 0.5f, -0.5f}, glm::vec3{0.5f, -0.5f, -0.5f},
+    };
+    constexpr std::array<glm::vec3, 6> Normals{
+        glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{-1.0f, 0.0f, 0.0f},
+        glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f, -1.0f, 0.0f},
+        glm::vec3{0.0f, 0.0f, 1.0f}, glm::vec3{0.0f, 0.0f, -1.0f},
+    };
+    constexpr std::array<std::uint32_t, 6> FaceIndices{0, 1, 2, 0, 2, 3};
+
+    scene.positions.reserve(Positions.size() * 3);
+    scene.attributes.reserve(Positions.size());
+    scene.indices.reserve(Normals.size() * FaceIndices.size());
+    for (std::size_t vertex = 0; vertex < Positions.size(); ++vertex) {
+        const glm::vec3 position = Positions[vertex];
+        const glm::vec3 normal = Normals[vertex / 4];
+        scene.positions.insert(
+            scene.positions.end(), {position.x, position.y, position.z});
+        scene.attributes.push_back({
+            .nx = normal.x,
+            .ny = normal.y,
+            .nz = normal.z,
+            .u = static_cast<float>(vertex % 4 == 2 || vertex % 4 == 3),
+            .v = static_cast<float>(vertex % 4 >= 2),
+        });
+    }
+    for (std::size_t face = 0; face < Normals.size(); ++face) {
+        for (const std::uint32_t localIndex : FaceIndices) {
+            scene.indices.push_back(
+                static_cast<std::uint32_t>(face * 4) + localIndex);
+        }
+    }
+
+    constexpr std::array<float, FurnaceRoughnessCount> XPositions{-4.1f, 0.0f, 4.1f};
+    constexpr std::array<float, FurnaceMaterialClassCount> YPositions{2.31f, 0.0f, -2.31f};
+    scene.materials.reserve(FurnaceCases.size());
+    scene.geometries.reserve(FurnaceCases.size());
+    scene.meshes.reserve(FurnaceCases.size());
+    scene.instances.reserve(FurnaceCases.size());
+    for (std::size_t caseIndex = 0; caseIndex < FurnaceCases.size(); ++caseIndex) {
+        const FurnaceCase& furnaceCase = FurnaceCases[caseIndex];
+        SceneMaterial material;
+        material.perceptualRoughness = furnaceCase.perceptualRoughness;
+        material.materialClass = furnaceMaterialClass(furnaceCase.material);
+        scene.materials.push_back(material);
+        scene.geometries.push_back({
+            .firstVertex = 0,
+            .vertexCount = static_cast<std::uint32_t>(Positions.size()),
+            .firstIndex = 0,
+            .indexCount = static_cast<std::uint32_t>(scene.indices.size()),
+            .materialIndex = static_cast<std::uint32_t>(caseIndex),
+        });
+        scene.meshes.push_back({
+            .firstGeometry = static_cast<std::uint32_t>(caseIndex),
+            .geometryCount = 1,
+        });
+        const std::size_t materialRow = caseIndex / FurnaceRoughnessCount;
+        const std::size_t roughnessColumn = caseIndex % FurnaceRoughnessCount;
+        scene.instances.push_back({
+            .meshIndex = static_cast<std::uint32_t>(caseIndex),
+            .transform = glm::translate(
+                    glm::mat4{1.0f},
+                    glm::vec3{
+                        XPositions[roughnessColumn],
+                        YPositions[materialRow],
+                        8.5f})
+                * glm::scale(glm::mat4{1.0f}, glm::vec3{2.4f, 1.7f, 1.0f}),
+        });
+    }
+
+    std::string error;
+    if (!validateAssembledScene(scene, &error)) {
+        return fail("Furnace scene validation failed: " + error);
+    }
+    const ResolveTexturesResult textures = resolveSceneTexturesFromRoots(&scene, {});
+    if (!textures) {
+        return fail("Furnace texture resolution failed: " + textures.error);
+    }
+    return {
+        .scene = std::move(scene),
+        .error = {},
+        .dynamicInstances = {},
+        .spawn = FurnaceSpawn,
+    };
+}
 
 constexpr std::array GalleryAssets{
     GalleryAsset{
@@ -613,6 +740,9 @@ GalleryLoadResult loadGalleryScene(
     GallerySceneProfile profile)
 {
     try {
+        if (profile == GallerySceneProfile::FurnaceReference) {
+            return makeFurnaceScene();
+        }
         SceneData scene{};
         std::array<LoadedGalleryAsset, GalleryAssets.size()> loadedAssets{};
         std::string assemblyError;

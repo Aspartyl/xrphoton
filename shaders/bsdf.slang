@@ -216,6 +216,247 @@ float3 evaluateGlassBsdf(
     return transmissionTint * scale;
 }
 
+float glassReflectionTargetEnergy(float cosine, float etaI, float etaT)
+{
+    return fresnelDielectric(cosine, etaI, etaT);
+}
+
+float glassTransmissionTargetEnergy(float cosine, float etaI, float etaT)
+{
+    float eta = etaI / etaT;
+    return (1.0 - fresnelDielectric(cosine, etaI, etaT)) * eta * eta;
+}
+
+float2 glassMissingEnergyComponents(
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float cosine)
+{
+    float roughness = saturate(perceptualRoughness);
+    float roughnessSquared = roughness * roughness;
+    float roughnessFourth = roughnessSquared * roughnessSquared;
+    float reflectionMissing = 0.0;
+    float transmissionMissing = 0.0;
+    if (etaI < etaT)
+    {
+        reflectionMissing = 0.0367 * roughnessFourth;
+        transmissionMissing = 0.0280 * roughnessFourth;
+        reflectionMissing *= glassReflectionTargetEnergy(
+                cosine, etaI, etaT)
+            / 0.04;
+        transmissionMissing *= glassTransmissionTargetEnergy(
+                cosine, etaI, etaT)
+            / 0.42666667;
+    }
+    else
+    {
+        transmissionMissing = max(
+            0.0,
+            0.00894375 - 0.198625 * roughness
+                + 1.321875 * roughnessSquared);
+        transmissionMissing *= glassTransmissionTargetEnergy(
+                cosine, etaI, etaT)
+            / 2.16;
+    }
+    return min(
+        float2(reflectionMissing, transmissionMissing),
+        float2(
+            glassReflectionTargetEnergy(cosine, etaI, etaT),
+            glassTransmissionTargetEnergy(cosine, etaI, etaT)));
+}
+
+float glassMultipleScatterClosure(float perceptualRoughness)
+{
+    // The separable Kulla-Conty return lobe overestimates a closed dielectric
+    // because successive air/glass interfaces are correlated. This pinned closure
+    // curve comes from a fixed-IOR VNDF slab integration and restores the
+    // paired-interface equilibrium without changing the exact low-roughness lobe.
+    float roughness = saturate(perceptualRoughness);
+    if (roughness <= 0.1)
+        return roughness * 0.7598;
+    if (roughness <= 0.5)
+        return lerp(0.07598, 0.3445, (roughness - 0.1) / 0.4);
+    if (roughness <= 0.9)
+        return lerp(0.3445, 0.93, (roughness - 0.5) / 0.4);
+    return lerp(0.93, 1.0, (roughness - 0.9) / 0.1);
+}
+
+float3 opaqueMultipleScatterTint(
+    uint materialClass,
+    float3 baseColor,
+    float averageMissing)
+{
+    if (materialClass != MaterialClassMetal)
+        return baseColor;
+
+    // Kulla-Conty's infinite-bounce Fresnel series. It becomes exactly one for a
+    // white conductor, while colored conductors retain their spectral response.
+    float3 averageFresnel = baseColor
+        + (float3(1.0) - baseColor) * (1.0 / 21.0);
+    float averageSingleScatter = 1.0 - averageMissing;
+    return averageFresnel * averageFresnel * averageSingleScatter
+        / max(
+            float3(1.0)
+                - averageFresnel * averageMissing,
+            float3(1.0e-6));
+}
+
+float opaqueMissingEnergy(
+    uint materialClass,
+    float perceptualRoughness)
+{
+    float roughness = saturate(perceptualRoughness);
+    float normalMissing = 0.0;
+    if (materialClass == MaterialClassMetal)
+    {
+        normalMissing = roughness < 0.1
+            ? roughness * 0.00582
+            : max(
+                0.0,
+                0.04174966 - 0.53601188 * roughness
+                    + 1.24335313 * roughness * roughness);
+    }
+    else
+    {
+        normalMissing = 0.08430553 - 0.02165688 * roughness
+            + 0.04921563 * roughness * roughness;
+    }
+    // This compact fit is intentionally angle-independent: it preserves the fixed
+    // roughness energy closure without putting a dynamic table lookup into every
+    // ordinary yard BSDF evaluation.
+    return saturate(normalMissing);
+}
+
+float3 evaluateOpaqueMultipleScatter(
+    uint materialClass,
+    float3 baseColor,
+    float perceptualRoughness,
+    float3 normal,
+    float3 wo,
+    float3 wi)
+{
+    float normalDotOut = dot(normal, wo);
+    float normalDotIn = dot(normal, wi);
+    if (normalDotOut <= 0.0 || normalDotIn <= 0.0)
+        return float3(0.0);
+    float missingOut = opaqueMissingEnergy(
+        materialClass,
+        perceptualRoughness);
+    float averageMissing = materialClass == MaterialClassMetal
+        ? opaqueMissingEnergy(materialClass, perceptualRoughness)
+        : 0.0;
+    // A cosine return lobe integrates directly to the fitted missing energy.
+    // Keeping the fit angle-independent avoids adding a lookup to every ordinary
+    // NEE/BSDF evaluation.
+    return opaqueMultipleScatterTint(
+            materialClass,
+            baseColor,
+            averageMissing)
+        * (missingOut * InversePi);
+}
+
+float3 evaluateGlassMultipleScatter(
+    float3 transmissionTint,
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo,
+    float3 wi)
+{
+    float normalDotOut = dot(normal, wo);
+    float normalDotIn = dot(normal, wi);
+    if (normalDotOut <= 0.0 || abs(normalDotIn) <= 1.0e-8)
+        return float3(0.0);
+
+    bool transmission = normalDotIn < 0.0;
+    float2 missing = glassMissingEnergyComponents(
+        perceptualRoughness,
+        etaI,
+        etaT,
+        normalDotOut);
+    float missingOut = transmission ? missing.y : missing.x;
+    return transmissionTint * glassMultipleScatterClosure(perceptualRoughness)
+        * (missingOut * InversePi);
+}
+
+float2 glassMultipleScatterMissingEnergy(
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo)
+{
+    return glassMissingEnergyComponents(
+        perceptualRoughness,
+        etaI,
+        etaT,
+        max(dot(normal, wo), 0.0));
+}
+
+float glassMultipleScatterReflectionProbability(
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo)
+{
+    float2 missing = glassMultipleScatterMissingEnergy(
+        perceptualRoughness,
+        etaI,
+        etaT,
+        normal,
+        wo);
+    return missing.x / max(missing.x + missing.y, 1.0e-6);
+}
+
+float multipleScatterProbability(
+    uint materialClass,
+    float3 baseColor,
+    float perceptualRoughness,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo)
+{
+    float normalDotOut = max(dot(normal, wo), 0.0);
+    if (materialClass == MaterialClassGlass)
+    {
+        float2 missingComponents = glassMultipleScatterMissingEnergy(
+            perceptualRoughness,
+            etaI,
+            etaT,
+            normal,
+            wo);
+        float missing = (missingComponents.x + missingComponents.y)
+            * glassMultipleScatterClosure(perceptualRoughness);
+        float target = glassReflectionTargetEnergy(
+                normalDotOut, etaI, etaT)
+            + glassTransmissionTargetEnergy(
+                normalDotOut, etaI, etaT);
+        return clamp(
+            missing / max(target, 1.0e-6),
+            0.0,
+            0.95);
+    }
+
+    float missing = opaqueMissingEnergy(
+        materialClass,
+        perceptualRoughness);
+    float3 tint = opaqueMultipleScatterTint(
+        materialClass,
+        baseColor,
+        materialClass == MaterialClassMetal
+            ? opaqueMissingEnergy(
+                materialClass, perceptualRoughness)
+            : 0.0);
+    return clamp(
+        missing * dot(tint, float3(0.2126, 0.7152, 0.0722)),
+        0.0,
+        0.95);
+}
+
 float3 evaluateBsdf(
     uint materialClass,
     float3 baseColor,
@@ -233,7 +474,14 @@ float3 evaluateBsdf(
             perceptualRoughness,
             normal,
             wo,
-            wi);
+            wi)
+            + evaluateOpaqueMultipleScatter(
+                materialClass,
+                baseColor,
+                perceptualRoughness,
+                normal,
+                wo,
+                wi);
     if (materialClass == MaterialClassGlass)
         return evaluateGlassBsdf(
             baseColor,
@@ -242,14 +490,29 @@ float3 evaluateBsdf(
             etaT,
             normal,
             wo,
-            wi);
+            wi)
+            + evaluateGlassMultipleScatter(
+                baseColor,
+                perceptualRoughness,
+                etaI,
+                etaT,
+                normal,
+                wo,
+                wi);
     return evaluateDielectricBrdf(
         baseColor,
         perceptualRoughness,
         dielectricF0,
         normal,
         wo,
-        wi);
+        wi)
+        + evaluateOpaqueMultipleScatter(
+            materialClass,
+            baseColor,
+            perceptualRoughness,
+            normal,
+            wo,
+            wi);
 }
 
 float2 brdfLobeProbabilities(float3 albedo, float dielectricF0)
@@ -321,6 +584,42 @@ float3 sampleBsdf(
     float lobeSample,
     float2 directionSample)
 {
+    float multipleScatter = multipleScatterProbability(
+        materialClass,
+        baseColor,
+        perceptualRoughness,
+        etaI,
+        etaT,
+        normal,
+        wo);
+    if (lobeSample < multipleScatter)
+    {
+        if (materialClass == MaterialClassGlass)
+        {
+            float reflectionProbability =
+                glassMultipleScatterReflectionProbability(
+                    perceptualRoughness,
+                    etaI,
+                    etaT,
+                    normal,
+                    wo);
+            bool opposite = directionSample.x >= reflectionProbability;
+            float2 remappedSample = float2(
+                opposite
+                    ? (directionSample.x - reflectionProbability)
+                        / max(1.0 - reflectionProbability, 1.0e-6)
+                    : directionSample.x
+                        / max(reflectionProbability, 1.0e-6),
+                directionSample.y);
+            return cosineSampleHemisphere(
+                opposite ? -normal : normal,
+                remappedSample);
+        }
+        return cosineSampleHemisphere(normal, directionSample);
+    }
+    float baseLobeSample = (lobeSample - multipleScatter)
+        / max(1.0 - multipleScatter, 1.0e-6);
+
     float alpha = max(perceptualRoughness * perceptualRoughness, 1.0e-4);
     if (materialClass == MaterialClassMetal)
     {
@@ -340,7 +639,7 @@ float3 sampleBsdf(
             alpha,
             directionSample);
         float fresnel = fresnelDielectric(dot(wo, halfVector), etaI, etaT);
-        if (lobeSample < fresnel)
+        if (baseLobeSample < fresnel)
             return reflect(-wo, halfVector);
         return refract(-wo, halfVector, etaI / etaT);
     }
@@ -348,7 +647,7 @@ float3 sampleBsdf(
     float2 probabilities = brdfLobeProbabilities(baseColor, dielectricF0);
     if (probabilities.x + probabilities.y <= 0.0)
         return float3(0.0);
-    if (lobeSample < probabilities.y)
+    if (baseLobeSample < probabilities.y)
     {
         float3 halfVector = sampleGgxVisibleNormal(
             normal,
@@ -443,7 +742,7 @@ float glassBsdfPdf(
     return (1.0 - fresnel) * visibleNormalPdf * halfVectorJacobian;
 }
 
-float bsdfPdf(
+float baseBsdfPdf(
     uint materialClass,
     float3 baseColor,
     float perceptualRoughness,
@@ -476,4 +775,52 @@ float bsdfPdf(
         normal,
         wo,
         wi);
+}
+
+float bsdfPdf(
+    uint materialClass,
+    float3 baseColor,
+    float perceptualRoughness,
+    float dielectricF0,
+    float etaI,
+    float etaT,
+    float3 normal,
+    float3 wo,
+    float3 wi)
+{
+    float multipleScatter = multipleScatterProbability(
+        materialClass,
+        baseColor,
+        perceptualRoughness,
+        etaI,
+        etaT,
+        normal,
+        wo);
+    float normalDotIn = dot(normal, wi);
+    float multipleScatterPdf = max(normalDotIn, 0.0) * InversePi;
+    if (materialClass == MaterialClassGlass)
+    {
+        float reflectionProbability =
+            glassMultipleScatterReflectionProbability(
+                perceptualRoughness,
+                etaI,
+                etaT,
+                normal,
+                wo);
+        multipleScatterPdf = abs(normalDotIn) * InversePi
+            * (normalDotIn > 0.0
+                ? reflectionProbability
+                : 1.0 - reflectionProbability);
+    }
+    return (1.0 - multipleScatter) * baseBsdfPdf(
+            materialClass,
+            baseColor,
+            perceptualRoughness,
+            dielectricF0,
+            etaI,
+            etaT,
+            normal,
+            wo,
+            wi)
+        + multipleScatter * multipleScatterPdf;
 }

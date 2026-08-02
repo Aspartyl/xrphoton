@@ -830,6 +830,7 @@ add_custom_target(xrPhotonCaptureProof
         -DENGINE=$<TARGET_FILE:xrPhoton>
         -DBINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
         -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/capture-proof
+        -DFRAME_COUNT=288
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/capture_runtime_proof.cmake
     DEPENDS xrPhoton
     COMMENT "Running deterministic capture and publication proof"
@@ -854,7 +855,7 @@ add_custom_target(xrPhotonReferenceProof
         -DSAMPLE_COUNT=256
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_runtime_proof.cmake
     DEPENDS xrPhoton xrPhotonReferenceCompare
-    COMMENT "Running MIS/NEE/BSDF linear-HDR reference proof"
+    COMMENT "Running estimator-consistency and white-furnace HDR proofs"
     VERBATIM
     USES_TERMINAL
 )

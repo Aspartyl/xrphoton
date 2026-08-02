@@ -340,6 +340,7 @@ void testFrameAbiAndFlags()
         xrphoton::hasValidFrameLightingFlags(
             xrphoton::FrameLightingPerezSkyBit
             | xrphoton::FrameLightingGlassBit
+            | xrphoton::FrameLightingFullSphereSkyBit
             | (1u << xrphoton::FrameLightingEstimatorShift)),
         "known feature bits and NEE-only mode are valid");
     expect(
@@ -517,6 +518,27 @@ void testSkyEvaluationSamplingAndPdf()
                     {0.0f, 0.5f, 0.0f}),
                 (fallbackFrame.skyZenith + fallbackFrame.skyHorizon) * 0.5f),
         "the one sky entry point preserves the explicit pre-P4 gradient fallback");
+
+    xrphoton::FrameLighting furnaceFrame;
+    expect(
+        xrphoton::makeFrameLighting(
+            xrphoton::FurnaceSceneLighting,
+            0u,
+            &furnaceFrame)
+            && furnaceFrame.sunIrradiance == glm::vec3{}
+            && furnaceFrame.lightCount == 0
+            && furnaceFrame.pSky == 1.0f
+            && furnaceFrame.pEmitters == 0.0f
+            && furnaceFrame.emitterScale == 0.0f
+            && furnaceFrame.flags
+                == xrphoton::FrameLightingFullSphereSkyBit
+            && xrphoton::evaluateSkyRadiance(
+                furnaceFrame, {0.0f, 1.0f, 0.0f}) == glm::vec3{1.0f}
+            && xrphoton::evaluateSkyRadiance(
+                furnaceFrame, {1.0f, 0.0f, 0.0f}) == glm::vec3{1.0f}
+            && xrphoton::evaluateSkyRadiance(
+                furnaceFrame, {0.0f, -1.0f, 0.0f}) == glm::vec3{1.0f},
+        "furnace lighting is constant over the full sphere with no other source");
 
     const glm::vec3 normal = glm::normalize(glm::vec3{0.3f, 0.9f, -0.2f});
     constexpr glm::vec2 Samples[] = {
