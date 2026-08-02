@@ -21,11 +21,19 @@ constexpr VkImageUsageFlags RequiredSwapchainImageUsage =
     | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 constexpr VkFormat HdrRadianceFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat LdrOutputFormat = VK_FORMAT_R8G8B8A8_UNORM;
+// Primary-hit G-buffer formats (denoising plan D0). Normal + depth shares the HDR
+// float format, albedo shares the LDR UNORM format, and the instance-ID image is the
+// one genuinely new format the device must support for storage writes and readback.
+constexpr VkFormat GBufferNormalDepthFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkFormat GBufferAlbedoFormat = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr VkFormat GBufferInstanceIdFormat = VK_FORMAT_R32_UINT;
 constexpr VkImageUsageFlags RequiredHdrRadianceUsage =
     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 constexpr VkImageUsageFlags RequiredLdrOutputUsage =
     VK_IMAGE_USAGE_STORAGE_BIT
     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+constexpr VkImageUsageFlags RequiredGBufferUsage =
+    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
 // Everything queried about a surface in one shot. `valid` is false if any of the
 // underlying queries failed, so callers can treat a half-filled struct as "unsupported".
@@ -57,8 +65,17 @@ bool renderTargetFormatsSupported(VkPhysicalDevice physicalDevice)
         VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
         | VK_FORMAT_FEATURE_BLIT_SRC_BIT
         | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    // The float and UNORM G-buffer formats are already gated by the HDR/LDR checks;
+    // only the instance-ID format adds a new requirement.
+    constexpr VkFormatFeatureFlags GBufferInstanceIdFeatures =
+        VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
+        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
     return imageFormatFeaturesSupported(physicalDevice, HdrRadianceFormat, HdrFeatures)
-        && imageFormatFeaturesSupported(physicalDevice, LdrOutputFormat, LdrFeatures);
+        && imageFormatFeaturesSupported(physicalDevice, LdrOutputFormat, LdrFeatures)
+        && imageFormatFeaturesSupported(
+            physicalDevice,
+            GBufferInstanceIdFormat,
+            GBufferInstanceIdFeatures);
 }
 
 // The present blit relies on the destination format to encode the storage image's
@@ -561,6 +578,24 @@ void destroySwapchainResources(Swapchain* swap)
     destroyRenderTargetImage(
         device,
         swap->allocator,
+        &swap->gbufferInstanceIdImage,
+        &swap->gbufferInstanceIdImageAllocation,
+        &swap->gbufferInstanceIdImageView);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
+        &swap->gbufferAlbedoImage,
+        &swap->gbufferAlbedoImageAllocation,
+        &swap->gbufferAlbedoImageView);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
+        &swap->gbufferNormalDepthImage,
+        &swap->gbufferNormalDepthImageAllocation,
+        &swap->gbufferNormalDepthImageView);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
         &swap->ldrOutputImage,
         &swap->ldrOutputImageAllocation,
         &swap->ldrOutputImageView);
@@ -699,7 +734,7 @@ VkResult createSwapchainResources(
         return result;
     }
 
-    return createRenderTargetImage(
+    result = createRenderTargetImage(
         device,
         swap->extent,
         LdrOutputFormat,
@@ -708,6 +743,45 @@ VkResult createSwapchainResources(
         &swap->ldrOutputImage,
         &swap->ldrOutputImageAllocation,
         &swap->ldrOutputImageView);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = createRenderTargetImage(
+        device,
+        swap->extent,
+        GBufferNormalDepthFormat,
+        RequiredGBufferUsage,
+        swap->allocator,
+        &swap->gbufferNormalDepthImage,
+        &swap->gbufferNormalDepthImageAllocation,
+        &swap->gbufferNormalDepthImageView);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = createRenderTargetImage(
+        device,
+        swap->extent,
+        GBufferAlbedoFormat,
+        RequiredGBufferUsage,
+        swap->allocator,
+        &swap->gbufferAlbedoImage,
+        &swap->gbufferAlbedoImageAllocation,
+        &swap->gbufferAlbedoImageView);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    return createRenderTargetImage(
+        device,
+        swap->extent,
+        GBufferInstanceIdFormat,
+        RequiredGBufferUsage,
+        swap->allocator,
+        &swap->gbufferInstanceIdImage,
+        &swap->gbufferInstanceIdImageAllocation,
+        &swap->gbufferInstanceIdImageView);
 }
 
 VkResult recreateSwapchain(
@@ -769,6 +843,9 @@ Swapchain::~Swapchain()
 
     const bool hadHdrRadianceImage = hdrRadianceImage != VK_NULL_HANDLE;
     const bool hadLdrOutputImage = ldrOutputImage != VK_NULL_HANDLE;
+    const bool hadGBufferImages = gbufferNormalDepthImage != VK_NULL_HANDLE
+        || gbufferAlbedoImage != VK_NULL_HANDLE
+        || gbufferInstanceIdImage != VK_NULL_HANDLE;
     const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
     const bool hadImageViews = !imageViews.empty();
     const bool hadSwapchain = swapchain != VK_NULL_HANDLE;
@@ -780,6 +857,9 @@ Swapchain::~Swapchain()
     }
     if (hadLdrOutputImage) {
         std::cout << "Destroyed Vulkan LDR output image.\n";
+    }
+    if (hadGBufferImages) {
+        std::cout << "Destroyed Vulkan G-buffer images.\n";
     }
     if (hadRenderFinishedSemaphores) {
         std::cout << "Destroyed Vulkan render-finished semaphores.\n";

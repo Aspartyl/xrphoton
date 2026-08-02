@@ -28,9 +28,15 @@ set(TEST_DIR "${normalized_test_dir}")
 file(REMOVE_RECURSE "${TEST_DIR}")
 file(MAKE_DIRECTORY "${TEST_DIR}")
 
+# Byte-exact hashes are only comparable in a pinned layer environment: the
+# MangoHud implicit layer perturbs shader compilation enough to move a sparse set
+# of one-LDR-step pixels, which changes the hash without being a rendering
+# regression. Every engine invocation below therefore disables it explicitly.
+set(ENGINE_ENV "${CMAKE_COMMAND}" -E env DISABLE_MANGOHUD=1)
+
 function(run_capture label output_path)
     execute_process(
-        COMMAND "${ENGINE}" --capture "${FRAME_COUNT}" "${output_path}"
+        COMMAND ${ENGINE_ENV} "${ENGINE}" --capture "${FRAME_COUNT}" "${output_path}"
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr
@@ -123,11 +129,43 @@ if(NOT compare_result EQUAL 0)
     message(FATAL_ERROR "independent capture PPM files are not byte-identical")
 endif()
 
+# D0 acceptance: a probed capture must pass every pinned G-buffer probe (the
+# analytic ground pixel, the rotated east-wall pixel, and the sky miss sentinel)
+# and still complete normally. The probe leg runs its own fixed frame count: the
+# wall probe requires the dynamic crate settled, independent of FRAME_COUNT.
+set(PROBE_FRAME_COUNT 288)
+set(probe_output "${TEST_DIR}/capture-gbuffer.ppm")
+execute_process(
+    COMMAND ${ENGINE_ENV} "${ENGINE}" --capture "${PROBE_FRAME_COUNT}"
+        "${probe_output}" --gbuffer-probe
+    RESULT_VARIABLE probe_result
+    OUTPUT_VARIABLE probe_stdout
+    ERROR_VARIABLE probe_stderr
+    TIMEOUT 60
+)
+file(WRITE "${TEST_DIR}/gbuffer-probe.log" "${probe_stdout}${probe_stderr}")
+if(NOT probe_result EQUAL 0)
+    message(FATAL_ERROR
+        "gbuffer probe: capture failed with ${probe_result}; see ${TEST_DIR}/gbuffer-probe.log")
+endif()
+if(NOT probe_stdout MATCHES "GBufferProbe ground: [^\n]* result=pass")
+    message(FATAL_ERROR "gbuffer probe: ground probe did not pass")
+endif()
+if(NOT probe_stdout MATCHES "GBufferProbe wall: [^\n]* result=pass")
+    message(FATAL_ERROR "gbuffer probe: east-wall probe did not pass")
+endif()
+if(NOT probe_stdout MATCHES "GBufferProbe sky: [^\n]* result=pass")
+    message(FATAL_ERROR "gbuffer probe: sky probe did not pass")
+endif()
+if(NOT probe_stdout MATCHES "Capture complete:")
+    message(FATAL_ERROR "gbuffer probe: capture summary missing after probes")
+endif()
+
 # An existing directory cannot be opened as a regular PPM file. This deliberately
 # reaches publication only after one successful render/readback, proving the runtime
 # propagates checked output failure instead of reporting a completed capture.
 execute_process(
-    COMMAND "${ENGINE}" --capture 1 "${TEST_DIR}"
+    COMMAND ${ENGINE_ENV} "${ENGINE}" --capture 1 "${TEST_DIR}"
     RESULT_VARIABLE unwritable_result
     OUTPUT_VARIABLE unwritable_stdout
     ERROR_VARIABLE unwritable_stderr

@@ -129,6 +129,16 @@ void testCommandLine()
             && options.captureFrameCount == UINT32_MAX,
         "the complete uint32 count domain is accepted");
 
+    options = parse(
+        {"xrPhoton", "--capture", "288", "result.ppm", "--gbuffer-probe"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded
+            && options.mode == xrphoton::CommandLineMode::Capture
+            && options.gbufferProbeRequested,
+        "capture accepts the G-buffer probe request at a settled frame count");
+
     const std::initializer_list<const char*> invalidArguments[] = {
         {"xrPhoton", "--capture"},
         {"xrPhoton", "--capture", "8"},
@@ -161,6 +171,13 @@ void testCommandLine()
         {"xrPhoton", "--spp", "two"},
         {"xrPhoton", "--spp", "2", "--spp", "4"},
         {"xrPhoton", "--furnace"},
+        {"xrPhoton", "--gbuffer-probe"},
+        {"xrPhoton", "--reference", "8", "--estimator", "mis",
+         "--gbuffer-probe"},
+        {"xrPhoton", "--capture", "8", "result.ppm", "--gbuffer-probe"},
+        {"xrPhoton", "--capture", "127", "result.ppm", "--gbuffer-probe"},
+        {"xrPhoton", "--capture", "288", "result.ppm", "--gbuffer-probe",
+         "--gbuffer-probe"},
         {"xrPhoton", "--capture", "8", "result.ppm", "--furnace"},
         {"xrPhoton", "--reference", "8", "--estimator", "mis", "--furnace"},
         {"xrPhoton", "--reference", "8", "--estimator", "nee", "--furnace"},
@@ -451,6 +468,158 @@ void testPpm(
 }
 }
 
+void testGBufferProbe()
+{
+    // A 2x2 G-buffer: pixel (0, 0) is a flat ground hit with normal (0, 1, 0) and
+    // view depth 2, pixel (1, 0) is a primary miss, and the bottom row is junk the
+    // probes must not touch.
+    constexpr std::uint16_t HalfOne = 0x3c00u;
+    constexpr std::uint16_t HalfTwo = 0x4000u;
+    const std::vector<std::uint16_t> normalDepth{
+        0, HalfOne, 0, HalfTwo,
+        0, 0, 0, 0,
+        HalfOne, 0, 0, HalfOne,
+        HalfOne, 0, 0, HalfOne,
+    };
+    const std::vector<std::uint8_t> albedo{
+        107, 107, 115, 255,
+        0, 0, 0, 255,
+        255, 255, 255, 255,
+        255, 255, 255, 255,
+    };
+    const std::vector<std::uint32_t> instances{
+        0,
+        xrphoton::GBufferMissInstanceId,
+        7,
+        7,
+    };
+
+    xrphoton::GBufferProbeSample ground;
+    xrphoton::GBufferProbeSample sky;
+    expect(
+        xrphoton::extractGBufferProbeSample(
+            2, 2, 0, 0, normalDepth, albedo, instances, &ground)
+            && xrphoton::extractGBufferProbeSample(
+                2, 2, 1, 0, normalDepth, albedo, instances, &sky),
+        "G-buffer probe extraction decodes in-range pixels");
+    expect(
+        ground.normal[1] == 1.0f && ground.viewDepth == 2.0f
+            && ground.instanceId == 0
+            && std::abs(ground.albedo[0] - 107.0f / 255.0f) < 1.0e-6f,
+        "the ground pixel decodes normal, depth, albedo, and instance");
+    expect(
+        !xrphoton::extractGBufferProbeSample(
+            2, 2, 2, 0, normalDepth, albedo, instances, &ground)
+            && !xrphoton::extractGBufferProbeSample(
+                2, 2, 0, 0, normalDepth, albedo, instances, nullptr)
+            && !xrphoton::extractGBufferProbeSample(
+                3, 2, 0, 0, normalDepth, albedo, instances, &ground),
+        "extraction rejects out-of-range pixels, null output, and size mismatch");
+
+    // Horizontal camera one unit above the plane, 90-degree vertical FOV
+    // (up pre-scaled by tan 45 = 1): the pixel at ndc.y = +0.5 looks down a
+    // 1-in-2 slope, so the analytic view depth is exactly 2.
+    xrphoton::CameraPushConstants camera{};
+    camera.origin = {0.0f, 1.0f, 0.0f};
+    camera.forward = {0.0f, 0.0f, 1.0f};
+    camera.right = {1.0f, 0.0f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    float depth = 0.0f;
+    expect(
+        xrphoton::expectedPlaneViewDepth(
+            camera, 0.0f, 0.0f, 2, 2, 1, 1, 1, 0.0f, &depth)
+            && std::abs(depth - 2.0f) < 1.0e-5f,
+        "the analytic plane depth matches the hand-derived slope case");
+    float verticalDepth = 0.0f;
+    expect(
+        xrphoton::expectedPlaneViewDepth(
+            camera, 0.0f, 0.0f, 2, 2, 1, 1, 2, 3.0f, &verticalDepth)
+            && std::abs(verticalDepth - 3.0f) < 1.0e-5f,
+        "a vertical axis plane yields the exact forward distance");
+    float jitteredDepth = 0.0f;
+    expect(
+        xrphoton::expectedPlaneViewDepth(
+            camera, 0.25f, 0.25f, 2, 2, 1, 1, 1, 0.0f, &jitteredDepth)
+            && jitteredDepth > 0.0f
+            && jitteredDepth != depth,
+        "jitter shifts the analytic primary ray");
+    expect(
+        !xrphoton::expectedPlaneViewDepth(
+            camera, 0.0f, 0.0f, 2, 2, 1, 0, 1, 0.0f, &depth)
+            && !xrphoton::expectedPlaneViewDepth(
+                camera, 0.0f, 0.0f, 2, 2, 1, 1, 3, 0.0f, &depth)
+            && !xrphoton::expectedPlaneViewDepth(
+                camera, 0.0f, 0.0f, 2, 2, 1, 1, 1, 0.0f, nullptr),
+        "unreachable planes, invalid axes, and null outputs are rejected");
+
+    // The point (1, 0, 2) lies exactly on pixel (1, 1)'s unjittered ray, so the
+    // projection and the plane-depth helper must agree on the same pixel and the
+    // slope case's exact depth.
+    std::uint32_t projectedX = 0;
+    std::uint32_t projectedY = 0;
+    float roundTripDepth = 0.0f;
+    expect(
+        xrphoton::projectWorldPointToPixel(
+            camera, 0.0f, 0.0f, 2, 2, {1.0f, 0.0f, 2.0f},
+            &projectedX, &projectedY)
+            && projectedX == 1 && projectedY == 1
+            && xrphoton::expectedPlaneViewDepth(
+                camera, 0.0f, 0.0f, 2, 2, projectedX, projectedY, 1, 0.0f,
+                &roundTripDepth)
+            && std::abs(roundTripDepth - 2.0f) < 1.0e-5f,
+        "projecting a world point round-trips through the analytic plane depth");
+    expect(
+        !xrphoton::projectWorldPointToPixel(
+            camera, 0.0f, 0.0f, 2, 2, {0.0f, 1.0f, -5.0f},
+            &projectedX, &projectedY)
+            && !xrphoton::projectWorldPointToPixel(
+                camera, 0.0f, 0.0f, 2, 2, {100.0f, 0.0f, 2.0f},
+                &projectedX, &projectedY)
+            && !xrphoton::projectWorldPointToPixel(
+                camera, 0.0f, 0.0f, 2, 2, {1.0f, 0.0f, 2.0f},
+                nullptr, &projectedY),
+        "points behind the camera, off-image points, and null outputs are rejected");
+
+    const std::array<float, 3> upNormal{0.0f, 1.0f, 0.0f};
+    const std::array<float, 3> expectedAlbedo{0.42f, 0.42f, 0.45f};
+    expect(
+        xrphoton::gbufferSurfaceProbePasses(
+            ground, upNormal, 2.0f, expectedAlbedo, 0),
+        "the surface probe accepts the matching sample");
+    xrphoton::GBufferProbeSample wrongInstance = ground;
+    wrongInstance.instanceId = 3;
+    xrphoton::GBufferProbeSample tiltedNormal = ground;
+    tiltedNormal.normal = {0.1f, 0.99f, 0.0f};
+    xrphoton::GBufferProbeSample wrongAlbedo = ground;
+    wrongAlbedo.albedo = {0.5f, 0.42f, 0.45f};
+    expect(
+        !xrphoton::gbufferSurfaceProbePasses(
+            wrongInstance, upNormal, 2.0f, expectedAlbedo, 0)
+            && !xrphoton::gbufferSurfaceProbePasses(
+                tiltedNormal, upNormal, 2.0f, expectedAlbedo, 0)
+            && !xrphoton::gbufferSurfaceProbePasses(
+                wrongAlbedo, upNormal, 2.0f, expectedAlbedo, 0)
+            && !xrphoton::gbufferSurfaceProbePasses(
+                ground, {-1.0f, 0.0f, 0.0f}, 2.0f, expectedAlbedo, 0)
+            && !xrphoton::gbufferSurfaceProbePasses(
+                ground, upNormal, 2.1f, expectedAlbedo, 0)
+            && !xrphoton::gbufferSurfaceProbePasses(
+                ground, upNormal, -1.0f, expectedAlbedo, 0),
+        "the surface probe rejects instance, normal, albedo, and depth mismatches");
+
+    expect(
+        xrphoton::gbufferSkyProbePasses(sky),
+        "the sky probe accepts the exact miss sentinel");
+    xrphoton::GBufferProbeSample notQuiteSky = sky;
+    notQuiteSky.viewDepth = 0.5f;
+    xrphoton::GBufferProbeSample wrongSentinel = sky;
+    wrongSentinel.instanceId = 0;
+    expect(
+        !xrphoton::gbufferSkyProbePasses(notQuiteSky)
+            && !xrphoton::gbufferSkyProbePasses(wrongSentinel),
+        "the sky probe rejects nonzero depth and a hit instance ID");
+}
+
 int main(int argumentCount, char** arguments)
 {
     if (argumentCount != 3) {
@@ -463,6 +632,7 @@ int main(int argumentCount, char** arguments)
     testFurnaceAccumulationAndGate();
     testHash();
     testTraceTimingSummary();
+    testGBufferProbe();
     testPpm(arguments[1], arguments[2]);
 
     if (failures != 0) {

@@ -62,22 +62,26 @@ struct RtPipeline
 
 // Create the descriptor set layout (binding 0 the TLAS, binding 1 the HDR radiance image,
 // bindings 2–3 the geometry/material records, binding 4 the fixed scene-texture
-// array, and binding 5 the dynamic FrameLighting uniform), a pool sized for one set,
+// array, binding 5 the dynamic FrameLighting uniform, and bindings 9–11 the
+// primary-hit G-buffer storage images), a pool sized for one set,
 // and allocate that set.
 // Adopts device into *rt first, so on failure *rt holds whatever was created so far
 // and ~RtPipeline cleans it up; the caller can bare-return.
 VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device);
 
-// Point the set's bindings at the TLAS (binding 0) and the HDR radiance image view in
-// GENERAL layout (binding 1). Called once at startup and again after every successful
-// swapchain recreate: the HDR image view is recreated with the swapchain, and
-// recreateSwapchain's device-idle guarantees the set is not referenced by pending
-// work, which vkUpdateDescriptorSets requires.
+// Point the set's bindings at the TLAS (binding 0) plus the HDR radiance and
+// G-buffer image views in GENERAL layout (bindings 1 and 9–11). Called once at
+// startup and again after every successful swapchain recreate: all four image views
+// are recreated with the swapchain, and recreateSwapchain's device-idle guarantees
+// the set is not referenced by pending work, which vkUpdateDescriptorSets requires.
 void writeRtDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,
     VkAccelerationStructureKHR tlas,
-    VkImageView hdrRadianceImageView);
+    VkImageView hdrRadianceImageView,
+    VkImageView gbufferNormalDepthImageView,
+    VkImageView gbufferAlbedoImageView,
+    VkImageView gbufferInstanceIdImageView);
 
 // Write the program-lifetime scene buffers and every slot of the fixed texture array
 // once at startup. Resize only rewrites bindings 0–1 through writeRtDescriptorSet.

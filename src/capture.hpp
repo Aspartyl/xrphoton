@@ -1,5 +1,6 @@
 #pragma once
 
+#include "camera.hpp"
 #include "estimator_mode.hpp"
 #include "furnace.hpp"
 
@@ -35,6 +36,7 @@ struct CommandLineOptions
     std::optional<float> timeOfDayHours;
     bool furnaceRequested = false;
     bool validationRequested = false;
+    bool gbufferProbeRequested = false;
 };
 
 struct CaptureTraceTimingSummary
@@ -137,6 +139,81 @@ struct ReferenceRegionSummary
 [[nodiscard]] bool referenceEstimatesAgree(
     const ReferenceRegionSummary& first,
     const ReferenceRegionSummary& second);
+
+// The raygen shader's primary-miss sentinel in the instance-ID G-buffer; mirrored
+// by GBufferMissInstanceId in raytrace.slang.
+constexpr std::uint32_t GBufferMissInstanceId = 0xffffffffu;
+
+// The wall probe's sight line crosses the dynamic crate's spawn position; the
+// crate settles well below it within roughly two simulated seconds, so probed
+// captures must run long enough for the final frame to be past that.
+constexpr std::uint32_t MinimumGBufferProbeFrameCount = 128;
+
+// One decoded G-buffer pixel: world shading normal + linear view depth from the
+// binary16 image, linear albedo from the UNORM8 image, and the raw instance ID.
+struct GBufferProbeSample
+{
+    std::array<float, 3> normal{};
+    float viewDepth = 0.0f;
+    std::array<float, 3> albedo{};
+    std::uint32_t instanceId = 0;
+};
+
+// Decode pixel (x, y) from tightly packed G-buffer readbacks. Rejects null output,
+// out-of-range coordinates, and spans inconsistent with width x height.
+[[nodiscard]] bool extractGBufferProbeSample(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t x,
+    std::uint32_t y,
+    std::span<const std::uint16_t> normalDepthRgba16,
+    std::span<const std::uint8_t> albedoRgba8,
+    std::span<const std::uint32_t> instanceIds,
+    GBufferProbeSample* sample);
+
+// Analytic expected linear view depth for the primary ray through pixel (x, y)
+// hitting the axis-aligned plane world[planeAxis] == planeCoordinate (axis 0/1/2
+// for x/y/z). Mirrors the raygen construction exactly: jittered pixel center to
+// NDC, the dispatch-space y flip, and the pre-scaled camera basis. Fails when the
+// ray cannot reach the plane in front of the camera.
+[[nodiscard]] bool expectedPlaneViewDepth(
+    const CameraPushConstants& camera,
+    float jitterX,
+    float jitterY,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t x,
+    std::uint32_t y,
+    std::uint32_t planeAxis,
+    float planeCoordinate,
+    float* viewDepth);
+
+// Invert the raygen ray construction: the integer pixel whose jittered primary
+// ray passes closest to worldPoint. Fails for points behind the camera or
+// projecting outside the image. Probe sites use this so the pinned target is a
+// world position, not an extent-dependent pixel guess.
+[[nodiscard]] bool projectWorldPointToPixel(
+    const CameraPushConstants& camera,
+    float jitterX,
+    float jitterY,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::array<float, 3>& worldPoint,
+    std::uint32_t* x,
+    std::uint32_t* y);
+
+// D0 acceptance predicates. A surface probe pins the expected world-space normal,
+// the analytic plane depth within a relative tolerance covering binary16 storage,
+// the expected quantized albedo, and the exact instance index; the sky probe
+// requires the exact miss sentinel.
+[[nodiscard]] bool gbufferSurfaceProbePasses(
+    const GBufferProbeSample& sample,
+    const std::array<float, 3>& expectedNormal,
+    float expectedViewDepth,
+    const std::array<float, 3>& expectedAlbedo,
+    std::uint32_t expectedInstanceId);
+
+[[nodiscard]] bool gbufferSkyProbePasses(const GBufferProbeSample& sample);
 
 // Hash the tightly packed, linear RGBA8 tonemapped output with 64-bit FNV-1a.
 // Width and height are fed first as four little-endian bytes each, so equal byte

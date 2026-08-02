@@ -997,6 +997,183 @@ int main(int argumentCount, char** arguments)
             return 1;
         }
 
+        if (commandLine.gbufferProbeRequested) {
+            GBufferReadback gbuffer;
+            const VkResult gbufferResult = readbackGBufferImages(
+                renderer,
+                lastSubmittedSlot,
+                &gbuffer);
+            if (gbufferResult != VK_SUCCESS) {
+                std::cerr << "Failed to read back Vulkan G-buffer images: "
+                          << formatVkResult(gbufferResult) << ".\n";
+                return 1;
+            }
+
+            // Probe pixels are pinned relative to the extent: the lower-center ray
+            // lands on bare ground just inside the spawn's south-west strip, and the
+            // upper-center ray clears the 3 m walls into open sky.
+            const std::uint32_t groundX = gbuffer.width / 2;
+            const std::uint32_t groundY = gbuffer.height * 7 / 8;
+            const std::uint32_t skyX = gbuffer.width / 2;
+            const std::uint32_t skyY = gbuffer.height / 8;
+
+            GBufferProbeSample groundSample;
+            GBufferProbeSample skySample;
+            if (!extractGBufferProbeSample(
+                    gbuffer.width,
+                    gbuffer.height,
+                    groundX,
+                    groundY,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    gbuffer.instanceIds,
+                    &groundSample)
+                || !extractGBufferProbeSample(
+                    gbuffer.width,
+                    gbuffer.height,
+                    skyX,
+                    skyY,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    gbuffer.instanceIds,
+                    &skySample)) {
+                std::cerr << "Failed to extract G-buffer probe pixels.\n";
+                return 1;
+            }
+
+            // The yard policy pins these expectations: the ground is the first
+            // placement (flat instance 0, identity transform, box top at y = 0)
+            // with base color 0.42/0.42/0.45 over the white fallback texture.
+            constexpr float GroundPlaneHeight = 0.0f;
+            constexpr std::uint32_t GroundPlaneAxis = 1;
+            constexpr std::array<float, 3> GroundNormal{0.0f, 1.0f, 0.0f};
+            constexpr std::array<float, 3> GroundAlbedo{0.42f, 0.42f, 0.45f};
+            constexpr std::uint32_t GroundInstanceId = 0;
+
+            // Recreate the final frame's push constants so the analytic rays use
+            // the exact camera basis and pinned jitter the G-buffer was traced with.
+            const float probeAspect = static_cast<float>(gbuffer.width)
+                / static_cast<float>(gbuffer.height);
+            const RaygenPushConstants probeConstants = makeRaygenPushConstants(
+                makeCameraPushConstants(captureCamera, probeAspect),
+                lastRenderedFrameIndex,
+                samplesPerPixel);
+            float expectedGroundDepth = 0.0f;
+            if (!expectedPlaneViewDepth(
+                    probeConstants.camera,
+                    probeConstants.cameraJitterX,
+                    probeConstants.cameraJitterY,
+                    gbuffer.width,
+                    gbuffer.height,
+                    groundX,
+                    groundY,
+                    GroundPlaneAxis,
+                    GroundPlaneHeight,
+                    &expectedGroundDepth)) {
+                std::cerr << "G-buffer probe: the ground ray does not reach the "
+                             "ground plane; the pinned probe pixel is invalid.\n";
+                return 1;
+            }
+
+            // The east wall is the third scene instance (the multi-mesh glass
+            // panels come later), rotated 90 degrees about Y, so its inner face at
+            // world x = 9.69 pins the world-space normal transform: the face
+            // normal is object -Z but must read back as world -X. Its base color
+            // 0.55/0.24/0.18 also pins RGB channel order. The sight line threads
+            // the second glass-panel gap (the only corridor that reaches the east
+            // wall, z in [4.36, 5.42]) and aims high: y = 2.9 clears the optional
+            // plitka cladding (top between 2.6 and 2.9) and the z = 4.5 wall lamp
+            // while staying under the wall top at 2.99. The parser's minimum frame
+            // count keeps the dynamic crate settled below the sight line by the
+            // probed final frame.
+            constexpr std::array<float, 3> WallTarget{9.69f, 2.9f, 4.87f};
+            constexpr float WallPlaneCoordinate = 9.69f;
+            constexpr std::uint32_t WallPlaneAxis = 0;
+            constexpr std::array<float, 3> WallNormal{-1.0f, 0.0f, 0.0f};
+            constexpr std::array<float, 3> WallAlbedo{0.55f, 0.24f, 0.18f};
+            constexpr std::uint32_t WallInstanceId = 2;
+            std::uint32_t wallX = 0;
+            std::uint32_t wallY = 0;
+            float expectedWallDepth = 0.0f;
+            GBufferProbeSample wallSample;
+            if (!projectWorldPointToPixel(
+                    probeConstants.camera,
+                    probeConstants.cameraJitterX,
+                    probeConstants.cameraJitterY,
+                    gbuffer.width,
+                    gbuffer.height,
+                    WallTarget,
+                    &wallX,
+                    &wallY)
+                || !expectedPlaneViewDepth(
+                    probeConstants.camera,
+                    probeConstants.cameraJitterX,
+                    probeConstants.cameraJitterY,
+                    gbuffer.width,
+                    gbuffer.height,
+                    wallX,
+                    wallY,
+                    WallPlaneAxis,
+                    WallPlaneCoordinate,
+                    &expectedWallDepth)
+                || !extractGBufferProbeSample(
+                    gbuffer.width,
+                    gbuffer.height,
+                    wallX,
+                    wallY,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    gbuffer.instanceIds,
+                    &wallSample)) {
+                std::cerr << "G-buffer probe: the east-wall target does not "
+                             "project onto a valid probe pixel.\n";
+                return 1;
+            }
+
+            const bool groundPasses = gbufferSurfaceProbePasses(
+                groundSample,
+                GroundNormal,
+                expectedGroundDepth,
+                GroundAlbedo,
+                GroundInstanceId);
+            const bool wallPasses = gbufferSurfaceProbePasses(
+                wallSample,
+                WallNormal,
+                expectedWallDepth,
+                WallAlbedo,
+                WallInstanceId);
+            const bool skyPasses = gbufferSkyProbePasses(skySample);
+            std::cout << "GBufferProbe ground: pixel=" << groundX << ','
+                      << groundY
+                      << " normal=" << groundSample.normal[0] << ','
+                      << groundSample.normal[1] << ',' << groundSample.normal[2]
+                      << " depth=" << groundSample.viewDepth
+                      << " expectedDepth=" << expectedGroundDepth
+                      << " albedo=" << groundSample.albedo[0] << ','
+                      << groundSample.albedo[1] << ',' << groundSample.albedo[2]
+                      << " instance=" << groundSample.instanceId
+                      << " result=" << (groundPasses ? "pass" : "fail") << '\n';
+            std::cout << "GBufferProbe wall: pixel=" << wallX << ',' << wallY
+                      << " normal=" << wallSample.normal[0] << ','
+                      << wallSample.normal[1] << ',' << wallSample.normal[2]
+                      << " depth=" << wallSample.viewDepth
+                      << " expectedDepth=" << expectedWallDepth
+                      << " albedo=" << wallSample.albedo[0] << ','
+                      << wallSample.albedo[1] << ',' << wallSample.albedo[2]
+                      << " instance=" << wallSample.instanceId
+                      << " result=" << (wallPasses ? "pass" : "fail") << '\n';
+            std::cout << "GBufferProbe sky: pixel=" << skyX << ',' << skyY
+                      << " depth=" << skySample.viewDepth
+                      << " instance=0x" << std::hex << skySample.instanceId
+                      << std::dec
+                      << " result=" << (skyPasses ? "pass" : "fail") << '\n';
+            if (!groundPasses || !wallPasses || !skyPasses) {
+                std::cerr << "G-buffer probe failed: primary-hit outputs do not "
+                             "match the analytic yard expectations.\n";
+                return 1;
+            }
+        }
+
         std::cout << "Capture complete: extent="
                   << readback.width << 'x' << readback.height
                   << " successfulFrames=" << successfulFrameCount

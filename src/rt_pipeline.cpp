@@ -105,7 +105,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     // ~RtPipeline even when a later step here fails and the caller bare-returns.
     rt->device = device;
 
-    VkDescriptorSetLayoutBinding bindings[9]{};
+    VkDescriptorSetLayoutBinding bindings[12]{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     bindings[0].descriptorCount = 1;
@@ -146,10 +146,18 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    // Bindings 9-11: the primary-hit G-buffer storage images (normal + depth,
+    // albedo, instance ID), written by raygen alongside the HDR radiance image.
+    for (uint32_t gbufferBinding = 9; gbufferBinding <= 11; ++gbufferBinding) {
+        bindings[gbufferBinding].binding = gbufferBinding;
+        bindings[gbufferBinding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[gbufferBinding].descriptorCount = 1;
+        bindings[gbufferBinding].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    }
 
     VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
     layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutCreateInfo.bindingCount = 9;
+    layoutCreateInfo.bindingCount = 12;
     layoutCreateInfo.pBindings = bindings;
 
     VkResult result = vkCreateDescriptorSetLayout(
@@ -169,7 +177,7 @@ VkResult createRtDescriptorSet(RtPipeline* rt, VkDevice device)
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     poolSizes[0].descriptorCount = 1;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[1].descriptorCount = 1;
+    poolSizes[1].descriptorCount = 4;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[2].descriptorCount = 5;
     poolSizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -202,7 +210,10 @@ void writeRtDescriptorSet(
     VkDevice device,
     VkDescriptorSet descriptorSet,
     VkAccelerationStructureKHR tlas,
-    VkImageView hdrRadianceImageView)
+    VkImageView hdrRadianceImageView,
+    VkImageView gbufferNormalDepthImageView,
+    VkImageView gbufferAlbedoImageView,
+    VkImageView gbufferInstanceIdImageView)
 {
     // Acceleration structures have no VkDescriptorImageInfo/BufferInfo form; the
     // handle rides in an extension struct chained through pNext, and the write's
@@ -212,28 +223,39 @@ void writeRtDescriptorSet(
     tlasWrite.accelerationStructureCount = 1;
     tlasWrite.pAccelerationStructures = &tlas;
 
-    // GENERAL is the layout the raygen shader's image write requires; the frame path
-    // transitions the HDR image there before tracing, so the descriptor's declared
-    // layout and the image's actual layout agree at trace time.
-    VkDescriptorImageInfo hdrRadianceImageInfo{};
-    hdrRadianceImageInfo.imageView = hdrRadianceImageView;
-    hdrRadianceImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // GENERAL is the layout the raygen shader's image writes require; the frame path
+    // transitions the HDR and G-buffer images there before tracing, so the
+    // descriptors' declared layout and the images' actual layout agree at trace time.
+    VkDescriptorImageInfo storageImageInfos[4]{};
+    storageImageInfos[0].imageView = hdrRadianceImageView;
+    storageImageInfos[1].imageView = gbufferNormalDepthImageView;
+    storageImageInfos[2].imageView = gbufferAlbedoImageView;
+    storageImageInfos[3].imageView = gbufferInstanceIdImageView;
+    for (VkDescriptorImageInfo& imageInfo : storageImageInfos) {
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
 
-    VkWriteDescriptorSet writes[2]{};
+    VkWriteDescriptorSet writes[5]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &tlasWrite;
     writes[0].dstSet = descriptorSet;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = descriptorSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo = &hdrRadianceImageInfo;
+    // The HDR image sits at binding 1; the three G-buffer images sit contiguously
+    // at bindings 9-11 in the storageImageInfos order above.
+    constexpr uint32_t StorageImageBindings[4] = {1, 9, 10, 11};
+    for (uint32_t imageIndex = 0; imageIndex < 4; ++imageIndex) {
+        VkWriteDescriptorSet& write = writes[1 + imageIndex];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = descriptorSet;
+        write.dstBinding = StorageImageBindings[imageIndex];
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        write.pImageInfo = &storageImageInfos[imageIndex];
+    }
 
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
 }
 
 void writeSceneDescriptorSet(

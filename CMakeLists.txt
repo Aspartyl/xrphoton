@@ -677,6 +677,7 @@ if(BUILD_TESTING)
     target_include_directories(xrPhotonCaptureTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_options(xrPhotonCaptureTests PRIVATE -Wall -Wextra)
+    target_link_libraries(xrPhotonCaptureTests PRIVATE ${XRPHOTON_GLM_TARGET})
     add_test(
         NAME capture
         COMMAND xrPhotonCaptureTests
@@ -845,6 +846,7 @@ add_executable(xrPhotonReferenceCompare
 target_include_directories(xrPhotonReferenceCompare PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(xrPhotonReferenceCompare PRIVATE -Wall -Wextra)
+target_link_libraries(xrPhotonReferenceCompare PRIVATE ${XRPHOTON_GLM_TARGET})
 
 add_custom_target(xrPhotonReferenceProof
     COMMAND ${CMAKE_COMMAND}

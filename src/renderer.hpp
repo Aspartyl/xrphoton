@@ -63,6 +63,19 @@ struct HdrImageReadback
     std::vector<std::uint16_t> rgba16;
 };
 
+// CPU-owned copy of the primary-hit G-buffer. Normal + depth pixels are four raw
+// binary16 words (normal xyz, linear view depth); albedo is tightly packed linear
+// RGBA8; instance IDs are raw 32-bit TLAS instance indices, with the shader's miss
+// sentinel (GBufferMissInstanceId in capture.hpp) marking primary-ray misses.
+struct GBufferReadback
+{
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint16_t> normalDepthRgba16;
+    std::vector<std::uint8_t> albedoRgba8;
+    std::vector<std::uint32_t> instanceIds;
+};
+
 // Rewrite the RT and tonemap descriptors to the current HDR/LDR views and gate both
 // trace and compute dispatch dimensions against device limits. Resize idles the device,
 // so rewriting these program-lifetime descriptor sets is race-free.
@@ -109,4 +122,13 @@ VkResult readbackHdrImage(
     const Renderer& renderer,
     std::uint32_t submittedFrameSlot,
     HdrImageReadback* output);
+
+// Read the three primary-hit G-buffer images after one successful frame, under the
+// same stopped-rendering contract as readbackHdrImage: waits the submitted slot's
+// fence, performs one semaphore-free copy submission with a private fence, and
+// leaves every G-buffer image in GENERAL. On failure, *output is unchanged.
+VkResult readbackGBufferImages(
+    const Renderer& renderer,
+    std::uint32_t submittedFrameSlot,
+    GBufferReadback* output);
 }

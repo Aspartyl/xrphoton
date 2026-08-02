@@ -153,7 +153,8 @@ void recordExecutionBarrier(
 
 // Record the entire frame into a one-time-submit command buffer:
 //   1. rebuild the TLAS between its cross-frame and traversal barriers,
-//   2. discard/transition HDR, then trace one multi-vertex path per pixel into it,
+//   2. discard/transition HDR and the G-buffer images, then trace one multi-vertex
+//      path per pixel (raygen also writes the primary-hit G-buffer),
 //   3. make HDR writes visible to compute and discard/transition the LDR output,
 //   4. compute-tonemap HDR radiance into the 8-bit LDR output,
 //   5. make LDR writes visible to transfer and blit it into the acquired image,
@@ -171,6 +172,9 @@ VkResult recordTraceCommandBuffer(
     const RaygenPushConstants& pushConstants,
     VkImage hdrRadianceImage,
     VkImage ldrOutputImage,
+    VkImage gbufferNormalDepthImage,
+    VkImage gbufferAlbedoImage,
+    VkImage gbufferInstanceIdImage,
     VkImage swapchainImage,
     VkExtent2D extent)
 {
@@ -203,20 +207,31 @@ VkResult recordTraceCommandBuffer(
     colorRange.baseArrayLayer = 0;
     colorRange.layerCount = 1;
 
-    // Discard the previous HDR contents and hand the whole image to the raygen
-    // shader. The source stage chains from the previous frame's trailing execution
-    // barrier without intersecting the acquire wait's TRANSFER stage, so tracing can
-    // still run before this frame's swapchain image is acquired.
-    recordImageBarrier(
-        commandBuffer,
+    // Discard the previous HDR and G-buffer contents and hand the whole images to
+    // the raygen shader. The source stage chains from the previous frame's trailing
+    // execution barrier without intersecting the acquire wait's TRANSFER stage, so
+    // tracing can still run before this frame's swapchain image is acquired. The
+    // G-buffer images are written only at RAY_TRACING_SHADER, so the same
+    // raygen-to-raygen ordering also closes their cross-frame write-after-write
+    // hazard; the discard makes memory availability irrelevant.
+    const VkImage raygenStorageImages[] = {
         hdrRadianceImage,
-        VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_GENERAL,
-        0,
-        VK_ACCESS_SHADER_WRITE_BIT,
-        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        colorRange);
+        gbufferNormalDepthImage,
+        gbufferAlbedoImage,
+        gbufferInstanceIdImage,
+    };
+    for (VkImage raygenStorageImage : raygenStorageImages) {
+        recordImageBarrier(
+            commandBuffer,
+            raygenStorageImage,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_GENERAL,
+            0,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            colorRange);
+    }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt.pipeline);
 
@@ -413,7 +428,10 @@ bool prepareRtForSwapchain(const Renderer& renderer)
         renderer.device,
         rt.descriptorSet,
         renderer.accel->tlas,
-        swap.hdrRadianceImageView);
+        swap.hdrRadianceImageView,
+        swap.gbufferNormalDepthImageView,
+        swap.gbufferAlbedoImageView,
+        swap.gbufferInstanceIdImageView);
     writeTonemapDescriptorSet(
         renderer.device,
         tonemap.descriptorSet,
@@ -540,6 +558,9 @@ VkResult drawFrame(
         pushConstants,
         swap.hdrRadianceImage,
         swap.ldrOutputImage,
+        swap.gbufferNormalDepthImage,
+        swap.gbufferAlbedoImage,
+        swap.gbufferInstanceIdImage,
         swap.images[imageIndex],
         swap.extent);
 
@@ -1068,6 +1089,264 @@ VkResult readbackHdrImage(
             candidate.rgba16.data(),
             allocationInfo.pMappedData,
             static_cast<std::size_t>(byteCount));
+        *output = std::move(candidate);
+        return VK_SUCCESS;
+    } catch (const std::bad_alloc&) {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+        return VK_ERROR_UNKNOWN;
+    }
+}
+
+VkResult readbackGBufferImages(
+    const Renderer& renderer,
+    std::uint32_t submittedFrameSlot,
+    GBufferReadback* output)
+{
+    if (output == nullptr
+        || submittedFrameSlot >= MaxFramesInFlight
+        || renderer.device == VK_NULL_HANDLE
+        || renderer.allocator == nullptr
+        || renderer.traceQueue == VK_NULL_HANDLE
+        || renderer.frames == nullptr
+        || renderer.swap == nullptr
+        || renderer.swap->gbufferNormalDepthImage == VK_NULL_HANDLE
+        || renderer.swap->gbufferAlbedoImage == VK_NULL_HANDLE
+        || renderer.swap->gbufferInstanceIdImage == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    const Swapchain& swap = *renderer.swap;
+    const std::uint64_t pixelCount =
+        static_cast<std::uint64_t>(swap.extent.width) * swap.extent.height;
+    // One staging buffer holds all three images: 8 bytes of normal + depth, then
+    // 4 bytes of albedo, then 4 bytes of instance ID per pixel. The section offsets
+    // 0 / 8N / 12N are all multiples of their section's texel size, as
+    // vkCmdCopyImageToBuffer requires.
+    constexpr std::uint64_t NormalDepthBytesPerPixel = 8;
+    constexpr std::uint64_t AlbedoBytesPerPixel = 4;
+    constexpr std::uint64_t InstanceIdBytesPerPixel = 4;
+    constexpr std::uint64_t TotalBytesPerPixel = NormalDepthBytesPerPixel
+        + AlbedoBytesPerPixel
+        + InstanceIdBytesPerPixel;
+    if (swap.extent.width == 0 || swap.extent.height == 0
+        || pixelCount > std::numeric_limits<std::uint64_t>::max() / TotalBytesPerPixel
+        || pixelCount * TotalBytesPerPixel > std::numeric_limits<VkDeviceSize>::max()
+        || pixelCount * TotalBytesPerPixel
+            > std::numeric_limits<std::size_t>::max()) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const VkDeviceSize byteCount = pixelCount * TotalBytesPerPixel;
+    const VkDeviceSize albedoOffset = pixelCount * NormalDepthBytesPerPixel;
+    const VkDeviceSize instanceIdOffset = albedoOffset
+        + pixelCount * AlbedoBytesPerPixel;
+    const FrameResources& frame = renderer.frames[submittedFrameSlot];
+    if (frame.commandBuffer == VK_NULL_HANDLE
+        || frame.inFlightFence == VK_NULL_HANDLE) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    try {
+        VkResult result = vkWaitForFences(
+            renderer.device,
+            1,
+            &frame.inFlightFence,
+            VK_TRUE,
+            std::numeric_limits<std::uint64_t>::max());
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        GBufferReadback candidate;
+        candidate.width = swap.extent.width;
+        candidate.height = swap.extent.height;
+        const std::size_t normalDepthWordCount =
+            static_cast<std::size_t>(pixelCount * 4);
+        const std::size_t albedoByteCount =
+            static_cast<std::size_t>(pixelCount * AlbedoBytesPerPixel);
+        const std::size_t instanceIdCount = static_cast<std::size_t>(pixelCount);
+        if (normalDepthWordCount > candidate.normalDepthRgba16.max_size()
+            || albedoByteCount > candidate.albedoRgba8.max_size()
+            || instanceIdCount > candidate.instanceIds.max_size()) {
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        candidate.normalDepthRgba16.resize(normalDepthWordCount);
+        candidate.albedoRgba8.resize(albedoByteCount);
+        candidate.instanceIds.resize(instanceIdCount);
+
+        TemporaryBuffer readbackBuffer;
+        readbackBuffer.allocator = renderer.allocator;
+        result = createBuffer(
+            renderer.allocator,
+            byteCount,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
+                | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+            &readbackBuffer.buffer,
+            &readbackBuffer.allocation);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        VmaAllocationInfo allocationInfo{};
+        vmaGetAllocationInfo(
+            renderer.allocator,
+            readbackBuffer.allocation,
+            &allocationInfo);
+        if (allocationInfo.pMappedData == nullptr) {
+            return VK_ERROR_MEMORY_MAP_FAILED;
+        }
+
+        result = vkResetCommandBuffer(frame.commandBuffer, 0);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        result = vkBeginCommandBuffer(frame.commandBuffer, &beginInfo);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        VkImageSubresourceRange colorRange{};
+        colorRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        colorRange.levelCount = 1;
+        colorRange.layerCount = 1;
+
+        const VkImage gbufferImages[] = {
+            swap.gbufferNormalDepthImage,
+            swap.gbufferAlbedoImage,
+            swap.gbufferInstanceIdImage,
+        };
+        const VkDeviceSize sectionOffsets[] = {
+            0,
+            albedoOffset,
+            instanceIdOffset,
+        };
+        for (const VkImage gbufferImage : gbufferImages) {
+            // Raygen is the only writer of these images, so making its writes
+            // visible to transfer is the whole hazard.
+            recordImageBarrier(
+                frame.commandBuffer,
+                gbufferImage,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                colorRange);
+        }
+        for (std::size_t imageIndex = 0;
+             imageIndex < std::size(gbufferImages);
+             ++imageIndex) {
+            VkBufferImageCopy copyRegion{};
+            copyRegion.bufferOffset = sectionOffsets[imageIndex];
+            copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copyRegion.imageSubresource.layerCount = 1;
+            copyRegion.imageExtent = {
+                swap.extent.width,
+                swap.extent.height,
+                1,
+            };
+            vkCmdCopyImageToBuffer(
+                frame.commandBuffer,
+                gbufferImages[imageIndex],
+                VK_IMAGE_LAYOUT_GENERAL,
+                readbackBuffer.buffer,
+                1,
+                &copyRegion);
+        }
+
+        VkBufferMemoryBarrier hostReadBarrier{};
+        hostReadBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        hostReadBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        hostReadBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        hostReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        hostReadBarrier.buffer = readbackBuffer.buffer;
+        hostReadBarrier.size = byteCount;
+        vkCmdPipelineBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            0,
+            0,
+            nullptr,
+            1,
+            &hostReadBarrier,
+            0,
+            nullptr);
+        recordExecutionBarrier(
+            frame.commandBuffer,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
+
+        result = vkEndCommandBuffer(frame.commandBuffer);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        TemporaryFence copyFence;
+        copyFence.device = renderer.device;
+        VkFenceCreateInfo fenceCreateInfo{};
+        fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        result = vkCreateFence(
+            renderer.device,
+            &fenceCreateInfo,
+            nullptr,
+            &copyFence.fence);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &frame.commandBuffer;
+        result = vkQueueSubmit(
+            renderer.traceQueue,
+            1,
+            &submitInfo,
+            copyFence.fence);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+        result = vkWaitForFences(
+            renderer.device,
+            1,
+            &copyFence.fence,
+            VK_TRUE,
+            std::numeric_limits<std::uint64_t>::max());
+        if (result != VK_SUCCESS) {
+            if (result != VK_ERROR_DEVICE_LOST) {
+                (void)vkQueueWaitIdle(renderer.traceQueue);
+            }
+            return result;
+        }
+
+        result = vmaInvalidateAllocation(
+            renderer.allocator,
+            readbackBuffer.allocation,
+            0,
+            byteCount);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        const std::uint8_t* mappedBytes =
+            static_cast<const std::uint8_t*>(allocationInfo.pMappedData);
+        std::memcpy(
+            candidate.normalDepthRgba16.data(),
+            mappedBytes,
+            static_cast<std::size_t>(albedoOffset));
+        std::memcpy(
+            candidate.albedoRgba8.data(),
+            mappedBytes + albedoOffset,
+            albedoByteCount);
+        std::memcpy(
+            candidate.instanceIds.data(),
+            mappedBytes + instanceIdOffset,
+            instanceIdCount * sizeof(std::uint32_t));
         *output = std::move(candidate);
         return VK_SUCCESS;
     } catch (const std::bad_alloc&) {

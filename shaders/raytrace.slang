@@ -101,6 +101,33 @@ StructuredBuffer<float> lightCdf;
 [[vk::binding(8, 0)]]
 StructuredBuffer<EmitterLookupRecord> emitterLookup;
 
+// Primary-hit G-buffer, written once per pixel from the first sample's camera ray
+// (denoising plan D0). A primary miss writes the depth sentinel 0 and
+// GBufferMissInstanceId so filtering passes can bypass sky pixels.
+[[vk::binding(9, 0)]]
+[format("rgba16f")]
+uniform RWTexture2D<float4> gbufferNormalDepthImage;
+
+[[vk::binding(10, 0)]]
+[format("rgba8")]
+uniform RWTexture2D<float4> gbufferAlbedoImage;
+
+[[vk::binding(11, 0)]]
+[format("r32ui")]
+uniform RWTexture2D<uint> gbufferInstanceIdImage;
+
+static const uint GBufferMissInstanceId = 0xffffffff;
+
+// Primary-surface attributes exported from the first path vertex. Zero-initialized
+// fields are exactly the miss sentinel.
+struct PrimarySurface
+{
+    float3 shadingNormal;
+    float viewDepth;
+    float3 albedo;
+    uint instanceIndex;
+};
+
 [[vk::push_constant]]
 ConstantBuffer<RaygenPushConstants> frameConstants;
 
@@ -374,8 +401,14 @@ float3 traceCameraPath(
     uint2 pixel,
     float2 dimensions,
     uint sampleSequence,
-    float2 cameraJitter)
+    float2 cameraJitter,
+    out PrimarySurface primarySurface)
 {
+    primarySurface.shadingNormal = float3(0.0);
+    primarySurface.viewDepth = 0.0;
+    primarySurface.albedo = float3(0.0);
+    primarySurface.instanceIndex = GBufferMissInstanceId;
+
     // The CPU sends a camera origin plus a pre-scaled perspective basis: forward is
     // unit length, while right/up already include FOV and aspect scaling.
     float2 ndc = (float2(pixel) + 0.5 + cameraJitter)
@@ -423,6 +456,7 @@ float3 traceCameraPath(
         SurfaceHit hit;
         hit.hitT = -1.0;
         hit.materialIndex = 0;
+        hit.instanceIndex = GBufferMissInstanceId;
         hit.albedo = float3(0.0);
         hit.shadingNormal = float3(0.0);
         hit.geometricNormal = float3(0.0);
@@ -487,6 +521,16 @@ float3 traceCameraPath(
             hit.shadingNormal,
             hit.geometricNormal,
             -ray.Direction);
+        if (pathVertex == 0)
+        {
+            // Linear view depth: the hit distance projected onto the unit forward
+            // axis, so the value is jitter-stable across a flat surface.
+            primarySurface.shadingNormal = normals.shading;
+            primarySurface.viewDepth = hit.hitT
+                * dot(ray.Direction, frameConstants.camera.forward);
+            primarySurface.albedo = hit.albedo;
+            primarySurface.instanceIndex = hit.instanceIndex;
+        }
         MaterialRecord material = materials[hit.materialIndex];
         float3 wo = -ray.Direction;
         bool isGlass = material.materialClass == MaterialClassGlass;
@@ -927,11 +971,25 @@ void rayGenMain()
         float2 cameraJitter = sampleIndex == 0
             ? float2(frameConstants.cameraJitterX, frameConstants.cameraJitterY)
             : cameraJitterForSequence(sampleSequence);
+        PrimarySurface primarySurface;
         accumulatedRadiance += traceCameraPath(
             pixel,
             dimensions,
             sampleSequence,
-            cameraJitter);
+            cameraJitter,
+            primarySurface);
+        if (sampleIndex == 0)
+        {
+            // The G-buffer describes the first sample's primary surface, whose
+            // jitter is the frame-pinned pair in the push constants.
+            gbufferNormalDepthImage[pixel] = float4(
+                primarySurface.shadingNormal,
+                primarySurface.viewDepth);
+            gbufferAlbedoImage[pixel] = float4(
+                saturate(primarySurface.albedo),
+                1.0);
+            gbufferInstanceIdImage[pixel] = primarySurface.instanceIndex;
+        }
     }
 
     hdrRadianceImage[pixel] = float4(
@@ -954,6 +1012,7 @@ void closestHitMain(
     MaterialRecord material = materials[hit.materialIndex];
     payload.hitT = RayTCurrent();
     payload.materialIndex = hit.materialIndex;
+    payload.instanceIndex = InstanceIndex();
     payload.albedo = material.baseColorFactor.rgb
         * sceneTextures[NonUniformResourceIndex(material.baseColorTexture)]
               .SampleGrad(hit.uv, hit.uvDx, hit.uvDy).rgb;

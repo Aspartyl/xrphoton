@@ -34,6 +34,18 @@ struct Swapchain
     VkImage ldrOutputImage = VK_NULL_HANDLE;
     VmaAllocation ldrOutputImageAllocation = nullptr;
     VkImageView ldrOutputImageView = VK_NULL_HANDLE;
+    // Primary-hit G-buffer written by raygen alongside the HDR radiance (denoising
+    // plan D0): world shading normal + linear view depth, base-color albedo, and the
+    // TLAS instance index. Resize-bound like the HDR/LDR targets above.
+    VkImage gbufferNormalDepthImage = VK_NULL_HANDLE;
+    VmaAllocation gbufferNormalDepthImageAllocation = nullptr;
+    VkImageView gbufferNormalDepthImageView = VK_NULL_HANDLE;
+    VkImage gbufferAlbedoImage = VK_NULL_HANDLE;
+    VmaAllocation gbufferAlbedoImageAllocation = nullptr;
+    VkImageView gbufferAlbedoImageView = VK_NULL_HANDLE;
+    VkImage gbufferInstanceIdImage = VK_NULL_HANDLE;
+    VmaAllocation gbufferInstanceIdImageAllocation = nullptr;
+    VkImageView gbufferInstanceIdImageView = VK_NULL_HANDLE;
 
     Swapchain() = default;
     Swapchain(const Swapchain&) = delete;

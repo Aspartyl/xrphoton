@@ -2,6 +2,9 @@
 
 #include "lighting.hpp"
 
+#include <glm/geometric.hpp>
+#include <glm/vec3.hpp>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -235,7 +238,7 @@ bool parseCommandLine(
     try {
         constexpr const char* Usage =
             "Usage: xrPhoton [--validation] [--spp <1|2|4|8|16>] "
-            "[--capture <count> <output.ppm>] [--time <hours>] | "
+            "[--capture <count> <output.ppm>] [--gbuffer-probe] [--time <hours>] | "
             "[--validation] --reference <count> --estimator <mis|nee|bsdf> "
             "[--spp <1|2|4|8|16>] [--time <hours>] | [--validation] "
             "--reference <count> --estimator bsdf --furnace";
@@ -352,6 +355,13 @@ bool parseCommandLine(
                 candidate.furnaceRequested = true;
                 furnaceSeen = true;
                 ++index;
+            } else if (option == "--gbuffer-probe") {
+                if (candidate.gbufferProbeRequested) {
+                    *error = Usage;
+                    return false;
+                }
+                candidate.gbufferProbeRequested = true;
+                ++index;
             } else {
                 *error = Usage;
                 return false;
@@ -377,6 +387,18 @@ bool parseCommandLine(
         }
         if (candidate.furnaceRequested && candidate.timeOfDayHours.has_value()) {
             *error = "--time is not valid with the constant furnace environment.";
+            return false;
+        }
+        if (candidate.gbufferProbeRequested
+            && candidate.mode != CommandLineMode::Capture) {
+            *error = "--gbuffer-probe is only valid with --capture.";
+            return false;
+        }
+        if (candidate.gbufferProbeRequested
+            && candidate.captureFrameCount < MinimumGBufferProbeFrameCount) {
+            *error = "--gbuffer-probe requires at least 128 capture frames "
+                     "(the dynamic crate must settle clear of the wall probe's "
+                     "sight line).";
             return false;
         }
         *options = std::move(candidate);
@@ -407,6 +429,196 @@ float binary16ToFloat(std::uint16_t bits)
             static_cast<int>(exponent) - 15);
     }
     return static_cast<float>(negative ? -magnitude : magnitude);
+}
+
+bool extractGBufferProbeSample(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t x,
+    std::uint32_t y,
+    std::span<const std::uint16_t> normalDepthRgba16,
+    std::span<const std::uint8_t> albedoRgba8,
+    std::span<const std::uint32_t> instanceIds,
+    GBufferProbeSample* sample)
+{
+    if (sample == nullptr
+        || width == 0
+        || height == 0
+        || x >= width
+        || y >= height) {
+        return false;
+    }
+    const std::size_t sizeWidth = width;
+    const std::size_t sizeHeight = height;
+    if (sizeWidth > std::numeric_limits<std::size_t>::max() / sizeHeight) {
+        return false;
+    }
+    const std::size_t pixelCount = sizeWidth * sizeHeight;
+    if (pixelCount > std::numeric_limits<std::size_t>::max() / 4
+        || normalDepthRgba16.size() != pixelCount * 4
+        || albedoRgba8.size() != pixelCount * 4
+        || instanceIds.size() != pixelCount) {
+        return false;
+    }
+
+    const std::size_t pixelIndex = static_cast<std::size_t>(y) * sizeWidth + x;
+    GBufferProbeSample candidate;
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        candidate.normal[channel] =
+            binary16ToFloat(normalDepthRgba16[pixelIndex * 4 + channel]);
+        candidate.albedo[channel] =
+            static_cast<float>(albedoRgba8[pixelIndex * 4 + channel]) / 255.0f;
+    }
+    candidate.viewDepth = binary16ToFloat(normalDepthRgba16[pixelIndex * 4 + 3]);
+    candidate.instanceId = instanceIds[pixelIndex];
+    *sample = candidate;
+    return true;
+}
+
+bool expectedPlaneViewDepth(
+    const CameraPushConstants& camera,
+    float jitterX,
+    float jitterY,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t x,
+    std::uint32_t y,
+    std::uint32_t planeAxis,
+    float planeCoordinate,
+    float* viewDepth)
+{
+    if (viewDepth == nullptr
+        || planeAxis > 2
+        || width == 0
+        || height == 0
+        || x >= width
+        || y >= height) {
+        return false;
+    }
+
+    // Mirror rayGenMain: jittered pixel center to [-1, 1] NDC, with the dispatch-space
+    // row flip applied as a negated up contribution.
+    const float ndcX = (static_cast<float>(x) + 0.5f + jitterX)
+        / static_cast<float>(width) * 2.0f - 1.0f;
+    const float ndcY = (static_cast<float>(y) + 0.5f + jitterY)
+        / static_cast<float>(height) * 2.0f - 1.0f;
+    const glm::vec3 direction = glm::normalize(
+        camera.forward + ndcX * camera.right - ndcY * camera.up);
+    const float axisDirection = direction[static_cast<glm::length_t>(planeAxis)];
+    const float axisDistance =
+        camera.origin[static_cast<glm::length_t>(planeAxis)] - planeCoordinate;
+    if (!std::isfinite(axisDirection) || axisDirection * axisDistance >= 0.0f) {
+        return false;
+    }
+    const float hitDistance = -axisDistance / axisDirection;
+    const float depth = hitDistance * glm::dot(direction, camera.forward);
+    if (!std::isfinite(depth) || depth <= 0.0f) {
+        return false;
+    }
+    *viewDepth = depth;
+    return true;
+}
+
+bool projectWorldPointToPixel(
+    const CameraPushConstants& camera,
+    float jitterX,
+    float jitterY,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::array<float, 3>& worldPoint,
+    std::uint32_t* x,
+    std::uint32_t* y)
+{
+    if (x == nullptr || y == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+
+    // The camera basis is mutually orthogonal by construction (forward unit,
+    // right/up pre-scaled), so the NDC coefficients fall out of three dot
+    // products: toPoint = s * (forward + ndcX * right - ndcY * up).
+    const glm::vec3 toPoint = glm::vec3(
+        worldPoint[0],
+        worldPoint[1],
+        worldPoint[2]) - camera.origin;
+    const float forwardDistance = glm::dot(toPoint, camera.forward);
+    const float rightScaleSquared = glm::dot(camera.right, camera.right);
+    const float upScaleSquared = glm::dot(camera.up, camera.up);
+    if (!(forwardDistance > 0.0f)
+        || !(rightScaleSquared > 0.0f)
+        || !(upScaleSquared > 0.0f)) {
+        return false;
+    }
+    const float ndcX = glm::dot(toPoint, camera.right)
+        / (forwardDistance * rightScaleSquared);
+    const float ndcY = -glm::dot(toPoint, camera.up)
+        / (forwardDistance * upScaleSquared);
+
+    // Invert the jittered pixel-center mapping and round to the nearest pixel.
+    const float pixelX = (ndcX + 1.0f) * 0.5f * static_cast<float>(width)
+        - 0.5f - jitterX;
+    const float pixelY = (ndcY + 1.0f) * 0.5f * static_cast<float>(height)
+        - 0.5f - jitterY;
+    const float roundedX = std::round(pixelX);
+    const float roundedY = std::round(pixelY);
+    if (!std::isfinite(roundedX) || !std::isfinite(roundedY)
+        || roundedX < 0.0f || roundedY < 0.0f
+        || roundedX >= static_cast<float>(width)
+        || roundedY >= static_cast<float>(height)) {
+        return false;
+    }
+    *x = static_cast<std::uint32_t>(roundedX);
+    *y = static_cast<std::uint32_t>(roundedY);
+    return true;
+}
+
+bool gbufferSurfaceProbePasses(
+    const GBufferProbeSample& sample,
+    const std::array<float, 3>& expectedNormal,
+    float expectedViewDepth,
+    const std::array<float, 3>& expectedAlbedo,
+    std::uint32_t expectedInstanceId)
+{
+    // Probe surfaces are flat box faces whose normals are axis-aligned before the
+    // instance transform, so the normal tolerance only absorbs binary16 storage
+    // and the shader's rotation arithmetic. Depth compares an fp32 analytic value
+    // against binary16 storage of the GPU's fp32 result; albedo absorbs one UNORM8
+    // step on top of the quantized expectation.
+    constexpr float NormalTolerance = 2.0e-3f;
+    constexpr float DepthRelativeTolerance = 5.0e-3f;
+    constexpr float AlbedoTolerance = 2.0f / 255.0f;
+    if (sample.instanceId != expectedInstanceId) {
+        return false;
+    }
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (!(std::fabs(sample.normal[axis] - expectedNormal[axis])
+                <= NormalTolerance)) {
+            return false;
+        }
+    }
+    if (!(expectedViewDepth > 0.0f)
+        || !(std::fabs(sample.viewDepth - expectedViewDepth)
+            <= expectedViewDepth * DepthRelativeTolerance)) {
+        return false;
+    }
+    for (std::size_t channel = 0; channel < 3; ++channel) {
+        if (!(std::fabs(sample.albedo[channel] - expectedAlbedo[channel])
+                <= AlbedoTolerance)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool gbufferSkyProbePasses(const GBufferProbeSample& sample)
+{
+    return sample.instanceId == GBufferMissInstanceId
+        && sample.viewDepth == 0.0f
+        && sample.normal[0] == 0.0f
+        && sample.normal[1] == 0.0f
+        && sample.normal[2] == 0.0f
+        && sample.albedo[0] == 0.0f
+        && sample.albedo[1] == 0.0f
+        && sample.albedo[2] == 0.0f;
 }
 
 bool accumulateReferenceImage(

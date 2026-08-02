@@ -97,6 +97,9 @@ struct SurfaceHit
 {
     float hitT;
     uint materialIndex;
+    // TLAS instance index of the hit, for the primary-hit G-buffer. InstanceID()
+    // is repurposed as the geometry-record base, so only closest-hit can supply it.
+    uint instanceIndex;
     float3 albedo;
     float3 shadingNormal;
     float3 geometricNormal;
