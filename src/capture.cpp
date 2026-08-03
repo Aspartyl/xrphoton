@@ -23,6 +23,11 @@ namespace
 {
 constexpr std::uint64_t Fnv1aOffsetBasis = 14695981039346656037ull;
 constexpr std::uint64_t Fnv1aPrime = 1099511628211ull;
+constexpr float DenoiseSurfaceNormalThreshold = 0.9f;
+constexpr float DenoiseSurfaceDepthRelativeThreshold = 0.02f;
+constexpr float DenoiseSurfaceDepthAbsoluteThreshold = 0.05f;
+constexpr float DenoiseFireflyMedianMultiple = 8.0f;
+constexpr float DenoiseFireflyMinimumAllowance = 0.05f;
 
 bool checkedRgba8Size(
     std::uint32_t width,
@@ -238,7 +243,9 @@ bool parseCommandLine(
     try {
         constexpr const char* Usage =
             "Usage: xrPhoton [--validation] [--spp <1|2|4|8|16>] "
-            "[--capture <count> <output.ppm>] [--gbuffer-probe] [--time <hours>] | "
+            "[--denoise <off|spatial|temporal>] "
+            "[--capture <count> <output.ppm>] "
+            "[--gbuffer-probe|--denoise-probe] [--time <hours>] | "
             "[--validation] --reference <count> --estimator <mis|nee|bsdf> "
             "[--spp <1|2|4|8|16>] [--time <hours>] | [--validation] "
             "--reference <count> --estimator bsdf --furnace";
@@ -248,6 +255,7 @@ bool parseCommandLine(
         bool furnaceSeen = false;
         bool validationSeen = false;
         bool samplesPerPixelSeen = false;
+        bool denoiseSeen = false;
         CommandLineOptions candidate;
         for (int index = 1; index < argumentCount;) {
             if (arguments[index] == nullptr) {
@@ -355,12 +363,42 @@ bool parseCommandLine(
                 candidate.furnaceRequested = true;
                 furnaceSeen = true;
                 ++index;
+            } else if (option == "--denoise") {
+                if (denoiseSeen || index + 1 >= argumentCount
+                    || arguments[index + 1] == nullptr) {
+                    *error = Usage;
+                    return false;
+                }
+                const std::string_view value(arguments[index + 1]);
+                if (value == "off") {
+                    candidate.denoise = DenoiseMode::Off;
+                } else if (value == "spatial") {
+                    candidate.denoise = DenoiseMode::Spatial;
+                } else if (value == "temporal") {
+                    *error = "Denoise mode 'temporal' arrives with plan phase D3; "
+                             "use 'off' or 'spatial'.";
+                    return false;
+                } else {
+                    *error = "Denoise mode must be 'off', 'spatial', or 'temporal'.";
+                    return false;
+                }
+                denoiseSeen = true;
+                index += 2;
             } else if (option == "--gbuffer-probe") {
-                if (candidate.gbufferProbeRequested) {
+                if (candidate.gbufferProbeRequested
+                    || candidate.denoiseProbeRequested) {
                     *error = Usage;
                     return false;
                 }
                 candidate.gbufferProbeRequested = true;
+                ++index;
+            } else if (option == "--denoise-probe") {
+                if (candidate.denoiseProbeRequested
+                    || candidate.gbufferProbeRequested) {
+                    *error = Usage;
+                    return false;
+                }
+                candidate.denoiseProbeRequested = true;
                 ++index;
             } else {
                 *error = Usage;
@@ -389,9 +427,19 @@ bool parseCommandLine(
             *error = "--time is not valid with the constant furnace environment.";
             return false;
         }
+        if (denoiseSeen && candidate.mode == CommandLineMode::Reference) {
+            *error = "Reference mode bypasses the denoiser structurally; "
+                     "--denoise is not valid with --reference.";
+            return false;
+        }
         if (candidate.gbufferProbeRequested
             && candidate.mode != CommandLineMode::Capture) {
             *error = "--gbuffer-probe is only valid with --capture.";
+            return false;
+        }
+        if (candidate.denoiseProbeRequested
+            && candidate.mode != CommandLineMode::Capture) {
+            *error = "--denoise-probe is only valid with --capture.";
             return false;
         }
         if (candidate.gbufferProbeRequested
@@ -471,6 +519,7 @@ bool extractGBufferProbeSample(
     }
     candidate.viewDepth = binary16ToFloat(normalDepthRgba16[pixelIndex * 4 + 3]);
     candidate.instanceId = instanceIds[pixelIndex];
+    candidate.primaryGlass = albedoRgba8[pixelIndex * 4 + 3] >= 128;
     *sample = candidate;
     return true;
 }
@@ -586,7 +635,7 @@ bool gbufferSurfaceProbePasses(
     constexpr float NormalTolerance = 2.0e-3f;
     constexpr float DepthRelativeTolerance = 5.0e-3f;
     constexpr float AlbedoTolerance = 2.0f / 255.0f;
-    if (sample.instanceId != expectedInstanceId) {
+    if (sample.instanceId != expectedInstanceId || sample.primaryGlass) {
         return false;
     }
     for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -618,7 +667,171 @@ bool gbufferSkyProbePasses(const GBufferProbeSample& sample)
         && sample.normal[2] == 0.0f
         && sample.albedo[0] == 0.0f
         && sample.albedo[1] == 0.0f
-        && sample.albedo[2] == 0.0f;
+        && sample.albedo[2] == 0.0f
+        && !sample.primaryGlass;
+}
+
+bool summarizeDenoiseAcceptance(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::span<const std::uint16_t> hdrRgba16,
+    std::span<const std::uint16_t> normalDepthRgba16,
+    std::span<const std::uint8_t> albedoRgba8,
+    DenoiseAcceptanceSummary* summary)
+{
+    if (summary == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    const std::uint64_t pixelCount64 =
+        static_cast<std::uint64_t>(width) * height;
+    if (pixelCount64 > std::numeric_limits<std::size_t>::max() / 4
+        || pixelCount64 > std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+    }
+    const std::size_t pixelCount = static_cast<std::size_t>(pixelCount64);
+    if (hdrRgba16.size() != pixelCount * 4
+        || normalDepthRgba16.size() != pixelCount * 4
+        || albedoRgba8.size() != pixelCount * 4) {
+        return false;
+    }
+
+    const auto isGlass = [&](std::size_t pixel) {
+        return albedoRgba8[pixel * 4 + 3] >= 128;
+    };
+    const auto depth = [&](std::size_t pixel) {
+        return binary16ToFloat(normalDepthRgba16[pixel * 4 + 3]);
+    };
+    const auto radiance = [&](std::size_t pixel, std::size_t channel) {
+        return binary16ToFloat(hdrRgba16[pixel * 4 + channel]);
+    };
+    const auto luminanceAt = [&](std::size_t pixel) {
+        constexpr float DemodulationFloor = 1.0f / 64.0f;
+        const auto demodulated = [&](std::size_t channel) {
+            const float albedo = static_cast<float>(
+                albedoRgba8[pixel * 4 + channel]) / 255.0f;
+            return radiance(pixel, channel)
+                / std::max(albedo, DemodulationFloor);
+        };
+        return 0.2126f * demodulated(0)
+            + 0.7152f * demodulated(1)
+            + 0.0722f * demodulated(2);
+    };
+    const auto sameSurface = [&](std::size_t center, std::size_t sample) {
+        const float centerDepth = depth(center);
+        const float sampleDepth = depth(sample);
+        if (!(centerDepth > 0.0f) || !(sampleDepth > 0.0f)) {
+            return false;
+        }
+        float normalDot = 0.0f;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            normalDot += binary16ToFloat(normalDepthRgba16[center * 4 + axis])
+                * binary16ToFloat(normalDepthRgba16[sample * 4 + axis]);
+        }
+        const float depthTolerance = std::max(
+            DenoiseSurfaceDepthAbsoluteThreshold,
+            DenoiseSurfaceDepthRelativeThreshold * centerDepth);
+        return normalDot >= DenoiseSurfaceNormalThreshold
+            && std::abs(centerDepth - sampleDepth) <= depthTolerance;
+    };
+
+    DenoiseAcceptanceSummary candidate;
+    candidate.glassRadianceHash = Fnv1aOffsetBasis;
+    for (unsigned int byteIndex = 0; byteIndex < 4; ++byteIndex) {
+        hashByte(
+            static_cast<std::uint8_t>(width >> (byteIndex * 8)),
+            &candidate.glassRadianceHash);
+        hashByte(
+            static_cast<std::uint8_t>(height >> (byteIndex * 8)),
+            &candidate.glassRadianceHash);
+    }
+
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::size_t pixel = static_cast<std::size_t>(y) * width + x;
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                const float value = radiance(pixel, channel);
+                if (!std::isfinite(value) || value < 0.0f) {
+                    return false;
+                }
+            }
+            if (isGlass(pixel)) {
+                ++candidate.glassPixelCount;
+                const std::uint32_t pixel32 = static_cast<std::uint32_t>(pixel);
+                for (unsigned int byteIndex = 0; byteIndex < 4; ++byteIndex) {
+                    hashByte(
+                        static_cast<std::uint8_t>(pixel32 >> (byteIndex * 8)),
+                        &candidate.glassRadianceHash);
+                }
+                for (std::size_t channel = 0; channel < 3; ++channel) {
+                    const std::uint16_t half = hdrRgba16[pixel * 4 + channel];
+                    hashByte(
+                        static_cast<std::uint8_t>(half & 0xffu),
+                        &candidate.glassRadianceHash);
+                    hashByte(
+                        static_cast<std::uint8_t>(half >> 8u),
+                        &candidate.glassRadianceHash);
+                }
+                continue;
+            }
+            if (!(depth(pixel) > 0.0f)) {
+                continue;
+            }
+
+            std::array<float, 8> neighborLuminance{};
+            std::size_t neighborCount = 0;
+            for (int offsetY = -1; offsetY <= 1; ++offsetY) {
+                for (int offsetX = -1; offsetX <= 1; ++offsetX) {
+                    if (offsetX == 0 && offsetY == 0) {
+                        continue;
+                    }
+                    const int neighborX = static_cast<int>(x) + offsetX;
+                    const int neighborY = static_cast<int>(y) + offsetY;
+                    if (neighborX < 0 || neighborY < 0
+                        || neighborX >= static_cast<int>(width)
+                        || neighborY >= static_cast<int>(height)) {
+                        continue;
+                    }
+                    const std::size_t neighbor =
+                        static_cast<std::size_t>(neighborY) * width
+                        + static_cast<std::uint32_t>(neighborX);
+                    if (isGlass(neighbor) || !sameSurface(pixel, neighbor)) {
+                        continue;
+                    }
+                    neighborLuminance[neighborCount++] = luminanceAt(neighbor);
+                }
+            }
+            if (neighborCount < 4) {
+                continue;
+            }
+            for (std::size_t index = 1; index < neighborCount; ++index) {
+                const float value = neighborLuminance[index];
+                std::size_t insertion = index;
+                while (insertion > 0
+                    && neighborLuminance[insertion - 1] > value) {
+                    neighborLuminance[insertion] =
+                        neighborLuminance[insertion - 1];
+                    --insertion;
+                }
+                neighborLuminance[insertion] = value;
+            }
+            const float median = neighborLuminance[neighborCount / 2];
+            const float ceiling = std::max(
+                median * DenoiseFireflyMedianMultiple,
+                median + DenoiseFireflyMinimumAllowance);
+            const float centerLuminance = luminanceAt(pixel);
+            if (centerLuminance > ceiling) {
+                if (candidate.isolatedHotPixelCount == 0) {
+                    candidate.firstHotPixelX = x;
+                    candidate.firstHotPixelY = y;
+                    candidate.firstHotPixelLuminance = centerLuminance;
+                    candidate.firstHotPixelCeiling = ceiling;
+                }
+                ++candidate.isolatedHotPixelCount;
+            }
+        }
+    }
+    *summary = candidate;
+    return true;
 }
 
 bool accumulateReferenceImage(

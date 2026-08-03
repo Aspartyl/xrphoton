@@ -1,6 +1,7 @@
 #pragma once
 
 #include "scene.hpp"
+#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -37,7 +38,19 @@ enum class GallerySceneProfile
     Complete,
     EstimatorReference,
     FurnaceReference,
+    // The complete yard plus acceptance-only placements (the textured probe
+    // card). Selected by --gbuffer-probe captures so the ordinary yard image,
+    // and with it every Off-mode capture hash, stays byte-identical across
+    // denoising phases.
+    GBufferProbe,
+    // The complete yard plus one generated, fixed Glass sphere centered on the
+    // capture camera. This profile exists only for quantitative D1 acceptance.
+    DenoiseProbe,
 };
+
+inline constexpr std::array<float, 3> DenoiseProbeGlassSphereCenter{
+    -4.0f, 1.25f, -4.0f};
+inline constexpr float DenoiseProbeGlassSphereRadius = 1.25f;
 
 // Load every configured asset through the generic OGFx path, merge its model records,
 // and add the table-owned yard placements. EstimatorReference retains only required,

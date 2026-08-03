@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera.hpp"
+#include "denoise.hpp"
 #include "estimator_mode.hpp"
 #include "furnace.hpp"
 
@@ -37,6 +38,8 @@ struct CommandLineOptions
     bool furnaceRequested = false;
     bool validationRequested = false;
     bool gbufferProbeRequested = false;
+    bool denoiseProbeRequested = false;
+    DenoiseMode denoise = DenoiseMode::Off;
 };
 
 struct CaptureTraceTimingSummary
@@ -150,13 +153,15 @@ constexpr std::uint32_t GBufferMissInstanceId = 0xffffffffu;
 constexpr std::uint32_t MinimumGBufferProbeFrameCount = 128;
 
 // One decoded G-buffer pixel: world shading normal + linear view depth from the
-// binary16 image, linear albedo from the UNORM8 image, and the raw instance ID.
+// binary16 image, linear albedo plus primary-Glass alpha from the UNORM8 image,
+// and the raw instance ID.
 struct GBufferProbeSample
 {
     std::array<float, 3> normal{};
     float viewDepth = 0.0f;
     std::array<float, 3> albedo{};
     std::uint32_t instanceId = 0;
+    bool primaryGlass = false;
 };
 
 // Decode pixel (x, y) from tightly packed G-buffer readbacks. Rejects null output,
@@ -204,8 +209,8 @@ struct GBufferProbeSample
 
 // D0 acceptance predicates. A surface probe pins the expected world-space normal,
 // the analytic plane depth within a relative tolerance covering binary16 storage,
-// the expected quantized albedo, and the exact instance index; the sky probe
-// requires the exact miss sentinel.
+// the expected quantized albedo, the opaque material marker, and the exact
+// instance index; the sky probe requires the exact miss sentinel.
 [[nodiscard]] bool gbufferSurfaceProbePasses(
     const GBufferProbeSample& sample,
     const std::array<float, 3>& expectedNormal,
@@ -214,6 +219,30 @@ struct GBufferProbeSample
     std::uint32_t expectedInstanceId);
 
 [[nodiscard]] bool gbufferSkyProbePasses(const GBufferProbeSample& sample);
+
+struct DenoiseAcceptanceSummary
+{
+    std::uint32_t glassPixelCount = 0;
+    std::uint32_t isolatedHotPixelCount = 0;
+    std::uint64_t glassRadianceHash = 0;
+    std::uint32_t firstHotPixelX = 0;
+    std::uint32_t firstHotPixelY = 0;
+    float firstHotPixelLuminance = 0.0f;
+    float firstHotPixelCeiling = 0.0f;
+};
+
+// Quantitative D1 acceptance over the final linear HDR frame and matching
+// primary-hit G-buffer. Glass RGB half-words are hashed at their exact pixel
+// coordinates so Off/Spatial captures can prove byte-exact bypass. Isolated hot
+// pixels are non-Glass surface pixels whose demodulated luminance exceeds an
+// edge-aware 3x3 median by 8x, deliberately looser than the GPU clamp's 6x limit.
+[[nodiscard]] bool summarizeDenoiseAcceptance(
+    std::uint32_t width,
+    std::uint32_t height,
+    std::span<const std::uint16_t> hdrRgba16,
+    std::span<const std::uint16_t> normalDepthRgba16,
+    std::span<const std::uint8_t> albedoRgba8,
+    DenoiseAcceptanceSummary* summary);
 
 // Hash the tightly packed, linear RGBA8 tonemapped output with 64-bit FNV-1a.
 // Width and height are fed first as four little-endian bytes each, so equal byte

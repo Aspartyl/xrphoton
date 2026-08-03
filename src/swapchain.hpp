@@ -46,6 +46,14 @@ struct Swapchain
     VkImage gbufferInstanceIdImage = VK_NULL_HANDLE;
     VmaAllocation gbufferInstanceIdImageAllocation = nullptr;
     VkImageView gbufferInstanceIdImageView = VK_NULL_HANDLE;
+    // Spatial-denoise ping-pong pair (demodulated radiance in rgb, variance in
+    // alpha). Compute-only working state: discarded every frame, never read back.
+    VkImage denoiseWorkingImageA = VK_NULL_HANDLE;
+    VmaAllocation denoiseWorkingImageAAllocation = nullptr;
+    VkImageView denoiseWorkingImageAView = VK_NULL_HANDLE;
+    VkImage denoiseWorkingImageB = VK_NULL_HANDLE;
+    VmaAllocation denoiseWorkingImageBAllocation = nullptr;
+    VkImageView denoiseWorkingImageBView = VK_NULL_HANDLE;
 
     Swapchain() = default;
     Swapchain(const Swapchain&) = delete;

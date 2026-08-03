@@ -30,6 +30,8 @@ struct GalleryAsset
     // Naming each row's CMake setting keeps optional skip lines actionable without
     // introducing asset-specific branches in the loader.
     const char* configurationName;
+    // This generated asset is not part of the gameplay yard's loaded model set.
+    bool denoiseProbeOnly = false;
 };
 
 struct GalleryPlacement
@@ -37,6 +39,11 @@ struct GalleryPlacement
     uint32_t assetIndex;
     glm::mat4 transform;
     bool dynamic = false;
+    // Acceptance-only placements exist solely for the GBufferProbe profile; the
+    // ordinary yard omits them so gameplay and Off-mode capture hashes stay
+    // byte-identical across denoising phases.
+    bool probeOnly = false;
+    bool denoiseProbeOnly = false;
 };
 
 enum GalleryAssetIndex : uint32_t
@@ -45,7 +52,9 @@ enum GalleryAssetIndex : uint32_t
     YardWallAsset,
     YardBoxAsset,
     GlassPanelAsset,
+    DenoiseGlassSphereAsset,
     QuadAsset,
+    TexturedProbeAsset,
     WedgeAsset,
     PlitkaAsset,
     BlenderPyramidAsset,
@@ -229,10 +238,23 @@ constexpr std::array GalleryAssets{
         .configurationName = "XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH",
     },
     GalleryAsset{
+        .name = "denoise_glass_sphere",
+        .ogfxPath = XRPHOTON_DENOISE_GLASS_SPHERE_ASSET_PATH,
+        .optional = false,
+        .configurationName = "XRPHOTON_DENOISE_GLASS_SPHERE_ASSET_PATH",
+        .denoiseProbeOnly = true,
+    },
+    GalleryAsset{
         .name = "test_quad",
         .ogfxPath = XRPHOTON_TEST_QUAD_ASSET_PATH,
         .optional = false,
         .configurationName = "XRPHOTON_TEST_QUAD_ASSET_PATH",
+    },
+    GalleryAsset{
+        .name = "textured_probe",
+        .ogfxPath = XRPHOTON_TEST_TEXTURED_PROBE_ASSET_PATH,
+        .optional = false,
+        .configurationName = "XRPHOTON_TEST_TEXTURED_PROBE_ASSET_PATH",
     },
     GalleryAsset{
         .name = "test_wedge",
@@ -409,6 +431,21 @@ const std::array GalleryPlacements{
             glm::mat4{1.0f},
             glm::vec3{-2.5f, 0.0f, -3.8f}),
     },
+    GalleryPlacement{
+        .assetIndex = DenoiseGlassSphereAsset,
+        // Static, generated, and centered on the fixed capture view. It never
+        // enters the gameplay yard or depends on owner-local Blender assets.
+        .transform = glm::translate(
+                         glm::mat4{1.0f},
+                         glm::vec3{
+                             DenoiseProbeGlassSphereCenter[0],
+                             DenoiseProbeGlassSphereCenter[1],
+                             DenoiseProbeGlassSphereCenter[2]})
+            * glm::scale(
+                glm::mat4{1.0f},
+                glm::vec3{DenoiseProbeGlassSphereRadius}),
+        .denoiseProbeOnly = true,
+    },
     // Keep the low-level probes along the north-west edge, outside the yard's
     // central movement area but visible from the deliberate spawn.
     GalleryPlacement{
@@ -416,6 +453,18 @@ const std::array GalleryPlacements{
         .transform = glm::translate(
             glm::mat4{1.0f},
             glm::vec3{-6.0f, 1.0f, 9.5f}),
+    },
+    GalleryPlacement{
+        .assetIndex = TexturedProbeAsset,
+        // The DXT1-sampled probe card faces the spawn from the open south-west
+        // strip, west of the glass-panel row's sight lines, so the G-buffer
+        // oracle's albedo pixel stays permanently unoccluded. Placed before every
+        // optional entry to keep its flat instance index configuration-stable,
+        // and probe-only so the ordinary yard image never changes.
+        .transform = glm::translate(
+            glm::mat4{1.0f},
+            glm::vec3{-6.4f, 0.9f, -3.0f}),
+        .probeOnly = true,
     },
     GalleryPlacement{
         .assetIndex = PlitkaAsset,
@@ -751,6 +800,10 @@ GalleryLoadResult loadGalleryScene(
              assetIndex < GalleryAssets.size();
              ++assetIndex) {
             const GalleryAsset& asset = GalleryAssets[assetIndex];
+            if (asset.denoiseProbeOnly
+                && profile != GallerySceneProfile::DenoiseProbe) {
+                continue;
+            }
             if (profile == GallerySceneProfile::EstimatorReference
                 && asset.optional) {
                 std::cout << "Gallery entry '" << asset.name
@@ -812,6 +865,14 @@ GalleryLoadResult loadGalleryScene(
 
             const LoadedGalleryAsset& asset = loadedAssets[placement.assetIndex];
             if (!asset.loaded) {
+                continue;
+            }
+            if (placement.probeOnly
+                && profile != GallerySceneProfile::GBufferProbe) {
+                continue;
+            }
+            if (placement.denoiseProbeOnly
+                && profile != GallerySceneProfile::DenoiseProbe) {
                 continue;
             }
             if (profile == GallerySceneProfile::EstimatorReference) {
@@ -885,6 +946,7 @@ GalleryLoadResult loadGalleryScene(
         }
 
         const std::array textureRoots{
+            std::filesystem::path{XRPHOTON_PROBE_TEXTURE_ROOT},
             std::filesystem::path{XRPHOTON_GALLERY_AUTHORED_TEXTURE_ROOT},
             std::filesystem::path{XRPHOTON_GALLERY_TEXTURE_ROOT},
         };

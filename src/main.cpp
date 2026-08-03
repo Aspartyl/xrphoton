@@ -1,6 +1,7 @@
 #include "acceleration_structure.hpp"
 #include "camera.hpp"
 #include "capture.hpp"
+#include "denoise_pipeline.hpp"
 #include "gallery.hpp"
 #include "gpu_lighting.hpp"
 #include "gpu_scene.hpp"
@@ -413,12 +414,19 @@ int main(int argumentCount, char** arguments)
     }
     std::cout << ".\n";
 
+    // Probed captures select their acceptance-only addition: the G-buffer card or
+    // the fixed D1 Glass sphere. Everything else renders the unchanged gameplay
+    // yard so Off-mode capture hashes stay byte-identical across phases.
     GalleryLoadResult loadedGallery = loadGalleryScene(
         furnaceMode
             ? GallerySceneProfile::FurnaceReference
             : referenceMode
                 ? GallerySceneProfile::EstimatorReference
-                : GallerySceneProfile::Complete);
+                : commandLine.denoiseProbeRequested
+                    ? GallerySceneProfile::DenoiseProbe
+                : commandLine.gbufferProbeRequested
+                    ? GallerySceneProfile::GBufferProbe
+                    : GallerySceneProfile::Complete);
     if (!loadedGallery) {
         std::cerr << loadedGallery.error << '\n';
         return 1;
@@ -616,6 +624,17 @@ int main(int argumentCount, char** arguments)
     }
     std::cout << "Created Vulkan HDR tonemap pipeline.\n";
 
+    DenoisePipeline denoisePipeline;
+    const VkResult denoisePipelineResult = createDenoisePipeline(
+        &denoisePipeline,
+        ctx.device);
+    if (denoisePipelineResult != VK_SUCCESS) {
+        std::cerr << "Failed to create Vulkan denoise pipelines: "
+                  << formatVkResult(denoisePipelineResult) << ".\n";
+        return 1;
+    }
+    std::cout << "Created Vulkan spatial denoise pipelines.\n";
+
     // The renderer's non-owning view over everything the frame path uses, created
     // last — after every handle it borrows exists. The handle members are copies of
     // program-lifetime objects; swap is a pointer because its members are replaced
@@ -635,6 +654,7 @@ int main(int argumentCount, char** arguments)
         .functions = &rayTracingFunctions,
         .rtPipeline = &rtPipeline,
         .tonemapPipeline = &tonemapPipeline,
+        .denoisePipeline = &denoisePipeline,
         .swap = &swap,
     };
 
@@ -663,6 +683,8 @@ int main(int argumentCount, char** arguments)
     uint32_t frameCounter = 0;
     std::uint32_t samplesPerPixel = commandLine.samplesPerPixel;
     bool samplesPerPixelToggleDown = false;
+    DenoiseMode denoiseMode = commandLine.denoise;
+    bool denoiseToggleDown = false;
     if (referenceMode) {
         if (!setPhysicsCharacterEnabled(&physicsWorld, false)) {
             std::cerr << "Failed to disable the player character for reference mode.\n";
@@ -711,6 +733,8 @@ int main(int argumentCount, char** arguments)
             const float aspect = static_cast<float>(referenceExtent.width)
                 / static_cast<float>(referenceExtent.height);
             const std::uint32_t submittedSlot = currentFrame;
+            // Reference and furnace statistics stay proofs of the raw estimator:
+            // the denoiser is structurally bypassed regardless of any CLI request.
             const VkResult frameResult = drawFrame(
                 renderer,
                 submittedSlot,
@@ -718,7 +742,8 @@ int main(int argumentCount, char** arguments)
                     makeCameraPushConstants(captureCamera, aspect),
                     frameCounter,
                     samplesPerPixel),
-                frameLighting);
+                frameLighting,
+                DenoiseMode::Off);
             if (frameResult != VK_SUCCESS) {
                 std::cerr << "Failed to draw Vulkan reference sample: "
                           << formatVkResult(frameResult) << ".\n";
@@ -915,7 +940,8 @@ int main(int argumentCount, char** arguments)
                     makeCameraPushConstants(captureCamera, aspect),
                     submittedFrameIndex,
                     samplesPerPixel),
-                frameLighting);
+                frameLighting,
+                commandLine.denoise);
 
             if (frameResult == VK_ERROR_OUT_OF_DATE_KHR
                 || frameResult == VK_SUBOPTIMAL_KHR) {
@@ -961,6 +987,116 @@ int main(int argumentCount, char** arguments)
                 &timingSummary)) {
             std::cerr << "Failed to summarize Vulkan trace timestamps.\n";
             return 1;
+        }
+
+        if (commandLine.denoiseProbeRequested) {
+            HdrImageReadback hdrReadback;
+            const VkResult hdrResult = readbackHdrImage(
+                renderer,
+                lastSubmittedSlot,
+                &hdrReadback);
+            if (hdrResult != VK_SUCCESS) {
+                std::cerr << "Failed to read back D1 acceptance HDR image: "
+                          << formatVkResult(hdrResult) << ".\n";
+                return 1;
+            }
+            GBufferReadback gbuffer;
+            const VkResult gbufferResult = readbackGBufferImages(
+                renderer,
+                lastSubmittedSlot,
+                &gbuffer);
+            if (gbufferResult != VK_SUCCESS) {
+                std::cerr << "Failed to read back D1 acceptance G-buffer: "
+                          << formatVkResult(gbufferResult) << ".\n";
+                return 1;
+            }
+            if (hdrReadback.width != gbuffer.width
+                || hdrReadback.height != gbuffer.height) {
+                std::cerr << "Denoise probe readbacks disagree on extent.\n";
+                return 1;
+            }
+
+            DenoiseAcceptanceSummary denoiseSummary;
+            if (!summarizeDenoiseAcceptance(
+                    hdrReadback.width,
+                    hdrReadback.height,
+                    hdrReadback.rgba16,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    &denoiseSummary)) {
+                std::cerr << "Failed to summarize D1 acceptance capture.\n";
+                return 1;
+            }
+
+            const float probeAspect = static_cast<float>(gbuffer.width)
+                / static_cast<float>(gbuffer.height);
+            const RaygenPushConstants probeConstants = makeRaygenPushConstants(
+                makeCameraPushConstants(captureCamera, probeAspect),
+                lastRenderedFrameIndex,
+                samplesPerPixel);
+            std::uint32_t sphereX = 0;
+            std::uint32_t sphereY = 0;
+            GBufferProbeSample sphereSample;
+            if (!projectWorldPointToPixel(
+                    probeConstants.camera,
+                    probeConstants.cameraJitterX,
+                    probeConstants.cameraJitterY,
+                    gbuffer.width,
+                    gbuffer.height,
+                    DenoiseProbeGlassSphereCenter,
+                    &sphereX,
+                    &sphereY)
+                || !extractGBufferProbeSample(
+                    gbuffer.width,
+                    gbuffer.height,
+                    sphereX,
+                    sphereY,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    gbuffer.instanceIds,
+                    &sphereSample)
+                || !sphereSample.primaryGlass
+                || !(sphereSample.viewDepth > 0.0f)
+                || denoiseSummary.glassPixelCount == 0) {
+                std::cerr << "Denoise probe failed: the fixed sphere is not marked "
+                             "as primary Glass.\n";
+                return 1;
+            }
+            std::cout << "DenoiseProbe result=pass spherePixel="
+                      << sphereX << ',' << sphereY
+                      << " glassPixels=" << denoiseSummary.glassPixelCount
+                      << " glassHash=0x" << std::hex << std::setw(16)
+                      << std::setfill('0') << denoiseSummary.glassRadianceHash
+                      << std::dec << std::setfill(' ')
+                      << " isolatedHotPixels="
+                      << denoiseSummary.isolatedHotPixelCount;
+            if (denoiseSummary.isolatedHotPixelCount != 0) {
+                GBufferProbeSample hotSample;
+                const bool hotSampleExtracted = extractGBufferProbeSample(
+                    gbuffer.width,
+                    gbuffer.height,
+                    denoiseSummary.firstHotPixelX,
+                    denoiseSummary.firstHotPixelY,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    gbuffer.instanceIds,
+                    &hotSample);
+                std::cout << " firstHotPixel="
+                          << denoiseSummary.firstHotPixelX << ','
+                          << denoiseSummary.firstHotPixelY
+                          << " luminance="
+                          << denoiseSummary.firstHotPixelLuminance
+                          << " ceiling="
+                          << denoiseSummary.firstHotPixelCeiling;
+                if (hotSampleExtracted) {
+                    std::cout << " instance=" << hotSample.instanceId
+                              << " depth=" << hotSample.viewDepth
+                              << " albedo=" << hotSample.albedo[0] << ','
+                              << hotSample.albedo[1] << ','
+                              << hotSample.albedo[2];
+                }
+            }
+            std::cout << '\n';
         }
 
         StorageImageReadback readback;
@@ -1130,12 +1266,69 @@ int main(int argumentCount, char** arguments)
                 return 1;
             }
 
+            // The textured probe card (flat instance 15, placed before every
+            // optional entry) samples the generated DXT1 grid with a unit factor,
+            // so its albedo pixel pins the texel fetch itself: uv (0.25, 0.25) is
+            // the upper-left magenta quadrant, exact through RGB565, sRGB, and
+            // UNORM8. The target is that quadrant's center on the card at
+            // z = -3.0; the sight line from the spawn passes west of the
+            // glass-panel row.
+            constexpr std::array<float, 3> TexturedTarget{-6.7f, 1.2f, -3.0f};
+            constexpr float TexturedPlaneCoordinate = -3.0f;
+            constexpr std::uint32_t TexturedPlaneAxis = 2;
+            constexpr std::array<float, 3> TexturedNormal{0.0f, 0.0f, -1.0f};
+            constexpr std::array<float, 3> TexturedAlbedo{1.0f, 0.0f, 1.0f};
+            constexpr std::uint32_t TexturedInstanceId = 15;
+            std::uint32_t texturedX = 0;
+            std::uint32_t texturedY = 0;
+            float expectedTexturedDepth = 0.0f;
+            GBufferProbeSample texturedSample;
+            if (!projectWorldPointToPixel(
+                    probeConstants.camera,
+                    probeConstants.cameraJitterX,
+                    probeConstants.cameraJitterY,
+                    gbuffer.width,
+                    gbuffer.height,
+                    TexturedTarget,
+                    &texturedX,
+                    &texturedY)
+                || !expectedPlaneViewDepth(
+                    probeConstants.camera,
+                    probeConstants.cameraJitterX,
+                    probeConstants.cameraJitterY,
+                    gbuffer.width,
+                    gbuffer.height,
+                    texturedX,
+                    texturedY,
+                    TexturedPlaneAxis,
+                    TexturedPlaneCoordinate,
+                    &expectedTexturedDepth)
+                || !extractGBufferProbeSample(
+                    gbuffer.width,
+                    gbuffer.height,
+                    texturedX,
+                    texturedY,
+                    gbuffer.normalDepthRgba16,
+                    gbuffer.albedoRgba8,
+                    gbuffer.instanceIds,
+                    &texturedSample)) {
+                std::cerr << "G-buffer probe: the textured-probe target does not "
+                             "project onto a valid probe pixel.\n";
+                return 1;
+            }
+
             const bool groundPasses = gbufferSurfaceProbePasses(
                 groundSample,
                 GroundNormal,
                 expectedGroundDepth,
                 GroundAlbedo,
                 GroundInstanceId);
+            const bool texturedPasses = gbufferSurfaceProbePasses(
+                texturedSample,
+                TexturedNormal,
+                expectedTexturedDepth,
+                TexturedAlbedo,
+                TexturedInstanceId);
             const bool wallPasses = gbufferSurfaceProbePasses(
                 wallSample,
                 WallNormal,
@@ -1153,6 +1346,18 @@ int main(int argumentCount, char** arguments)
                       << groundSample.albedo[1] << ',' << groundSample.albedo[2]
                       << " instance=" << groundSample.instanceId
                       << " result=" << (groundPasses ? "pass" : "fail") << '\n';
+            std::cout << "GBufferProbe textured: pixel=" << texturedX << ','
+                      << texturedY
+                      << " normal=" << texturedSample.normal[0] << ','
+                      << texturedSample.normal[1] << ','
+                      << texturedSample.normal[2]
+                      << " depth=" << texturedSample.viewDepth
+                      << " expectedDepth=" << expectedTexturedDepth
+                      << " albedo=" << texturedSample.albedo[0] << ','
+                      << texturedSample.albedo[1] << ','
+                      << texturedSample.albedo[2]
+                      << " instance=" << texturedSample.instanceId
+                      << " result=" << (texturedPasses ? "pass" : "fail") << '\n';
             std::cout << "GBufferProbe wall: pixel=" << wallX << ',' << wallY
                       << " normal=" << wallSample.normal[0] << ','
                       << wallSample.normal[1] << ',' << wallSample.normal[2]
@@ -1167,7 +1372,7 @@ int main(int argumentCount, char** arguments)
                       << " instance=0x" << std::hex << skySample.instanceId
                       << std::dec
                       << " result=" << (skyPasses ? "pass" : "fail") << '\n';
-            if (!groundPasses || !wallPasses || !skyPasses) {
+            if (!groundPasses || !texturedPasses || !wallPasses || !skyPasses) {
                 std::cerr << "G-buffer probe failed: primary-hit outputs do not "
                              "match the analytic yard expectations.\n";
                 return 1;
@@ -1195,9 +1400,10 @@ int main(int argumentCount, char** arguments)
     std::cout << "Player: WASD run, Left Shift sprint, Left Ctrl crouch, Space jump.\n"
                  "Free camera: WASD move, Left Shift boost, Space/Ctrl up/down.\n"
                  "Shared: F1 switch view, F5 cycle 1/2/4/8/16 SPP, "
-                 "Escape release mouse, left click recapture.\n";
+                 "F6 cycle denoiser, Escape release mouse, left click recapture.\n";
     std::cout << "Entering GLFW event loop in player mode at "
-              << samplesPerPixel << " SPP.\n";
+              << samplesPerPixel << " SPP with the denoiser "
+              << denoiseModeName(denoiseMode) << ".\n";
 
     glfwSetInputMode(ctx.window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported() == GLFW_TRUE) {
@@ -1214,6 +1420,14 @@ int main(int argumentCount, char** arguments)
             std::cout << "Samples per pixel: " << samplesPerPixel << ".\n";
         }
         samplesPerPixelToggleDown = samplesPerPixelToggleIsDown;
+
+        const bool denoiseToggleIsDown =
+            glfwGetKey(ctx.window, GLFW_KEY_F6) == GLFW_PRESS;
+        if (denoiseToggleIsDown && !denoiseToggleDown) {
+            denoiseMode = nextDenoiseMode(denoiseMode);
+            std::cout << "Denoiser: " << denoiseModeName(denoiseMode) << ".\n";
+        }
+        denoiseToggleDown = denoiseToggleIsDown;
 
         const double now = glfwGetTime();
         const float dt = static_cast<float>(std::min(
@@ -1321,7 +1535,8 @@ int main(int argumentCount, char** arguments)
                     makeCameraPushConstants(renderCamera, aspect),
                     frameCounter,
                     samplesPerPixel),
-                frameLighting);
+                frameLighting,
+                denoiseMode);
             currentFrame = (currentFrame + 1) % MaxFramesInFlight;
             ++frameCounter;
         }

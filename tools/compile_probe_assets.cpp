@@ -1,6 +1,8 @@
 #include "ogfx.hpp"
 
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -108,6 +110,93 @@ xrphoton::ogfx::Model buildAxisAlignedBox(
     return model;
 }
 
+// The permanent textured probe (denoising plan D1 entry requirement): a 1.2 m card
+// in the open south-west strip whose material samples the generated DXT1 grid
+// below through the ordinary logical-reference path. Its sampled albedo is pinned
+// by the --gbuffer-probe oracle, so a dropped texture multiply cannot pass.
+xrphoton::ogfx::Model buildTestTexturedProbe()
+{
+    using namespace xrphoton::ogfx;
+
+    Model model{};
+    model.positions = {
+        {-0.6f, -0.6f, 0.0f},
+        { 0.6f, -0.6f, 0.0f},
+        { 0.6f,  0.6f, 0.0f},
+        {-0.6f,  0.6f, 0.0f},
+    };
+    // The card faces the south-west spawn (-Z normal). u grows with +x and v grows
+    // downward, matching the DDS top-row-first payload, so uv (0.25, 0.25) is the
+    // upper-left quadrant the oracle samples.
+    model.attributes = {
+        {0.0f, 0.0f, -1.0f, 0.0f, 1.0f},
+        {0.0f, 0.0f, -1.0f, 1.0f, 1.0f},
+        {0.0f, 0.0f, -1.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, -1.0f, 0.0f, 0.0f},
+    };
+    model.indices = {0, 2, 1, 0, 3, 2};
+    model.geometries.push_back({
+        .firstVertex = 0,
+        .vertexCount = 4,
+        .firstIndex = 0,
+        .indexCount = 6,
+        .materialIndex = 0,
+        .alphaTested = false,
+    });
+    model.meshes.push_back({
+        .firstGeometry = 0,
+        .geometryCount = 1,
+    });
+    model.materials.emplace_back();
+    // A unit factor makes the sampled texel the whole albedo: the D0 wall probe
+    // already pins the factor multiply, so this card pins the texel fetch alone.
+    model.materials[0].baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
+    model.materials[0].baseColorTexture = "probes\\yard_probe_grid";
+    return model;
+}
+
+// One 4x4 DXT1 block with quadrant colors chosen to be exact through every stage:
+// pure magenta and pure green survive RGB565 encoding, sRGB decode at the 0/255
+// endpoints, and UNORM8 G-buffer storage without rounding. The quadrant pattern
+// (magenta upper-left/lower-right) additionally pins both UV axis orientations.
+std::vector<std::uint8_t> buildProbeGridDds()
+{
+    std::vector<std::uint8_t> bytes(128 + 8, 0);
+    const auto writeU32 = [&bytes](std::size_t offset, std::uint32_t value) {
+        bytes[offset] = static_cast<std::uint8_t>(value & 0xFF);
+        bytes[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xFF);
+        bytes[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xFF);
+        bytes[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xFF);
+    };
+    bytes[0] = 'D';
+    bytes[1] = 'D';
+    bytes[2] = 'S';
+    bytes[3] = ' ';
+    writeU32(4, 124);
+    // DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT.
+    writeU32(8, 0x1007);
+    writeU32(12, 4);
+    writeU32(16, 4);
+    writeU32(76, 32);
+    // DDPF_FOURCC + 'DXT1'.
+    writeU32(80, 0x4);
+    bytes[84] = 'D';
+    bytes[85] = 'X';
+    bytes[86] = 'T';
+    bytes[87] = '1';
+    // DDSCAPS_TEXTURE.
+    writeU32(108, 0x1000);
+
+    // color0 = magenta 0xF81F, color1 = green 0x07E0; color0 > color1 keeps the
+    // block in opaque four-color mode. Index rows run top to bottom: two magenta
+    // then two green texels per top row, mirrored in the bottom rows.
+    const std::uint8_t block[8] = {0x1F, 0xF8, 0xE0, 0x07, 0x50, 0x50, 0x05, 0x05};
+    for (std::size_t index = 0; index < 8; ++index) {
+        bytes[128 + index] = block[index];
+    }
+    return bytes;
+}
+
 xrphoton::ogfx::Model buildTestYardGround()
 {
     return buildAxisAlignedBox(
@@ -208,6 +297,110 @@ xrphoton::ogfx::Model buildTestGlassPanels()
             showcase.materials.end(), panel.materials.begin(), panel.materials.end());
     }
     return showcase;
+}
+
+// Permanent acceptance sphere for D1 Glass bypass. Keeping this generated and
+// independent of owner-local Blender content makes the runtime proof portable.
+xrphoton::ogfx::Model buildDenoiseGlassSphere()
+{
+    using namespace xrphoton::ogfx;
+
+    constexpr std::uint32_t LatitudeSegments = 16;
+    constexpr std::uint32_t LongitudeSegments = 32;
+    constexpr float Pi = 3.14159265358979323846f;
+
+    Model model{};
+    const auto appendVertex = [&model](float x, float y, float z, float u, float v) {
+        model.positions.push_back({x, y, z});
+        model.attributes.push_back({x, y, z, u, v});
+    };
+
+    appendVertex(0.0f, 1.0f, 0.0f, 0.5f, 0.0f);
+    for (std::uint32_t latitude = 1;
+         latitude < LatitudeSegments;
+         ++latitude) {
+        const float phi = Pi * static_cast<float>(latitude)
+            / static_cast<float>(LatitudeSegments);
+        const float y = std::cos(phi);
+        const float ringRadius = std::sin(phi);
+        for (std::uint32_t longitude = 0;
+             longitude < LongitudeSegments;
+             ++longitude) {
+            const float theta = 2.0f * Pi * static_cast<float>(longitude)
+                / static_cast<float>(LongitudeSegments);
+            appendVertex(
+                ringRadius * std::cos(theta),
+                y,
+                ringRadius * std::sin(theta),
+                static_cast<float>(longitude)
+                    / static_cast<float>(LongitudeSegments),
+                static_cast<float>(latitude)
+                    / static_cast<float>(LatitudeSegments));
+        }
+    }
+    const std::uint32_t bottomVertex =
+        static_cast<std::uint32_t>(model.positions.size());
+    appendVertex(0.0f, -1.0f, 0.0f, 0.5f, 1.0f);
+
+    const auto ringVertex = [](std::uint32_t latitude, std::uint32_t longitude) {
+        return 1u + (latitude - 1u) * LongitudeSegments
+            + longitude % LongitudeSegments;
+    };
+    for (std::uint32_t longitude = 0;
+         longitude < LongitudeSegments;
+         ++longitude) {
+        const std::uint32_t next = (longitude + 1u) % LongitudeSegments;
+        model.indices.insert(model.indices.end(), {
+            0u,
+            ringVertex(1u, next),
+            ringVertex(1u, longitude),
+        });
+    }
+    for (std::uint32_t latitude = 1;
+         latitude + 1 < LatitudeSegments;
+         ++latitude) {
+        for (std::uint32_t longitude = 0;
+             longitude < LongitudeSegments;
+             ++longitude) {
+            const std::uint32_t next = (longitude + 1u) % LongitudeSegments;
+            const std::uint32_t upper = ringVertex(latitude, longitude);
+            const std::uint32_t upperNext = ringVertex(latitude, next);
+            const std::uint32_t lower = ringVertex(latitude + 1u, longitude);
+            const std::uint32_t lowerNext = ringVertex(latitude + 1u, next);
+            model.indices.insert(model.indices.end(), {
+                upper, upperNext, lower,
+                upperNext, lowerNext, lower,
+            });
+        }
+    }
+    for (std::uint32_t longitude = 0;
+         longitude < LongitudeSegments;
+         ++longitude) {
+        const std::uint32_t next = (longitude + 1u) % LongitudeSegments;
+        model.indices.insert(model.indices.end(), {
+            bottomVertex,
+            ringVertex(LatitudeSegments - 1u, longitude),
+            ringVertex(LatitudeSegments - 1u, next),
+        });
+    }
+
+    model.geometries.push_back({
+        .firstVertex = 0,
+        .vertexCount = static_cast<std::uint32_t>(model.positions.size()),
+        .firstIndex = 0,
+        .indexCount = static_cast<std::uint32_t>(model.indices.size()),
+        .materialIndex = 0,
+        .alphaTested = false,
+    });
+    model.meshes.push_back({
+        .firstGeometry = 0,
+        .geometryCount = 1,
+    });
+    model.materials.emplace_back();
+    model.materials[0].baseColorFactor = {0.88f, 0.96f, 1.0f, 1.0f};
+    model.materials[0].perceptualRoughness = 0.08f;
+    model.materials[0].materialClass = MaterialClass::Glass;
+    return model;
 }
 
 xrphoton::ogfx::Model buildTestQuad()
@@ -376,22 +569,27 @@ bool publishOutput(
 
 int main(int argumentCount, char** arguments)
 {
-    if (argumentCount != 7) {
+    if (argumentCount != 10) {
         std::cerr
             << "Usage: xrPhotonProbeAssetCompiler <test-quad.ogfx> "
                "<test-wedge.ogfx> <test-yard-ground.ogfx> "
                "<test-yard-wall.ogfx> <test-yard-box.ogfx> "
-               "<test-glass-panel.ogfx>\n";
+               "<test-glass-panel.ogfx> <denoise-glass-sphere.ogfx> "
+               "<textured-probe.ogfx> "
+               "<yard-probe-grid.dds>\n";
         return 1;
     }
 
-    const std::array<std::filesystem::path, 6> outputPaths{
+    const std::array<std::filesystem::path, 9> outputPaths{
         arguments[1],
         arguments[2],
         arguments[3],
         arguments[4],
         arguments[5],
         arguments[6],
+        arguments[7],
+        arguments[8],
+        arguments[9],
     };
     for (std::size_t left = 0; left < outputPaths.size(); ++left) {
         for (std::size_t right = left + 1; right < outputPaths.size(); ++right) {
@@ -402,15 +600,17 @@ int main(int argumentCount, char** arguments)
         }
     }
 
-    const std::array<xrphoton::ogfx::Model, 6> models{
+    const std::array<xrphoton::ogfx::Model, 8> models{
         buildTestQuad(),
         buildTestWedge(),
         buildTestYardGround(),
         buildTestYardWall(),
         buildTestYardBox(),
         buildTestGlassPanels(),
+        buildDenoiseGlassSphere(),
+        buildTestTexturedProbe(),
     };
-    std::array<xrphoton::ogfx::SerializeResult, 6> serialized;
+    std::array<xrphoton::ogfx::SerializeResult, 8> serialized;
     for (std::size_t index = 0; index < models.size(); ++index) {
         serialized[index] = xrphoton::ogfx::serializeModel(
             models[index],
@@ -425,6 +625,11 @@ int main(int argumentCount, char** arguments)
         if (!publishOutput(outputPaths[index], serialized[index].bytes)) {
             return 1;
         }
+    }
+    // The DDS travels through publishOutput's same atomic temp-and-rename path so
+    // an interrupted build can never leave a truncated texture beside the models.
+    if (!publishOutput(outputPaths[8], buildProbeGridDds())) {
+        return 1;
     }
     return 0;
 }

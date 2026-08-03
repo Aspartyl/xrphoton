@@ -69,6 +69,16 @@ set(XRPHOTON_TEST_YARD_BOX_ASSET
     ${XRPHOTON_PROBE_ASSET_DIR}/test_yard_box.ogfx)
 set(XRPHOTON_TEST_GLASS_PANEL_ASSET
     ${XRPHOTON_PROBE_ASSET_DIR}/test_glass_panel.ogfx)
+set(XRPHOTON_DENOISE_GLASS_SPHERE_ASSET
+    ${XRPHOTON_PROBE_ASSET_DIR}/denoise_glass_sphere.ogfx)
+set(XRPHOTON_TEST_TEXTURED_PROBE_ASSET
+    ${XRPHOTON_PROBE_ASSET_DIR}/textured_probe.ogfx)
+# The generated DXT1 grid resolves through the ordinary logical-reference path
+# ("probes\yard_probe_grid" against this root), so generated-only builds carry a
+# real sampled texture with no owner-local configuration.
+set(XRPHOTON_PROBE_GRID_TEXTURE
+    ${XRPHOTON_PROBE_ASSET_DIR}/yard_probe_grid.dds)
+set(XRPHOTON_PROBE_TEXTURE_ROOT ${XRPHOTON_ASSET_DIR})
 set(XRPHOTON_TEST_PYRAMID_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_pyramid.ogfx)
 set(XRPHOTON_TEST_SPHERE_ASSET ${XRPHOTON_BLENDER_ASSET_DIR}/test_sphere.ogfx)
 set(XRPHOTON_TEST_SMOOTH_SPHERE_ASSET
@@ -92,6 +102,9 @@ add_custom_command(
         ${XRPHOTON_TEST_YARD_WALL_ASSET}
         ${XRPHOTON_TEST_YARD_BOX_ASSET}
         ${XRPHOTON_TEST_GLASS_PANEL_ASSET}
+        ${XRPHOTON_DENOISE_GLASS_SPHERE_ASSET}
+        ${XRPHOTON_TEST_TEXTURED_PROBE_ASSET}
+        ${XRPHOTON_PROBE_GRID_TEXTURE}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${XRPHOTON_PROBE_ASSET_DIR}
     COMMAND $<TARGET_FILE:xrPhotonProbeAssetCompiler>
         ${XRPHOTON_TEST_QUAD_ASSET}
@@ -100,8 +113,11 @@ add_custom_command(
         ${XRPHOTON_TEST_YARD_WALL_ASSET}
         ${XRPHOTON_TEST_YARD_BOX_ASSET}
         ${XRPHOTON_TEST_GLASS_PANEL_ASSET}
+        ${XRPHOTON_DENOISE_GLASS_SPHERE_ASSET}
+        ${XRPHOTON_TEST_TEXTURED_PROBE_ASSET}
+        ${XRPHOTON_PROBE_GRID_TEXTURE}
     DEPENDS xrPhotonProbeAssetCompiler
-    COMMENT "Compiling the procedural probes and test-yard assets to OGFx"
+    COMMENT "Compiling the procedural probes, test-yard assets, and probe texture"
     VERBATIM
 )
 # Asset generation is explicit for compiler-only builds; the engine dependency below
@@ -113,6 +129,9 @@ add_custom_target(xrPhotonAssets DEPENDS
     ${XRPHOTON_TEST_YARD_WALL_ASSET}
     ${XRPHOTON_TEST_YARD_BOX_ASSET}
     ${XRPHOTON_TEST_GLASS_PANEL_ASSET}
+    ${XRPHOTON_DENOISE_GLASS_SPHERE_ASSET}
+    ${XRPHOTON_TEST_TEXTURED_PROBE_ASSET}
+    ${XRPHOTON_PROBE_GRID_TEXTURE}
 )
 
 if(BUILD_TESTING)
@@ -602,6 +621,9 @@ if(BUILD_TESTING)
             XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
             XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
             XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH=u8\"${XRPHOTON_TEST_GLASS_PANEL_ASSET}\"
+            XRPHOTON_DENOISE_GLASS_SPHERE_ASSET_PATH=u8\"${XRPHOTON_DENOISE_GLASS_SPHERE_ASSET}\"
+            XRPHOTON_TEST_TEXTURED_PROBE_ASSET_PATH=u8\"${XRPHOTON_TEST_TEXTURED_PROBE_ASSET}\"
+            XRPHOTON_PROBE_TEXTURE_ROOT=u8\"${XRPHOTON_PROBE_TEXTURE_ROOT}\"
             XRPHOTON_GALLERY_PLITKA_OGFX=u8\"\"
             XRPHOTON_GALLERY_BLENDER_OGFX=u8\"\"
             XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"\"
@@ -750,7 +772,30 @@ add_custom_command(
     VERBATIM
 )
 
-add_custom_target(xrPhotonShaders DEPENDS ${SHADER_HEADER} ${TONEMAP_SHADER_HEADER})
+set(DENOISE_SHADER_HEADER ${SHADER_HEADER_DIR}/denoise_spv.h)
+add_custom_command(
+    OUTPUT ${DENOISE_SHADER_HEADER}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_HEADER_DIR}
+    # No -entry: all three compute entry points (clamp, variance, and a-trous)
+    # compile into one embedded module, mirroring the multi-entry raytrace module.
+    COMMAND ${XRPHOTON_SLANGC}
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders/denoise.slang
+            -target spirv
+            -fvk-use-entrypoint-name
+            -source-embed-style u32
+            -source-embed-name denoise_spv
+            -o ${DENOISE_SHADER_HEADER}
+    COMMAND sed -i -e "1i #include <stddef.h>" -e "1i #include <stdint.h>"
+            ${DENOISE_SHADER_HEADER}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/denoise.slang
+    COMMENT "Compiling denoise.slang to SPIR-V header"
+    VERBATIM
+)
+
+add_custom_target(xrPhotonShaders DEPENDS
+    ${SHADER_HEADER}
+    ${TONEMAP_SHADER_HEADER}
+    ${DENOISE_SHADER_HEADER})
 
 add_executable(xrPhoton
     src/main.cpp
@@ -768,6 +813,7 @@ add_executable(xrPhoton
     src/player.cpp
     src/rt_pipeline.cpp
     src/tonemap_pipeline.cpp
+    src/denoise_pipeline.cpp
     src/renderer.cpp
 )
 
@@ -782,6 +828,9 @@ target_compile_definitions(xrPhoton PRIVATE
     XRPHOTON_TEST_YARD_WALL_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_WALL_ASSET}\"
     XRPHOTON_TEST_YARD_BOX_ASSET_PATH=u8\"${XRPHOTON_TEST_YARD_BOX_ASSET}\"
     XRPHOTON_TEST_GLASS_PANEL_ASSET_PATH=u8\"${XRPHOTON_TEST_GLASS_PANEL_ASSET}\"
+    XRPHOTON_DENOISE_GLASS_SPHERE_ASSET_PATH=u8\"${XRPHOTON_DENOISE_GLASS_SPHERE_ASSET}\"
+    XRPHOTON_TEST_TEXTURED_PROBE_ASSET_PATH=u8\"${XRPHOTON_TEST_TEXTURED_PROBE_ASSET}\"
+    XRPHOTON_PROBE_TEXTURE_ROOT=u8\"${XRPHOTON_PROBE_TEXTURE_ROOT}\"
     XRPHOTON_GALLERY_PLITKA_OGFX=u8\"${XRPHOTON_GALLERY_PLITKA_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_OGFX_ABSOLUTE}\"
     XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX=u8\"${XRPHOTON_GALLERY_BLENDER_SPHERE_OGFX_ABSOLUTE}\"

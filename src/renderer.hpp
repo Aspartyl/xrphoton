@@ -5,11 +5,13 @@
 
 #include <vulkan/vulkan.h>
 
+#include "denoise.hpp"
 #include "vma_fwd.hpp"
 
 namespace xrphoton
 {
 struct AccelerationStructure;
+struct DenoisePipeline;
 struct FrameResources;
 struct FrameLighting;
 struct GpuLighting;
@@ -42,6 +44,7 @@ struct Renderer
     const RayTracingFunctions* functions = nullptr;
     const RtPipeline* rtPipeline = nullptr;
     const TonemapPipeline* tonemapPipeline = nullptr;
+    const DenoisePipeline* denoisePipeline = nullptr;
     const Swapchain* swap = nullptr;
 };
 
@@ -65,8 +68,8 @@ struct HdrImageReadback
 
 // CPU-owned copy of the primary-hit G-buffer. Normal + depth pixels are four raw
 // binary16 words (normal xyz, linear view depth); albedo is tightly packed linear
-// RGBA8; instance IDs are raw 32-bit TLAS instance indices, with the shader's miss
-// sentinel (GBufferMissInstanceId in capture.hpp) marking primary-ray misses.
+// RGBA8 with alpha used as the primary-Glass marker; instance IDs are raw 32-bit
+// TLAS instance indices, with the shader's miss sentinel marking primary misses.
 struct GBufferReadback
 {
     std::uint32_t width = 0;
@@ -93,7 +96,8 @@ VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
     const RaygenPushConstants& pushConstants,
-    const FrameLighting& frameLighting);
+    const FrameLighting& frameLighting,
+    DenoiseMode denoiseMode);
 
 // Wait for and read the two GPU timestamps surrounding the most recently submitted
 // trace dispatch in frameSlot. The timestamp-period conversion and valid-bit wrap are

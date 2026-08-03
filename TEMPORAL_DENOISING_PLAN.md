@@ -61,8 +61,10 @@ surface samples the white fallback texture, so the G-buffer albedo would read th
 same even if the shader dropped the texture multiply. Since D1's demodulation is
 the first consumer that must preserve texture detail, D1 cannot start until the
 probe compiler emits a small procedural DXT1 texture with distinct texel colors,
-a permanent generated surface in the yard samples it, and `--gbuffer-probe` gains
-a pixel pinning the sampled (factor times texel) albedo at a known UV.
+a permanent generated surface samples it in the acceptance-only gallery profile
+that `--gbuffer-probe` selects (the ordinary yard stays untouched, so Off-mode
+hashes remain byte-identical across phases), and `--gbuffer-probe` gains a pixel
+pinning the sampled (factor times texel) albedo at a known UV.
 
 New `denoise.slang` compute module, compiled like `tonemap.slang`, descriptor sets
 rewritten after every recreate following the tonemap model.
@@ -71,7 +73,13 @@ rewritten after every recreate following the tonemap model.
   with the floor a compile-time constant (1/64). Remodulation multiplies by the
   same clamped value, so the round trip is exact and black albedo can neither
   blow up the division nor drop radiance.
-- Variance: 7x7 spatial luminance-variance estimate over the demodulated color.
+- Before variance, a 5x5 edge-aware robust luminance clamp limits only isolated
+  bright outliers using a trimmed local estimate that discards the four brightest
+  comparable samples before applying a broad 6x ceiling. The clamped demodulated
+  radiance is the input to variance and every wavelet pass, preventing one extreme
+  path from inflating and spreading through the chain.
+- Variance: 7x7 spatial luminance-variance estimate over the prepared,
+  demodulated color.
   This estimator is shared code; Spatiotemporal later reuses it as its
   young-history fallback.
 - Five a-trous wavelet iterations (strides 1, 2, 4, 8, 16) over the demodulated
@@ -85,13 +93,21 @@ rewritten after every recreate following the tonemap model.
   iteration remodulates albedo and writes the HDR radiance image. Iteration count
   and weights are compile-time constants. No runtime quality knobs beyond the
   mode itself.
+- Albedo G-buffer alpha marks primary Glass. Spatial passes copy those pixels
+  byte-exactly and exclude them from neighboring filter footprints; noisy raw
+  transmission is preferable to structurally incorrect diffuse smoothing until
+  a specialized specular/transmission filter exists.
 
-Frame order in Spatial mode: TLAS rebuild, trace, a-trous chain, tonemap, blit,
-present. This phase also lands the mode enum, the interactive cycle key, and the
-capture flag, with Spatiotemporal still rejected at parse time until D3.
+Frame order in Spatial mode: TLAS rebuild, trace, robust clamp, variance, a-trous
+chain, tonemap, blit, present. This phase also lands the mode enum, the
+interactive cycle key, and the capture flag, with Spatiotemporal still rejected
+at parse time until D3.
 
 Acceptance: pinned LDR hash of a fixed Spatial-mode capture frame; Off-mode
-captures rerun byte-identical to today's oracles.
+captures rerun byte-identical to today's oracles. A generated fixed Glass-sphere
+profile additionally requires identical per-Glass-pixel HDR hashes between Off
+and Spatial. A 16-SPP Spatial capture quantitatively gates isolated hot pixels
+with an edge-aware neighborhood metric rather than relying on a whole-frame hash.
 
 ## D2. Motion vectors and previous-frame plumbing
 

@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 
 #include "acceleration_structure.hpp"
+#include "denoise_pipeline.hpp"
 #include "gpu_lighting.hpp"
 #include "lighting.hpp"
 #include "rt_pipeline.hpp"
@@ -151,12 +152,35 @@ void recordExecutionBarrier(
         nullptr);
 }
 
+// Global compute-to-compute memory barrier between denoise dispatches. Each pass
+// reads what the previous pass wrote (and the final iteration writes the HDR
+// image the clamp pass read), so one write-to-read-and-write barrier covers
+// every image hazard in the chain without per-image bookkeeping.
+void recordDenoiseChainBarrier(VkCommandBuffer commandBuffer)
+{
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(
+        commandBuffer,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        1,
+        &barrier,
+        0,
+        nullptr,
+        0,
+        nullptr);
+}
+
 // Record the entire frame into a one-time-submit command buffer:
 //   1. rebuild the TLAS between its cross-frame and traversal barriers,
 //   2. discard/transition HDR and the G-buffer images, then trace one multi-vertex
 //      path per pixel (raygen also writes the primary-hit G-buffer),
-//   3. make HDR writes visible to compute and discard/transition the LDR output,
-//   4. compute-tonemap HDR radiance into the 8-bit LDR output,
+//   3. optionally clamp, estimate variance, and spatially filter HDR radiance,
+//   4. make HDR writes visible and compute-tonemap into the 8-bit LDR output,
 //   5. make LDR writes visible to transfer and blit it into the acquired image,
 //   6. close both shared-image cross-frame hazards with execution dependencies,
 //   7. transition the acquired image to PRESENT_SRC_KHR.
@@ -166,6 +190,8 @@ VkResult recordTraceCommandBuffer(
     const RayTracingFunctions& functions,
     const RtPipeline& rt,
     const TonemapPipeline& tonemap,
+    const DenoisePipeline& denoise,
+    DenoiseMode denoiseMode,
     const AccelerationStructure& accel,
     uint32_t frameSlot,
     uint32_t lightingDynamicOffset,
@@ -175,6 +201,8 @@ VkResult recordTraceCommandBuffer(
     VkImage gbufferNormalDepthImage,
     VkImage gbufferAlbedoImage,
     VkImage gbufferInstanceIdImage,
+    VkImage denoiseWorkingImageA,
+    VkImage denoiseWorkingImageB,
     VkImage swapchainImage,
     VkExtent2D extent)
 {
@@ -282,18 +310,145 @@ VkResult recordTraceCommandBuffer(
             TraceTimestampEndQuery);
     }
 
-    // Preserve HDR radiance in GENERAL while making raygen writes visible to the
-    // tonemap compute shader's storage-image reads.
-    recordImageBarrier(
-        commandBuffer,
-        hdrRadianceImage,
-        VK_IMAGE_LAYOUT_GENERAL,
-        VK_IMAGE_LAYOUT_GENERAL,
-        VK_ACCESS_SHADER_WRITE_BIT,
-        VK_ACCESS_SHADER_READ_BIT,
-        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        colorRange);
+    if (denoiseMode == DenoiseMode::Spatial) {
+        // The denoise chain reads raygen's HDR radiance plus the normal + depth
+        // and albedo G-buffer images from compute.
+        const VkImage denoiseReadImages[] = {
+            hdrRadianceImage,
+            gbufferNormalDepthImage,
+            gbufferAlbedoImage,
+        };
+        for (VkImage denoiseReadImage : denoiseReadImages) {
+            recordImageBarrier(
+                commandBuffer,
+                denoiseReadImage,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                colorRange);
+        }
+        // Discard both working images. The previous frame's chain touched them
+        // only at COMPUTE, so this transition also closes the cross-frame hazard.
+        const VkImage workingImages[] = {
+            denoiseWorkingImageA,
+            denoiseWorkingImageB,
+        };
+        for (VkImage workingImage : workingImages) {
+            recordImageBarrier(
+                commandBuffer,
+                workingImage,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_GENERAL,
+                0,
+                VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                colorRange);
+        }
+
+        const DenoiseDispatch denoiseDispatch = makeDenoiseDispatch(
+            extent.width,
+            extent.height);
+        DenoisePushConstants denoisePush{};
+
+        // Clamp writes prepared radiance to B. Variance consumes B and writes A;
+        // each a-trous iteration then ping-pongs, and the final one remodulates
+        // into HDR instead of the working output.
+        vkCmdBindPipeline(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            denoise.clampPipeline);
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            denoise.pipelineLayout,
+            0,
+            1,
+            &denoise.descriptorSets[0],
+            0,
+            nullptr);
+        vkCmdPushConstants(
+            commandBuffer,
+            denoise.pipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(DenoisePushConstants),
+            &denoisePush);
+        vkCmdDispatch(commandBuffer, denoiseDispatch.x, denoiseDispatch.y, 1);
+
+        recordDenoiseChainBarrier(commandBuffer);
+        vkCmdBindPipeline(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            denoise.variancePipeline);
+        vkCmdBindDescriptorSets(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            denoise.pipelineLayout,
+            0,
+            1,
+            &denoise.descriptorSets[1],
+            0,
+            nullptr);
+        vkCmdPushConstants(
+            commandBuffer,
+            denoise.pipelineLayout,
+            VK_SHADER_STAGE_COMPUTE_BIT,
+            0,
+            sizeof(DenoisePushConstants),
+            &denoisePush);
+        vkCmdDispatch(commandBuffer, denoiseDispatch.x, denoiseDispatch.y, 1);
+
+        vkCmdBindPipeline(
+            commandBuffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE,
+            denoise.atrousPipeline);
+        for (uint32_t iteration = 0;
+             iteration < DenoiseAtrousIterationCount;
+             ++iteration) {
+            recordDenoiseChainBarrier(commandBuffer);
+            vkCmdBindDescriptorSets(
+                commandBuffer,
+                VK_PIPELINE_BIND_POINT_COMPUTE,
+                denoise.pipelineLayout,
+                0,
+                1,
+                &denoise.descriptorSets[iteration % 2],
+                0,
+                nullptr);
+            denoisePush.stride = 1u << iteration;
+            denoisePush.remodulate =
+                iteration + 1 == DenoiseAtrousIterationCount ? 1u : 0u;
+            vkCmdPushConstants(
+                commandBuffer,
+                denoise.pipelineLayout,
+                VK_SHADER_STAGE_COMPUTE_BIT,
+                0,
+                sizeof(DenoisePushConstants),
+                &denoisePush);
+            vkCmdDispatch(commandBuffer, denoiseDispatch.x, denoiseDispatch.y, 1);
+        }
+
+        // The final iteration wrote HDR at COMPUTE; make it visible to the
+        // tonemap pass's storage-image read.
+        recordDenoiseChainBarrier(commandBuffer);
+    } else {
+        // Preserve HDR radiance in GENERAL while making raygen writes visible to
+        // the tonemap compute shader's storage-image reads.
+        recordImageBarrier(
+            commandBuffer,
+            hdrRadianceImage,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT,
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            colorRange);
+    }
 
     // This pass fully overwrites LDR. UNDEFINED intentionally discards last frame's
     // pixels; the previous frame's trailing transfer->compute execution dependency
@@ -437,6 +592,21 @@ bool prepareRtForSwapchain(const Renderer& renderer)
         tonemap.descriptorSet,
         swap.hdrRadianceImageView,
         swap.ldrOutputImageView);
+    writeDenoiseDescriptorSets(
+        renderer.device,
+        renderer.denoisePipeline->descriptorSets,
+        swap.hdrRadianceImageView,
+        swap.gbufferNormalDepthImageView,
+        swap.gbufferAlbedoImageView,
+        swap.denoiseWorkingImageAView,
+        swap.denoiseWorkingImageBView);
+
+    // The denoise passes share the tonemap pass's 8x8 tile shape, so the dispatch
+    // limit gate below covers both compute chains with one check.
+    static_assert(
+        DenoiseLocalSizeX == TonemapLocalSizeX
+            && DenoiseLocalSizeY == TonemapLocalSizeY,
+        "the tonemap dispatch-limit gate is reused for the denoise chain");
 
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProperties{};
     rtProperties.sType =
@@ -474,7 +644,8 @@ VkResult drawFrame(
     const Renderer& renderer,
     uint32_t frameIndex,
     const RaygenPushConstants& pushConstants,
-    const FrameLighting& frameLighting)
+    const FrameLighting& frameLighting,
+    DenoiseMode denoiseMode)
 {
     const Swapchain& swap = *renderer.swap;
     const FrameResources& frame = renderer.frames[frameIndex];
@@ -552,6 +723,8 @@ VkResult drawFrame(
         *renderer.functions,
         *renderer.rtPipeline,
         *renderer.tonemapPipeline,
+        *renderer.denoisePipeline,
+        denoiseMode,
         *renderer.accel,
         frameIndex,
         lightingDynamicOffset,
@@ -561,6 +734,8 @@ VkResult drawFrame(
         swap.gbufferNormalDepthImage,
         swap.gbufferAlbedoImage,
         swap.gbufferInstanceIdImage,
+        swap.denoiseWorkingImageA,
+        swap.denoiseWorkingImageB,
         swap.images[imageIndex],
         swap.extent);
 

@@ -136,8 +136,51 @@ void testCommandLine()
     expect(
         succeeded
             && options.mode == xrphoton::CommandLineMode::Capture
-            && options.gbufferProbeRequested,
+            && options.gbufferProbeRequested
+            && options.denoise == xrphoton::DenoiseMode::Off,
         "capture accepts the G-buffer probe request at a settled frame count");
+
+    options = parse(
+        {"xrPhoton", "--capture", "8", "result.ppm", "--denoise-probe",
+         "--denoise", "spatial", "--spp", "16"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded
+            && options.mode == xrphoton::CommandLineMode::Capture
+            && options.denoiseProbeRequested
+            && options.denoise == xrphoton::DenoiseMode::Spatial
+            && options.samplesPerPixel == 16,
+        "capture accepts the fixed D1 acceptance profile");
+
+    options = parse(
+        {"xrPhoton", "--capture", "8", "result.ppm", "--denoise", "spatial"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded
+            && options.mode == xrphoton::CommandLineMode::Capture
+            && options.denoise == xrphoton::DenoiseMode::Spatial,
+        "capture accepts the spatial denoise mode");
+
+    options = parse(
+        {"xrPhoton", "--denoise", "spatial"},
+        &succeeded,
+        &error);
+    expect(
+        succeeded
+            && options.mode == xrphoton::CommandLineMode::Interactive
+            && options.denoise == xrphoton::DenoiseMode::Spatial,
+        "interactive mode accepts an initial denoise mode");
+
+    options = parse(
+        {"xrPhoton", "--capture", "8", "result.ppm", "--denoise", "temporal"},
+        &succeeded,
+        &error);
+    expect(
+        !succeeded
+            && error.find("D3") != std::string::npos,
+        "the temporal denoise mode is rejected until plan phase D3");
 
     const std::initializer_list<const char*> invalidArguments[] = {
         {"xrPhoton", "--capture"},
@@ -178,6 +221,14 @@ void testCommandLine()
         {"xrPhoton", "--capture", "127", "result.ppm", "--gbuffer-probe"},
         {"xrPhoton", "--capture", "288", "result.ppm", "--gbuffer-probe",
          "--gbuffer-probe"},
+        {"xrPhoton", "--denoise-probe"},
+        {"xrPhoton", "--capture", "8", "result.ppm", "--denoise-probe",
+         "--gbuffer-probe"},
+        {"xrPhoton", "--denoise"},
+        {"xrPhoton", "--denoise", "svgf"},
+        {"xrPhoton", "--denoise", "spatial", "--denoise", "off"},
+        {"xrPhoton", "--reference", "8", "--estimator", "mis",
+         "--denoise", "off"},
         {"xrPhoton", "--capture", "8", "result.ppm", "--furnace"},
         {"xrPhoton", "--reference", "8", "--estimator", "mis", "--furnace"},
         {"xrPhoton", "--reference", "8", "--estimator", "nee", "--furnace"},
@@ -482,10 +533,10 @@ void testGBufferProbe()
         HalfOne, 0, 0, HalfOne,
     };
     const std::vector<std::uint8_t> albedo{
-        107, 107, 115, 255,
-        0, 0, 0, 255,
+        107, 107, 115, 0,
+        0, 0, 0, 0,
         255, 255, 255, 255,
-        255, 255, 255, 255,
+        255, 255, 255, 0,
     };
     const std::vector<std::uint32_t> instances{
         0,
@@ -505,8 +556,9 @@ void testGBufferProbe()
     expect(
         ground.normal[1] == 1.0f && ground.viewDepth == 2.0f
             && ground.instanceId == 0
+            && !ground.primaryGlass && !sky.primaryGlass
             && std::abs(ground.albedo[0] - 107.0f / 255.0f) < 1.0e-6f,
-        "the ground pixel decodes normal, depth, albedo, and instance");
+        "the ground pixel decodes normal, depth, albedo, instance, and material flag");
     expect(
         !xrphoton::extractGBufferProbeSample(
             2, 2, 2, 0, normalDepth, albedo, instances, &ground)
@@ -620,6 +672,50 @@ void testGBufferProbe()
         "the sky probe rejects nonzero depth and a hit instance ID");
 }
 
+void testDenoiseAcceptanceSummary()
+{
+    constexpr std::uint16_t HalfOne = 0x3c00u;
+    constexpr std::uint16_t HalfSixteen = 0x4c00u;
+    constexpr std::uint32_t Width = 3;
+    constexpr std::uint32_t Height = 3;
+    std::vector<std::uint16_t> hdr(Width * Height * 4, HalfOne);
+    std::vector<std::uint16_t> normalDepth(Width * Height * 4, 0);
+    std::vector<std::uint8_t> albedo(Width * Height * 4, 0);
+    for (std::size_t pixel = 0; pixel < Width * Height; ++pixel) {
+        normalDepth[pixel * 4 + 1] = HalfOne;
+        normalDepth[pixel * 4 + 3] = HalfOne;
+        hdr[pixel * 4 + 3] = HalfOne;
+    }
+    const std::size_t center = 4;
+    hdr[center * 4 + 0] = HalfSixteen;
+    hdr[center * 4 + 1] = HalfSixteen;
+    hdr[center * 4 + 2] = HalfSixteen;
+
+    xrphoton::DenoiseAcceptanceSummary summary;
+    expect(
+        xrphoton::summarizeDenoiseAcceptance(
+            Width, Height, hdr, normalDepth, albedo, &summary)
+            && summary.glassPixelCount == 0
+            && summary.isolatedHotPixelCount == 1,
+        "D1 acceptance counts an isolated 16x surface sample as one hot pixel");
+
+    albedo[center * 4 + 3] = 255;
+    xrphoton::DenoiseAcceptanceSummary glassSummary;
+    expect(
+        xrphoton::summarizeDenoiseAcceptance(
+            Width, Height, hdr, normalDepth, albedo, &glassSummary)
+            && glassSummary.glassPixelCount == 1
+            && glassSummary.isolatedHotPixelCount == 0
+            && glassSummary.glassRadianceHash != 0,
+        "Glass pixels enter the exact bypass hash and are excluded from firefly counts");
+    expect(
+        !xrphoton::summarizeDenoiseAcceptance(
+            Width, Height, hdr, normalDepth, {}, &summary)
+            && !xrphoton::summarizeDenoiseAcceptance(
+                Width, Height, hdr, normalDepth, albedo, nullptr),
+        "D1 acceptance rejects mismatched spans and null output");
+}
+
 int main(int argumentCount, char** arguments)
 {
     if (argumentCount != 3) {
@@ -633,6 +729,7 @@ int main(int argumentCount, char** arguments)
     testHash();
     testTraceTimingSummary();
     testGBufferProbe();
+    testDenoiseAcceptanceSummary();
     testPpm(arguments[1], arguments[2]);
 
     if (failures != 0) {

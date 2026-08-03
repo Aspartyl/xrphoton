@@ -102,8 +102,9 @@ StructuredBuffer<float> lightCdf;
 StructuredBuffer<EmitterLookupRecord> emitterLookup;
 
 // Primary-hit G-buffer, written once per pixel from the first sample's camera ray
-// (denoising plan D0). A primary miss writes the depth sentinel 0 and
-// GBufferMissInstanceId so filtering passes can bypass sky pixels.
+// (denoising plan D0). Albedo alpha is the primary-Glass marker consumed by the
+// denoiser; RGB remains linear albedo. A primary miss writes the depth sentinel 0
+// and GBufferMissInstanceId so filtering passes can bypass sky pixels.
 [[vk::binding(9, 0)]]
 [format("rgba16f")]
 uniform RWTexture2D<float4> gbufferNormalDepthImage;
@@ -126,6 +127,7 @@ struct PrimarySurface
     float viewDepth;
     float3 albedo;
     uint instanceIndex;
+    uint isGlass;
 };
 
 [[vk::push_constant]]
@@ -408,6 +410,7 @@ float3 traceCameraPath(
     primarySurface.viewDepth = 0.0;
     primarySurface.albedo = float3(0.0);
     primarySurface.instanceIndex = GBufferMissInstanceId;
+    primarySurface.isGlass = 0;
 
     // The CPU sends a camera origin plus a pre-scaled perspective basis: forward is
     // unit length, while right/up already include FOV and aspect scaling.
@@ -521,6 +524,8 @@ float3 traceCameraPath(
             hit.shadingNormal,
             hit.geometricNormal,
             -ray.Direction);
+        MaterialRecord material = materials[hit.materialIndex];
+        bool isGlass = material.materialClass == MaterialClassGlass;
         if (pathVertex == 0)
         {
             // Linear view depth: the hit distance projected onto the unit forward
@@ -530,10 +535,9 @@ float3 traceCameraPath(
                 * dot(ray.Direction, frameConstants.camera.forward);
             primarySurface.albedo = hit.albedo;
             primarySurface.instanceIndex = hit.instanceIndex;
+            primarySurface.isGlass = isGlass ? 1u : 0u;
         }
-        MaterialRecord material = materials[hit.materialIndex];
         float3 wo = -ray.Direction;
-        bool isGlass = material.materialClass == MaterialClassGlass;
         float etaI = 1.0;
         float etaT = 1.0;
         if (isGlass)
@@ -987,7 +991,7 @@ void rayGenMain()
                 primarySurface.viewDepth);
             gbufferAlbedoImage[pixel] = float4(
                 saturate(primarySurface.albedo),
-                1.0);
+                primarySurface.isGlass != 0 ? 1.0 : 0.0);
             gbufferInstanceIdImage[pixel] = primarySurface.instanceIndex;
         }
     }

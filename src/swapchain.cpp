@@ -34,6 +34,10 @@ constexpr VkImageUsageFlags RequiredLdrOutputUsage =
     | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 constexpr VkImageUsageFlags RequiredGBufferUsage =
     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+// The denoise working pair is pure compute scratch; its float format is already
+// gated by the HDR storage check.
+constexpr VkFormat DenoiseWorkingFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+constexpr VkImageUsageFlags RequiredDenoiseWorkingUsage = VK_IMAGE_USAGE_STORAGE_BIT;
 
 // Everything queried about a surface in one shot. `valid` is false if any of the
 // underlying queries failed, so callers can treat a half-filled struct as "unsupported".
@@ -578,6 +582,18 @@ void destroySwapchainResources(Swapchain* swap)
     destroyRenderTargetImage(
         device,
         swap->allocator,
+        &swap->denoiseWorkingImageB,
+        &swap->denoiseWorkingImageBAllocation,
+        &swap->denoiseWorkingImageBView);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
+        &swap->denoiseWorkingImageA,
+        &swap->denoiseWorkingImageAAllocation,
+        &swap->denoiseWorkingImageAView);
+    destroyRenderTargetImage(
+        device,
+        swap->allocator,
         &swap->gbufferInstanceIdImage,
         &swap->gbufferInstanceIdImageAllocation,
         &swap->gbufferInstanceIdImageView);
@@ -773,7 +789,7 @@ VkResult createSwapchainResources(
         return result;
     }
 
-    return createRenderTargetImage(
+    result = createRenderTargetImage(
         device,
         swap->extent,
         GBufferInstanceIdFormat,
@@ -782,6 +798,32 @@ VkResult createSwapchainResources(
         &swap->gbufferInstanceIdImage,
         &swap->gbufferInstanceIdImageAllocation,
         &swap->gbufferInstanceIdImageView);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    result = createRenderTargetImage(
+        device,
+        swap->extent,
+        DenoiseWorkingFormat,
+        RequiredDenoiseWorkingUsage,
+        swap->allocator,
+        &swap->denoiseWorkingImageA,
+        &swap->denoiseWorkingImageAAllocation,
+        &swap->denoiseWorkingImageAView);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
+
+    return createRenderTargetImage(
+        device,
+        swap->extent,
+        DenoiseWorkingFormat,
+        RequiredDenoiseWorkingUsage,
+        swap->allocator,
+        &swap->denoiseWorkingImageB,
+        &swap->denoiseWorkingImageBAllocation,
+        &swap->denoiseWorkingImageBView);
 }
 
 VkResult recreateSwapchain(
@@ -846,6 +888,8 @@ Swapchain::~Swapchain()
     const bool hadGBufferImages = gbufferNormalDepthImage != VK_NULL_HANDLE
         || gbufferAlbedoImage != VK_NULL_HANDLE
         || gbufferInstanceIdImage != VK_NULL_HANDLE;
+    const bool hadDenoiseWorkingImages = denoiseWorkingImageA != VK_NULL_HANDLE
+        || denoiseWorkingImageB != VK_NULL_HANDLE;
     const bool hadRenderFinishedSemaphores = !renderFinishedSemaphores.empty();
     const bool hadImageViews = !imageViews.empty();
     const bool hadSwapchain = swapchain != VK_NULL_HANDLE;
@@ -860,6 +904,9 @@ Swapchain::~Swapchain()
     }
     if (hadGBufferImages) {
         std::cout << "Destroyed Vulkan G-buffer images.\n";
+    }
+    if (hadDenoiseWorkingImages) {
+        std::cout << "Destroyed Vulkan denoise working images.\n";
     }
     if (hadRenderFinishedSemaphores) {
         std::cout << "Destroyed Vulkan render-finished semaphores.\n";

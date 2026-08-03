@@ -417,16 +417,19 @@ void testGeneratedYardPolicy()
     const xrphoton::SceneData& scene = loaded.scene;
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1 \
     || XRPHOTON_GALLERY_TEST_EXPECTATION == 4
-    constexpr std::size_t ExpectedMeshCount = 13;
-    constexpr std::size_t ExpectedGeometryCount = 14;
+    // The textured probe asset always loads (one extra mesh/geometry/material),
+    // but its placement is acceptance-only, so the ordinary yard's instance list
+    // is unchanged from before the probe existed.
+    constexpr std::size_t ExpectedMeshCount = 14;
+    constexpr std::size_t ExpectedGeometryCount = 15;
     constexpr std::size_t ExpectedInstanceCount = 39;
-    constexpr std::size_t ExpectedMaterialCount = 14;
+    constexpr std::size_t ExpectedMaterialCount = 15;
     constexpr std::size_t ExpectedPhysicsCount = 2;
 #else
-    constexpr std::size_t ExpectedMeshCount = 12;
-    constexpr std::size_t ExpectedGeometryCount = 13;
+    constexpr std::size_t ExpectedMeshCount = 13;
+    constexpr std::size_t ExpectedGeometryCount = 14;
     constexpr std::size_t ExpectedInstanceCount = 38;
-    constexpr std::size_t ExpectedMaterialCount = 13;
+    constexpr std::size_t ExpectedMaterialCount = 14;
     constexpr std::size_t ExpectedPhysicsCount = 1;
 #endif
     expect(scene.meshes.size() == ExpectedMeshCount, "yard loads the expected model set");
@@ -494,10 +497,10 @@ void testGeneratedYardPolicy()
         glassPlacementsMatch,
         "day Glass showcase stands on the ground without intersecting another object");
 
-    constexpr std::array<std::uint32_t, 9> expectedFirstGeometries{
-        0, 1, 2, 3, 4, 5, 6, 7, 8};
-    constexpr std::array<std::uint32_t, 9> expectedGeometryCounts{
-        1, 1, 1, 1, 1, 1, 1, 1, 2};
+    constexpr std::array<std::uint32_t, 10> expectedFirstGeometries{
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    constexpr std::array<std::uint32_t, 10> expectedGeometryCounts{
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 2};
     if (scene.meshes.size() >= expectedFirstGeometries.size()) {
         for (std::size_t index = 0; index < expectedFirstGeometries.size(); ++index) {
             expect(
@@ -532,14 +535,14 @@ void testGeneratedYardPolicy()
             * glm::scale(glm::mat4{1.0f}, glm::vec3{1.5f, 1.0f, 1.5f}),
     };
     std::vector<std::uint32_t> expectedMeshes{
-        0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 8, 8,
+        0, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 4, 5, 6, 7, 9, 9,
     };
 #if XRPHOTON_GALLERY_TEST_EXPECTATION == 1
     expectedTransforms.push_back(dynamicBarrelSpawn());
-    expectedMeshes.push_back(9);
+    expectedMeshes.push_back(10);
 #elif XRPHOTON_GALLERY_TEST_EXPECTATION == 4
     expectedTransforms.push_back(dynamicTailSpawn());
-    expectedMeshes.push_back(9);
+    expectedMeshes.push_back(10);
 #endif
 
     if (scene.instances.size() >= expectedTransforms.size()) {
@@ -619,9 +622,9 @@ void testTimeDrivenEmitterPolicy()
         glassIsClear = !instanceClashes(loaded.scene, instanceIndex);
     }
     expect(
-        loaded.scene.meshes.size() == 12
-            && loaded.scene.geometries.size() == 13
-            && loaded.scene.materials.size() == 13
+        loaded.scene.meshes.size() == 13
+            && loaded.scene.geometries.size() == 14
+            && loaded.scene.materials.size() == 14
             && loaded.scene.instances.size() == 38
             && glassIsClear,
         "single yard retains every Glass panel and its permanent emitter set");
@@ -674,6 +677,49 @@ void testTimeDrivenEmitterPolicy()
             && referenceLoaded.dynamicInstances == std::vector<std::size_t>{9}
             && !referenceHasGlassPlacement,
         "estimator-reference yard omits placements with approximate Glass visibility");
+
+    // The acceptance profile is the complete yard plus exactly the probe card at
+    // the configuration-stable flat instance 15; the ordinary yard above proved
+    // it carries no probe-only placement.
+    xrphoton::GalleryLoadResult probeLoaded = xrphoton::loadGalleryScene(
+        xrphoton::GallerySceneProfile::GBufferProbe);
+    bool probeCardPlaced = false;
+    if (probeLoaded && probeLoaded.scene.instances.size() == 39) {
+        const xrphoton::SceneInstance& card = probeLoaded.scene.instances[15];
+        probeCardPlaced = card.meshIndex == 8
+            && matrixNear(
+                card.transform,
+                translation({-6.4f, 0.9f, -3.0f}));
+    }
+    expect(
+        probeLoaded && probeCardPlaced
+            && probeLoaded.dynamicInstances == std::vector<std::size_t>{9},
+        "the G-buffer probe profile adds only the textured card at instance 15");
+
+    xrphoton::GalleryLoadResult denoiseLoaded = xrphoton::loadGalleryScene(
+        xrphoton::GallerySceneProfile::DenoiseProbe);
+    bool fixedGlassSpherePlaced = false;
+    if (denoiseLoaded
+        && denoiseLoaded.scene.instances.size() == 39
+        && denoiseLoaded.scene.meshes.size() == 14
+        && denoiseLoaded.scene.materials.size() == 15) {
+        const xrphoton::SceneInstance& sphere = denoiseLoaded.scene.instances[14];
+        WorldBounds bounds;
+        fixedGlassSpherePlaced = sphere.meshIndex == 7
+            && instanceUsesGlass(denoiseLoaded.scene, sphere)
+            && matrixNear(
+                sphere.transform,
+                scaledPlacement(
+                    {-4.0f, 1.25f, -4.0f},
+                    {1.25f, 1.25f, 1.25f}))
+            && instanceWorldBounds(denoiseLoaded.scene, 14, &bounds)
+            && nearly(bounds.minimum.x, -5.25f, 1.0e-3f)
+            && nearly(bounds.maximum.y, 2.5f, 1.0e-3f);
+    }
+    expect(
+        denoiseLoaded && fixedGlassSpherePlaced
+            && denoiseLoaded.dynamicInstances == std::vector<std::size_t>{9},
+        "the D1 acceptance profile adds one fixed generated Glass sphere");
 #endif
 }
 
